@@ -14,6 +14,7 @@ This is an agentic framework with subprocess-isolated skills, MCP integration, a
 - **Sandboxed Execution** — Each skill runs as a separate process; permissions and environment are applied by the framework runner, with SDK support still available for custom RPC skills
 - **Process Pool** — Long-running skill processes managed with semaphore-based concurrency control, health checks, and idle eviction
 - **Ordinary Python & Node.js Scripts** — Export normal functions; the framework wraps them with a runner so skill authors do not need to implement JSON-RPC
+- **OpenAI-Compatible LLM Providers** — Register provider endpoints in the Service Console; agents resolve models through persisted `openai_compatible` configs with env fallbacks
 - **MCP Client** — Connect to external tool servers via stdio, SSE, or streamable HTTP
 - **Multi-Agent Delegation** — Agents can delegate work to other registered agents
 - **ReAct Runtime** — Iterative reasoning loop with tool calling, session history, and streaming SSE
@@ -25,16 +26,16 @@ This is an agentic framework with subprocess-isolated skills, MCP integration, a
 uv sync
 
 # Configure (copy and edit .env)
-cp .env.example .env
+cp env.example .env
 
-# Run
-uv run python main.py
+# Run backend (requires AGENT_FRAMEWORK_DATABASE_URL)
+uv run python main.py serve
 
-# Or explicitly sync .env seeds into PostgreSQL
-uv run python main.py sync-config --overwrite
+# Or start backend + frontend together
+./dev.sh both
 ```
 
-The server starts on `http://0.0.0.0:5170`.
+The server starts on `http://0.0.0.0:5170` by default (`AGENT_FRAMEWORK_BACKEND_PORT`).
 
 ### Frontend
 
@@ -48,6 +49,8 @@ pnpm dev
 
 The frontend proxies the FastAPI backend and assumes `http://127.0.0.1:5170` by default. Override with `AGENT_FRAMEWORK_API_BASE_URL` or `NEXT_PUBLIC_AGENT_FRAMEWORK_API_BASE_URL`.
 
+Service Console routes include agent settings, provider settings, MCP services, and skill settings under `frontend/app/service-console/`.
+
 ## Configuration
 
 All settings are loaded from environment variables with the prefix `AGENT_FRAMEWORK_`, or from a `.env` file in the project root. In the `.env` file, use the full prefixed names (e.g. `AGENT_FRAMEWORK_DEFAULT_API_KEY`, not `DEFAULT_API_KEY`).
@@ -56,31 +59,35 @@ All settings are loaded from environment variables with the prefix `AGENT_FRAMEW
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENT_FRAMEWORK_DEFAULT_API_KEY` | — | LLM API key |
-| `AGENT_FRAMEWORK_DEFAULT_BASE_URL` | `https://api.openai.com/v1` | LLM API base URL |
-| `AGENT_FRAMEWORK_DEFAULT_MODEL` | `gpt-4o-mini` | Model to use |
-| `AGENT_FRAMEWORK_DEFAULT_MAX_ITERATIONS` | `6` | Max ReAct loop iterations |
+| `AGENT_FRAMEWORK_DEFAULT_API_KEY` | — | Fallback LLM API key when no DB provider is configured |
+| `AGENT_FRAMEWORK_DEFAULT_BASE_URL` | `https://api.openai.com/v1` | Fallback OpenAI-compatible base URL |
+| `AGENT_FRAMEWORK_DEFAULT_MODEL` | `gpt-4o-mini` | Fallback model name |
+| `AGENT_FRAMEWORK_DEFAULT_MAX_ITERATIONS` | `10` | Max ReAct loop iterations for seeded/default agents |
 | `AGENT_FRAMEWORK_DATABASE_URL` | — | PostgreSQL connection string for persistent config |
 | `AGENT_FRAMEWORK_SKILLS_ROOT_DIR` | `skills` | Managed root for built-in, uploaded, authored, and git-synced skills |
 | `AGENT_FRAMEWORK_SKILLS_DIRECTORIES` | derived from `skills_root_dir` | Optional override for local skill scan roots |
+| `AGENT_FRAMEWORK_BACKEND_PORT` | `5170` | Backend port used by `main.py serve` and `dev.sh` |
+| `AGENT_FRAMEWORK_FRONTEND_PORT` | `3100` | Frontend dev port used by `dev.sh` |
 
-See [.env.example](.env.example) for the full list.
+See [env.example](env.example) for a starter `.env` template.
+
+Prefer registering providers in the Service Console. The `DEFAULT_*` model variables above are fallbacks used when the `providers` table is empty or an agent inherits the default route without an explicit provider override.
 
 ### Persistent Config
 
-Agents, MCP servers, and git skill sources are stored in PostgreSQL and managed through the API.
+Agents, MCP servers, skill sources, LLM providers, and chat sessions are stored in PostgreSQL and managed through the API or Service Console.
 
 Optional `.env` JSON values are only used as first-boot seed data when the corresponding database tables are empty:
 
 ```bash
 # .env
-AGENT_FRAMEWORK_AGENTS_JSON=[{"name":"default","description":"Default agent","system_prompt":"You are a pragmatic assistant.","reasoning_prompt":"Think step by step when needed. Use tools only when they reduce uncertainty, then synthesize concise final answers from observations.","provider":{"provider":"openai_compatible","model":"gpt-4o-mini"},"skills":[],"local_tools":["echo","get_current_time"],"capabilities":["chat","react","tool_calling","streaming"],"max_iterations":6}]
+AGENT_FRAMEWORK_AGENTS_JSON=[{"name":"default","description":"Default agent","system_prompt":"You are a pragmatic assistant.","reasoning_prompt":"Think step by step when needed. Use tools only when they reduce uncertainty, then synthesize concise final answers from observations.","provider":{"provider":"openai_compatible","model":"gpt-4o-mini","base_url":"https://api.openai.com/v1","timeout_seconds":500.0},"skills":[],"local_tools":["get_current_time"],"capabilities":["chat","react","tool_calling","streaming"],"max_iterations":10}]
 AGENT_FRAMEWORK_MCP_SERVERS_JSON=[]
 AGENT_FRAMEWORK_SKILL_SOURCES_JSON=[]
 ```
 
-Use `GET/PUT /config/agents`, `GET/PUT /config/mcp`, and `GET/PUT /config/skill_sources` to inspect and update persisted config.
-Use `POST /config/sync-from-env` or `uv run python main.py sync-config [--overwrite]` to explicitly copy `.env` seed JSON into PostgreSQL.
+Use `GET/PUT /config/agents`, `GET/PUT /config/mcp`, `GET/PUT /config/skill_sources`, and `GET/PUT /config/providers` to inspect and update persisted config.
+Use `GET /providers/{provider_name}/models` to fetch the model catalog for a saved provider.
 
 ## Skills
 
@@ -133,7 +140,7 @@ name: weather-python
 description: Fetch current weather for a city
 version: "1.0.0"
 references:
-  - echo
+  - references/methodology.md
 ---
 
 # Weather Skill
@@ -309,25 +316,25 @@ graph TD
     Pool --> Child[Child Process / stdio JSON-RPC]
 ```
 
-## Bundled Examples
+## Bundled Skills
 
-| Directory | Runtime | Description |
-|-----------|---------|-------------|
-| `skills/built_in/hello-python` | Python | Minimal greeting skill |
-| `skills/built_in/hello-nodejs` | Node.js | Minimal greeting skill |
-| `skills/built_in/weather-python` | Python | Live weather via wttr.in, shows permissions and references |
+Managed skills are organized under `skills/` by category:
 
-Run with the examples loaded:
-
-```bash
-# .env
-AGENT_FRAMEWORK_SKILLS_ROOT_DIR=skills
+```text
+skills/
+  built_in/       # repository-owned skills
+  uploaded/       # user-imported local bundles
+  authored/       # agent- or developer-authored bundles
+  github_synced/  # git-backed synced bundles from DB skill_sources
 ```
+
+Install or sync additional skills through the Service Console or the `/skills/install` and `/skills/upload` endpoints.
 
 ## Development
 
 ```bash
 uv sync
-uv run python main.py
-cd frontend && pnpm install && pnpm build
+uv run python main.py serve
+./dev.sh both
+cd frontend && pnpm install && pnpm exec tsc --noEmit
 ```
