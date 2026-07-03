@@ -12,7 +12,7 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
   - `src/agent_framework/core/`: agent orchestration, attachment handling, tool wiring, workspace tools.
   - `src/agent_framework/infra/`: settings, database, config persistence, session persistence.
   - `src/agent_framework/mcp/`: MCP transport/client/spec concerns.
-  - `src/agent_framework/model/`: provider abstractions and model configuration.
+  - `src/agent_framework/model/`: OpenAI-compatible provider adapters and model configuration (`openai_compatible` only).
   - `src/agent_framework/registry/` and `src/agent_framework/runtime/`: runtime assembly and ReAct execution.
   - `src/agent_framework/skills/`: skill discovery, metadata, lifecycle, and process management.
 - Frontend layers:
@@ -25,8 +25,9 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 
 ## Persistence And Config
 
-- Agents, MCP servers, skill sources, and chat sessions are persisted. Treat the database-backed config store as the source of truth.
-- `.env` JSON values are seed data for first boot and sync flows. Do not build new product behavior that only mutates environment seed payloads.
+- Agents, MCP servers, skill sources, LLM providers, and chat sessions are persisted. Treat the database-backed config store as the source of truth.
+- LLM access uses the `openai_compatible` provider type only. Register providers in Service Console (`/service-console/provider-settings`) or via `GET/PUT /config/providers`; env `DEFAULT_*` values are fallbacks when no provider is configured in the database.
+- `.env` JSON values are seed data for first boot when the corresponding tables are empty. Do not build new product behavior that only mutates environment seed payloads.
 - If a persisted shape changes, add an Alembic migration in `alembic/versions/`.
 - Keep backend schemas and frontend field names aligned. Avoid silent shape drift between Pydantic models and `frontend/lib/types.ts`.
 
@@ -55,7 +56,7 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 - Keep backend route handlers thin. Push parsing, normalization, and orchestration into the owning abstraction.
 - Prefer existing helpers and conventions over re-implementing normalization logic in multiple places.
 - Preserve naming conventions already in use: Python and API payloads use `snake_case`; frontend form state and local component state may stay camelCase when it improves ergonomics.
-- When touching chat, agent settings, MCP services, or skill settings, preserve the existing workspace layout and management rail patterns before inventing new page structures.
+- When touching chat, agent settings, provider settings, MCP services, or skill settings, preserve the existing workspace layout and management rail patterns before inventing new page structures.
 
 ## Validation And Workflow
 
@@ -64,7 +65,8 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 - Frontend validation: `cd frontend && pnpm exec tsc --noEmit`
 - Frontend lint: `cd frontend && pnpm lint`
 - Backend setup: `uv sync`
-- Backend serve: `uv run python main.py serve --port 5170`
+- Backend serve: `uv run python main.py serve --port 5170` or `./dev.sh backend`
+- Local full stack: `./dev.sh both`
 - The frontend proxy in `frontend/app/api/backend/[...path]/route.ts` falls back to `http://127.0.0.1:5170`. If you move the backend, update env vars or proxy assumptions deliberately.
 - If backend route changes seem to have no effect in the running app, restart the backend before debugging the proxy. `main.py` runs uvicorn with `reload=False`.
 - If `frontend/app/globals.css` changes appear to have no effect, restart the Next dev server before assuming the CSS is wrong. Turbopack can serve stale CSS output.
