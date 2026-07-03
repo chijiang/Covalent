@@ -2,16 +2,22 @@ import type {
   AgentDetail,
   AgentRunRequest,
   AgentSummary,
+  AttachmentDeliveryMode,
   AttachmentUploadResponse,
   ChatSession,
   ChatSessionSummary,
   ConfigDocument,
+  ConfigDocumentUpdateMetadata,
   ConfigKind,
   HealthResponse,
+  LocalToolSummary,
   McpInspectResponse,
   McpServerConfig,
   McpToolCallResponse,
-  SeedSyncResponse,
+  ManagementExportFormat,
+  ManagementExportResponse,
+  ManagementImportResponse,
+  ManagementKind,
   SkillInstallRequest,
   SkillInstallResponse,
   SkillPreviewResponse,
@@ -22,6 +28,32 @@ const API_PREFIX = "/api/backend";
 
 function buildPath(path: string): string {
   return `${API_PREFIX}/${path.replace(/^\/+/, "")}`;
+}
+
+function localDirectBackendBaseUrl(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const configured = process.env.NEXT_PUBLIC_AGENT_FRAMEWORK_API_BASE_URL?.trim();
+  if (configured) {
+    return configured.replace(/\/+$/, "");
+  }
+
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+    return "http://127.0.0.1:5170";
+  }
+
+  return null;
+}
+
+function buildStreamPath(path: string): string {
+  const normalizedPath = path.replace(/^\/+/, "");
+  const directBaseUrl = localDirectBackendBaseUrl();
+  if (directBaseUrl) {
+    return `${directBaseUrl}/${normalizedPath}`;
+  }
+  return buildPath(normalizedPath);
 }
 
 async function readError(response: Response): Promise<Error> {
@@ -64,6 +96,10 @@ export async function getAgents(): Promise<AgentDetail[]> {
   return details;
 }
 
+export function getAgentLocalTools(): Promise<LocalToolSummary[]> {
+  return apiFetchJson<LocalToolSummary[]>("local-tools", { method: "GET" });
+}
+
 export function listChatSessions(): Promise<ChatSessionSummary[]> {
   return apiFetchJson<ChatSessionSummary[]>("sessions", { method: "GET" });
 }
@@ -89,17 +125,29 @@ export function getConfig(kind: ConfigKind): Promise<ConfigDocument> {
   return apiFetchJson<ConfigDocument>(`config/${kind}`, { method: "GET" });
 }
 
-export function saveConfig(kind: ConfigKind, raw: string): Promise<ConfigDocument> {
+export function saveConfig(kind: ConfigKind, raw: string, metadata?: ConfigDocumentUpdateMetadata): Promise<ConfigDocument> {
   return apiFetchJson<ConfigDocument>(`config/${kind}`, {
     method: "PUT",
-    body: JSON.stringify({ raw }),
+    body: JSON.stringify({ raw, metadata: metadata || {} }),
   });
 }
 
-export function syncConfigFromEnv(overwrite: boolean): Promise<SeedSyncResponse> {
-  return apiFetchJson<SeedSyncResponse>("config/sync-from-env", {
+export function fetchProviderModels(providerName: string): Promise<string[]> {
+  return apiFetchJson<string[]>(`providers/${encodeURIComponent(providerName)}/models`, { method: "GET" });
+}
+
+export function exportManagementConfig(kind: ManagementKind, format: ManagementExportFormat = "yaml"): Promise<ManagementExportResponse> {
+  return apiFetchJson<ManagementExportResponse>(`management/${kind}/export?format=${encodeURIComponent(format)}`, {
+    method: "GET",
+  });
+}
+
+export function importManagementConfig(kind: ManagementKind, file: File): Promise<ManagementImportResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return apiFetchJson<ManagementImportResponse>(`management/${kind}/import`, {
     method: "POST",
-    body: JSON.stringify({ overwrite }),
+    body: formData,
   });
 }
 
@@ -144,9 +192,12 @@ export async function streamAgent(
   request: AgentRunRequest,
   onChunk: (event: StreamEvent) => void,
 ): Promise<void> {
-  const response = await fetch(buildPath(`agents/${encodeURIComponent(agentName)}/stream`), {
+  const response = await fetch(buildStreamPath(`agents/${encodeURIComponent(agentName)}/stream`), {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "accept": "text/event-stream",
+      "content-type": "application/json",
+    },
     body: JSON.stringify(request),
     cache: "no-store",
   });
@@ -189,9 +240,14 @@ export async function streamAgent(
   }
 }
 
-export function uploadChatAttachments(sessionId: string, files: File[]): Promise<AttachmentUploadResponse> {
+export function uploadChatAttachments(
+  sessionId: string,
+  files: File[],
+  deliveryMode: AttachmentDeliveryMode,
+): Promise<AttachmentUploadResponse> {
   const formData = new FormData();
   formData.append("session_id", sessionId);
+  formData.append("delivery_mode", deliveryMode);
   formData.append(
     "metadata_json",
     JSON.stringify(
@@ -271,4 +327,23 @@ export function disableSkill(skillName: string): Promise<Record<string, unknown>
   return apiFetchJson<Record<string, unknown>>(`skills/${encodeURIComponent(skillName)}/disable`, {
     method: "POST",
   });
+}
+
+export async function exportSkillBundle(skillName: string): Promise<void> {
+  const response = await fetch(buildPath(`skills/${encodeURIComponent(skillName)}/export`), {
+    method: "GET",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw await readError(response);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  const disposition = response.headers.get("content-disposition");
+  const match = disposition?.match(/filename="?([^"]+)"?/);
+  link.download = match?.[1] ?? `${skillName}.zip`;
+  link.click();
+  URL.revokeObjectURL(url);
 }

@@ -28,7 +28,10 @@ def register_skill_meta_tools(registry: Any, settings: Any = None) -> None:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "skill": {"type": "string", "description": "Registered skill name."},
+                        "skill": {
+                            "type": "string",
+                            "description": "Registered skill name, case-insensitive variant, or title-style alias.",
+                        },
                         "kind": {
                             "type": "string",
                             "enum": ["all", "resources", "scripts"],
@@ -51,7 +54,10 @@ def register_skill_meta_tools(registry: Any, settings: Any = None) -> None:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "skill": {"type": "string", "description": "Registered skill name."},
+                        "skill": {
+                            "type": "string",
+                            "description": "Registered skill name, case-insensitive variant, or title-style alias.",
+                        },
                         "path": {"type": "string", "description": "Relative resource path."},
                         "max_bytes": {"type": "integer", "default": 24000, "minimum": 1},
                     },
@@ -71,7 +77,10 @@ def register_skill_meta_tools(registry: Any, settings: Any = None) -> None:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "skill": {"type": "string", "description": "Registered skill name."},
+                        "skill": {
+                            "type": "string",
+                            "description": "Registered skill name, case-insensitive variant, or title-style alias.",
+                        },
                         "name": {"type": "string", "description": "Declared script name."},
                         "positional_args": {
                             "type": "array",
@@ -81,6 +90,10 @@ def register_skill_meta_tools(registry: Any, settings: Any = None) -> None:
                         "named_args": {
                             "type": "object",
                             "default": {},
+                        },
+                        "stdin_data": {
+                            "type": "string",
+                            "description": "Optional string data to pipe to the script's stdin.",
                         },
                         "timeout_seconds": {"type": "number", "minimum": 1},
                     },
@@ -93,10 +106,14 @@ def register_skill_meta_tools(registry: Any, settings: Any = None) -> None:
 
 
 def _bundle_for_skill(registry: Any, skill_name: str) -> tuple[ManifestSkillSpec, SkillBundle]:
+    resolved_skill_name = skill_name
+    resolve_skill_name = getattr(registry, "resolve_skill_name", None)
+    if callable(resolve_skill_name):
+        resolved_skill_name = resolve_skill_name(skill_name, manifest_only=True) or skill_name
     is_skill_enabled = getattr(registry, "is_skill_enabled", None)
-    if callable(is_skill_enabled) and not is_skill_enabled(skill_name):
-        raise SkillBundleError(f"Skill '{skill_name}' is disabled")
-    spec = registry.manifest_skills.get(skill_name)
+    if callable(is_skill_enabled) and not is_skill_enabled(resolved_skill_name):
+        raise SkillBundleError(f"Skill '{resolved_skill_name}' is disabled")
+    spec = registry.manifest_skills.get(resolved_skill_name)
     if spec is None:
         raise SkillBundleError(f"Unknown manifest skill: {skill_name}")
     return spec, SkillBundle(spec)
@@ -127,6 +144,7 @@ async def _run_skill_script(
     named_args = args.get("named_args", {})
     if not isinstance(named_args, dict):
         raise SkillBundleError("named_args must be an object")
+    stdin_data = args.get("stdin_data")
     timeout = float(args.get("timeout_seconds", script.timeout_seconds))
     command = _build_script_command(bundle, script, positional_args, named_args)
     env = _build_script_env(spec)
@@ -147,11 +165,15 @@ async def _run_skill_script(
         *command,
         cwd=cwd,
         env=env,
+        stdin=asyncio.subprocess.PIPE if stdin_data else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        encoded_stdin = stdin_data.encode("utf-8") if stdin_data else None
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(input=encoded_stdin), timeout=timeout
+        )
     except asyncio.TimeoutError as exc:
         process.kill()
         await process.wait()

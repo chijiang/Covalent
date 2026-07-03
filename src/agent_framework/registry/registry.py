@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from typing import Any
 
 from agent_framework.core.agent import AgentSpec
@@ -95,6 +96,32 @@ class FrameworkRegistry:
     def get_skill(self, name: str) -> SkillSpec:
         return self.skills[name]
 
+    @staticmethod
+    def _normalize_lookup_name(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+
+    def resolve_skill_name(self, name: str, *, manifest_only: bool = False) -> str | None:
+        candidates = self.manifest_skills if manifest_only else self.skills
+        raw_name = name.strip()
+        if not raw_name:
+            return None
+        if raw_name in candidates:
+            return raw_name
+
+        lowered_matches = [candidate for candidate in candidates if candidate.lower() == raw_name.lower()]
+        if len(lowered_matches) == 1:
+            return lowered_matches[0]
+
+        normalized = self._normalize_lookup_name(raw_name)
+        if not normalized:
+            return None
+        normalized_matches = [
+            candidate for candidate in candidates if self._normalize_lookup_name(candidate) == normalized
+        ]
+        if len(normalized_matches) == 1:
+            return normalized_matches[0]
+        return None
+
     def get_model_provider(self, config: ProviderConfig) -> ModelAdapter:
         cache_key = config.cache_key()
         adapter = self.model_providers.get(cache_key)
@@ -170,27 +197,43 @@ class FrameworkRegistry:
             except Exception as exc:
                 return ToolResult(name=tool_call.name, content=str(exc), tool_call_id=tool_call.id, is_error=True)
 
-        server_name, remote_tool_name = self._decode_mcp_tool_name(tool_call.name)
+        canonical_mcp_name = self.normalize_mcp_tool_name(tool_call.name)
+        server_name, remote_tool_name = self._decode_mcp_tool_name(canonical_mcp_name)
         if server_name and self.mcp_client:
             server = self.mcp_servers.get(server_name)
             if server is None:
                 return ToolResult(
-                    name=tool_call.name,
+                    name=canonical_mcp_name,
                     content=f"Unknown MCP server: {server_name}",
                     tool_call_id=tool_call.id,
                     is_error=True,
                 )
             try:
                 result = await self.mcp_client.call_tool(server, remote_tool_name, tool_call.arguments)
+                result.name = canonical_mcp_name
                 result.tool_call_id = tool_call.id
                 return result
             except Exception as exc:
                 return ToolResult(
-                    name=tool_call.name,
+                    name=canonical_mcp_name,
                     content=str(exc),
                     tool_call_id=tool_call.id,
                     is_error=True,
                 )
+
+        # Fuzzy match: if the tool name was not found, try to match it against
+        # known tool names. This handles common model mistakes such as:
+        # - Double-encoded MCP names: mcp__query-server__mcp__cXV...__c2Vh...
+        # - Slight misspellings: query_instancel -> query_instances
+        match = self._fuzzy_match_tool_name(tool_call.name)
+        if match is not None:
+            corrected_call = ToolCall(
+                id=tool_call.id,
+                name=match,
+                arguments=tool_call.arguments,
+                raw=tool_call.raw,
+            )
+            return await self.execute_tool_call(agent, corrected_call, context)
 
         return ToolResult(
             name=tool_call.name,
@@ -253,7 +296,12 @@ class FrameworkRegistry:
         if self.mcp_client is None:
             raise RuntimeError("MCP client is not initialized")
         exported: list[dict[str, Any]] = []
-        for tool in await self.mcp_client.list_tools(server):
+        try:
+            tools = await self.mcp_client.list_tools(server)
+        except Exception as exc:
+            logger.warning("Skipping unavailable MCP server '%s': %s", server.name, exc)
+            return exported
+        for tool in tools:
             if allowed_tool_names is not None and tool.tool_name not in allowed_tool_names:
                 continue
             parameters = tool.input_schema
@@ -281,9 +329,36 @@ class FrameworkRegistry:
             return None, name
         try:
             _, server_name, tool_name = name.split("__", 2)
-            return FrameworkRegistry._decode_name_part(server_name), FrameworkRegistry._decode_name_part(tool_name)
+            decoded_server_name = FrameworkRegistry._decode_name_part(server_name)
+            decoded_tool_name = FrameworkRegistry._try_decode_name_part(tool_name)
+            return decoded_server_name, decoded_tool_name if decoded_tool_name is not None else tool_name
         except (ValueError, UnicodeDecodeError):
             return None, name
+
+    @staticmethod
+    def normalize_mcp_tool_name(name: str) -> str:
+        if not name.startswith("mcp__"):
+            return name
+        try:
+            _, server_name, tool_name = name.split("__", 2)
+        except ValueError:
+            return name
+        decoded_server_name = FrameworkRegistry._try_decode_name_part(server_name)
+        if decoded_server_name is None:
+            return name
+        decoded_tool_name = FrameworkRegistry._try_decode_name_part(tool_name)
+        return FrameworkRegistry._encode_mcp_tool_name(
+            decoded_server_name,
+            decoded_tool_name if decoded_tool_name is not None else tool_name,
+        )
+
+    @staticmethod
+    def display_mcp_tool_name(name: str) -> str:
+        normalized = FrameworkRegistry.normalize_mcp_tool_name(name)
+        server_name, tool_name = FrameworkRegistry._decode_mcp_tool_name(normalized)
+        if not server_name:
+            return name
+        return f"mcp__{server_name}__{tool_name}"
 
     async def aclose(self) -> None:
         if self.skill_process_manager:
@@ -306,3 +381,39 @@ class FrameworkRegistry:
     def _decode_name_part(value: str) -> str:
         padding = "=" * (-len(value) % 4)
         return base64.urlsafe_b64decode(f"{value}{padding}").decode("utf-8")
+
+    @staticmethod
+    def _try_decode_name_part(value: str) -> str | None:
+        try:
+            decoded = FrameworkRegistry._decode_name_part(value)
+        except (ValueError, UnicodeDecodeError):
+            return None
+        return decoded if FrameworkRegistry._encode_name_part(decoded) == value.rstrip("=") else None
+
+    def _fuzzy_match_tool_name(self, requested: str) -> str | None:
+        """Try to resolve a misspelled or double-encoded tool name to a known tool.
+
+        Handles cases where the model outputs:
+        - Double-encoded MCP names: mcp__query-server__mcp__cXV...__c2Vh...
+          where the remote tool part is itself an encoded MCP tool name.
+        """
+        if not requested.startswith("mcp__"):
+            return None
+
+        parts = requested.split("__", 2)
+        if len(parts) < 3:
+            return None
+
+        server_raw = parts[1]
+        tool_raw = parts[2]
+
+        # Check if tool_raw itself looks like an MCP name (mcp__b64server__b64tool)
+        if tool_raw.startswith("mcp__"):
+            inner_parts = tool_raw.split("__", 2)
+            if len(inner_parts) == 3:
+                inner_server = self._try_decode_name_part(inner_parts[1])
+                inner_tool = self._try_decode_name_part(inner_parts[2])
+                if inner_server and inner_tool and inner_server in self.mcp_servers:
+                    return self._encode_mcp_tool_name(inner_server, inner_tool)
+
+        return None

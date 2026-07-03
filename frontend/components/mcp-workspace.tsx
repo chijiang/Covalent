@@ -1,10 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ManagementRail } from "@/components/management-rail";
-import { callMcpTool, getConfig, inspectMcpServer, saveConfig } from "@/lib/client-api";
+import { useResizablePanel } from "@/components/use-resizable-panel";
+import { callMcpTool, exportManagementConfig, getConfig, importManagementConfig, inspectMcpServer, saveConfig } from "@/lib/client-api";
+import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
 import type { ConfigDocument, McpInspectResponse, McpServerConfig } from "@/lib/types";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
 type EnvFormEntry = {
   id: string;
@@ -21,22 +30,18 @@ type ServiceFormState = {
   envEntries: EnvFormEntry[];
 };
 
+const MCP_LIST_PANEL_STORAGE_KEY = "agent-framework.service-console.mcp-list-width";
+const DEFAULT_MCP_LIST_PANEL_WIDTH = 324;
+const MIN_MCP_LIST_PANEL_WIDTH = 272;
+const MAX_MCP_LIST_PANEL_WIDTH = 500;
+const MIN_MCP_DETAIL_PANEL_WIDTH = 720;
+
 function createEnvEntry(key = "", value = ""): EnvFormEntry {
   return {
     id: `env-${Math.random().toString(36).slice(2, 10)}`,
     key,
     value,
   };
-}
-
-function envValueToString(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (value == null) {
-    return "";
-  }
-  return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
 function toEnvEntries(env: Record<string, string> | undefined): EnvFormEntry[] {
@@ -54,117 +59,28 @@ function toServiceForm(server: McpServerConfig | null): ServiceFormState {
   };
 }
 
-function detectImportedTransport(source: Record<string, unknown>): McpServerConfig["transport"] {
-  const transportObject =
-    source.transport && !Array.isArray(source.transport) && typeof source.transport === "object"
-      ? (source.transport as Record<string, unknown>)
-      : null;
-
-  const rawTransport =
-    typeof source.transport === "string"
-      ? source.transport
-      : transportObject && typeof transportObject.type === "string"
-        ? transportObject.type
-      : typeof source.type === "string"
-        ? source.type
-        : "";
-
-  switch (rawTransport) {
-    case "stdio":
-    case "command":
-      return "stdio";
-    case "sse":
-      return "sse";
-    case "streamable_http":
-    case "http":
-      return "streamable_http";
-    default:
-      if (typeof source.command === "string" && source.command.trim()) {
-        return "stdio";
-      }
-      if (typeof source.url === "string" && source.url.trim()) {
-        return "streamable_http";
-      }
-      if (typeof source.endpoint === "string" && source.endpoint.trim()) {
-        return "streamable_http";
-      }
-      if (transportObject && typeof transportObject.url === "string" && transportObject.url.trim()) {
-        return "streamable_http";
-      }
-      if (transportObject && typeof transportObject.endpoint === "string" && transportObject.endpoint.trim()) {
-        return "streamable_http";
-      }
-      return "streamable_http";
-  }
-}
-
-function readImportedEnv(source: unknown): Record<string, string> {
-  if (source == null) {
-    return {};
-  }
-  if (!source || Array.isArray(source) || typeof source !== "object") {
-    throw new Error("Imported environment variables must be an object.");
-  }
-  return Object.fromEntries(
-    Object.entries(source).map(([key, value]) => [key, envValueToString(value)]),
-  );
-}
-
 function normalizeImportedServer(name: string, source: unknown): McpServerConfig {
   if (!source || Array.isArray(source) || typeof source !== "object") {
     throw new Error(`Service '${name}' must be an object.`);
   }
 
-  const record = source as Record<string, unknown>;
-  const transportObject =
-    record.transport && !Array.isArray(record.transport) && typeof record.transport === "object"
-      ? (record.transport as Record<string, unknown>)
-      : null;
-  const transport = detectImportedTransport(record);
-  const command = typeof record.command === "string" ? record.command.trim() : "";
-  const endpoint =
-    typeof record.url === "string"
-      ? record.url.trim()
-      : typeof record.endpoint === "string"
-        ? record.endpoint.trim()
-        : transportObject && typeof transportObject.url === "string"
-          ? transportObject.url.trim()
-          : transportObject && typeof transportObject.endpoint === "string"
-            ? transportObject.endpoint.trim()
-        : "";
-  const args = Array.isArray(record.args)
-    ? record.args.map((item) => String(item))
-    : typeof record.args === "string"
-      ? parseArgs(record.args)
-      : [];
-  const env = readImportedEnv(record.env);
-
-  if (transport === "stdio") {
-    if (!command) {
-      throw new Error(`Service '${name}' uses stdio and requires a command.`);
-    }
-    return {
-      name,
-      transport,
-      command,
-      args,
-      url: null,
-      env,
-    };
+  const normalized = normalizeLooseMcpServerConfig({ name, ...(source as Record<string, unknown>) });
+  if (!normalized) {
+    throw new Error(`Service '${name}' is invalid.`);
   }
 
-  if (!endpoint) {
+  if (normalized.transport === "stdio") {
+    if (!normalized.command) {
+      throw new Error(`Service '${name}' uses stdio and requires a command.`);
+    }
+    return normalized;
+  }
+
+  if (!normalized.url) {
     throw new Error(`Service '${name}' requires a URL or endpoint.`);
   }
 
-  return {
-    name,
-    transport,
-    command: null,
-    args: [],
-    url: endpoint,
-    env,
-  };
+  return normalized;
 }
 
 function looksLikeServerMap(record: Record<string, unknown>): boolean {
@@ -212,7 +128,8 @@ function parseImportedServers(value: string): McpServerConfig[] {
       if (!item || Array.isArray(item) || typeof item !== "object") {
         throw new Error(`Service entry ${index + 1} must be an object.`);
       }
-      const name = typeof (item as Record<string, unknown>).name === "string" ? (item as Record<string, unknown>).name?.trim() : "";
+      const rawName = (item as Record<string, unknown>).name;
+      const name = typeof rawName === "string" ? rawName.trim() : "";
       if (!name) {
         throw new Error(`Service entry ${index + 1} is missing a name.`);
       }
@@ -241,8 +158,8 @@ function parseImportedServers(value: string): McpServerConfig[] {
   throw new Error("Service JSON must be a service object, an array of services, or a config with mcpServers / mcp.servers.");
 }
 
-function downloadTextFile(filename: string, content: string) {
-  const blob = new Blob([content], { type: "application/json;charset=utf-8" });
+function downloadTextFile(filename: string, content: string, contentType = "text/plain;charset=utf-8") {
+  const blob = new Blob([content], { type: contentType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -316,6 +233,7 @@ function envEntriesToRecord(entries: EnvFormEntry[]): Record<string, string> {
 }
 
 export function McpWorkspace() {
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
   const [editor, setEditor] = useState("[]\n");
   const [selectedName, setSelectedName] = useState("");
@@ -687,8 +605,49 @@ export function McpWorkspace() {
     });
   }
 
+  function promptImportFile() {
+    importInputRef.current?.click();
+  }
+
+  async function handleExport() {
+    await runAction("export", async () => {
+      const exported = await exportManagementConfig("mcp", "yaml");
+      downloadTextFile(exported.file_name, exported.content, exported.content_type);
+      setMessage(`Exported ${exported.item_count} MCP services.`);
+    });
+  }
+
+  async function handleImportFile(file: File | null) {
+    if (!file) {
+      return;
+    }
+    await runAction("import-file", async () => {
+      const result = await importManagementConfig("mcp", file);
+      setMessage(result.warnings.length ? `${result.summary} ${result.warnings.join(" ")}` : result.summary);
+      await refresh();
+    });
+  }
+
+  const {
+    handleResizeKeyDown,
+    handleResizeStart,
+    isResizing: isInventoryResizing,
+    panelStyle: inventoryPanelStyle,
+    panelWidth: inventoryPanelWidth,
+    panelWidthMax: inventoryPanelWidthMax,
+    panelWidthMin: inventoryPanelWidthMin,
+    splitRef: inventorySplitRef,
+  } = useResizablePanel({
+    collapseMediaQuery: "(max-width: 820px)",
+    defaultWidth: DEFAULT_MCP_LIST_PANEL_WIDTH,
+    maxPanelWidth: MAX_MCP_LIST_PANEL_WIDTH,
+    minPanelWidth: MIN_MCP_LIST_PANEL_WIDTH,
+    minRemainingWidth: MIN_MCP_DETAIL_PANEL_WIDTH,
+    storageKey: MCP_LIST_PANEL_STORAGE_KEY,
+  });
+
   return (
-    <main className="workspace-shell console-page-shell mcp-services-shell">
+    <main className="workspace-shell console-page-shell service-console-shell mcp-services-shell">
       <section
         className="page-section stack-gap-md mcp-services-page"
         style={{
@@ -700,29 +659,47 @@ export function McpWorkspace() {
           gap: 16,
         }}
       >
+        <input
+          accept=".yaml,.yml,.json"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0] || null;
+            event.currentTarget.value = "";
+            void handleImportFile(file);
+          }}
+          ref={importInputRef}
+          type="file"
+        />
         <div className="page-heading-row">
           <div className="stack-gap-xs">
             <h1 className="page-title is-console-title">MCP services</h1>
             <p className="page-subtitle">Register, inspect, and maintain MCP servers with the same list-and-detail workflow used in skill settings.</p>
           </div>
           <div className="page-action-row">
-            <button className="primary-action" onClick={openImportModal} type="button">
+            <Button onClick={openImportModal} type="button">
               Add service
-            </button>
-            <button className="secondary-action" onClick={() => downloadTextFile("mcp.json", editor)} type="button">
-              Export JSON
-            </button>
+            </Button>
+            <Button variant="outline" disabled={busyAction === "export"} onClick={() => void handleExport()} type="button">
+              {busyAction === "export" ? "Exporting" : "Export YAML"}
+            </Button>
+            <Button variant="outline" disabled={busyAction === "import-file"} onClick={promptImportFile} type="button">
+              {busyAction === "import-file" ? "Importing" : "Import file"}
+            </Button>
           </div>
         </div>
 
         {message ? <p className="inline-feedback">{message}</p> : null}
         {error ? <p className="inline-error">{error}</p> : null}
 
-        <section className="management-layout mcp-services-layout">
+        <section className="management-layout service-console-layout mcp-services-layout">
           <ManagementRail />
 
           <div className="management-main mcp-services-main">
-            <section className="mcp-services-grid">
+            <section
+              className={isInventoryResizing ? "mcp-services-grid console-split-layout is-resizing" : "mcp-services-grid console-split-layout"}
+              ref={inventorySplitRef}
+              style={inventoryPanelStyle}
+            >
               <section className="panel-surface mcp-inventory-panel stack-gap-sm">
                 <div className="panel-title-row align-start-row">
                   <div className="stack-gap-2xs grow-block">
@@ -731,13 +708,13 @@ export function McpWorkspace() {
                       {loading ? "Loading MCP inventory..." : `${filteredServers.length} shown · ${draftServers.length} total · ${remoteCount} remote · ${authCount} auth`}
                     </p>
                   </div>
-                  <span className="trace-pill">{inspectedCount} tested</span>
+                  <Badge>{inspectedCount} tested</Badge>
                 </div>
 
                 <div className="console-toolbar mcp-toolbar">
-                  <label className="search-field grow-block">
-                    <input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search MCP services" value={searchQuery} />
-                  </label>
+                  <Label className="search-field grow-block">
+                    <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search MCP services" value={searchQuery} />
+                  </Label>
                   <div className="filter-chip-row">
                     {([
                       ["all", "All"],
@@ -745,14 +722,15 @@ export function McpWorkspace() {
                       ["stdio", "stdio"],
                       ["auth", "Auth"],
                     ] as const).map(([value, label]) => (
-                      <button
-                        className={statusFilter === value ? "filter-chip is-active" : "filter-chip"}
+                      <Button
+                        variant={statusFilter === value ? "default" : "ghost"}
+                        size="sm"
                         key={value}
                         onClick={() => setStatusFilter(value)}
                         type="button"
                       >
                         {label}
-                      </button>
+                      </Button>
                     ))}
                   </div>
                 </div>
@@ -773,13 +751,13 @@ export function McpWorkspace() {
                       >
                         <div className="skill-list-title-row">
                           <strong>{server.name}</strong>
-                          <span className="skill-meta-pill">{transportLabel(server.transport)}</span>
+                          <Badge variant="outline">{transportLabel(server.transport)}</Badge>
                         </div>
                         <p className="skill-list-description">{targetValue(server)}</p>
                         <div className="skill-list-meta">
-                          <span className="skill-meta-pill">{accessLabel(server)}</span>
-                          <span className="skill-meta-pill">{server.transport === "stdio" ? `${server.args?.length || 0} args` : "Remote target"}</span>
-                          <span className="skill-meta-pill">{inspectedTools ? `${inspectedTools} tools` : "Not tested"}</span>
+                          <Badge variant="outline">{accessLabel(server)}</Badge>
+                          <Badge variant="outline">{server.transport === "stdio" ? `${server.args?.length || 0} args` : "Remote"}</Badge>
+                          {/* <Badge variant="outline">{inspectedTools ? `${inspectedTools} tools` : "Not tested"}</Badge> */}
                         </div>
                       </button>
                     );
@@ -788,7 +766,24 @@ export function McpWorkspace() {
                 </div>
               </section>
 
-              <section className="panel-surface skill-detail-panel mcp-detail-panel">
+              <div
+                aria-controls="mcp-detail-panel"
+                aria-label="Resize MCP service inventory panel"
+                aria-orientation="vertical"
+                aria-valuemax={inventoryPanelWidthMax}
+                aria-valuemin={inventoryPanelWidthMin}
+                aria-valuenow={inventoryPanelWidth}
+                className="console-panel-resizer"
+                onKeyDown={handleResizeKeyDown}
+                onMouseDown={handleResizeStart}
+                role="separator"
+                tabIndex={0}
+                title="Drag to resize the inventory panel"
+              >
+                <span className="console-panel-resizer-grip" />
+              </div>
+
+              <section className="panel-surface skill-detail-panel mcp-detail-panel" id="mcp-detail-panel">
                 {selectedServer ? (
                   <div
                     className="mcp-detail-scroll stack-gap-sm"
@@ -806,22 +801,22 @@ export function McpWorkspace() {
                       <div className="stack-gap-xs grow-block">
                         <div className="skill-detail-title-row">
                           <h2 className="panel-title">{selectedServer.name}</h2>
-                          <span className="skill-meta-pill">{transportLabel(selectedServer.transport)}</span>
+                          <Badge variant="outline">{transportLabel(selectedServer.transport)}</Badge>
                         </div>
                         <p className="entity-meta skill-detail-description">{targetValue(selectedServer)}</p>
                         <p className="skill-inline-copy">{transportCopy(selectedServer)}</p>
                       </div>
 
                       <div className="page-action-row skill-detail-actions">
-                        <button className="secondary-action" disabled={busyAction === "inspect"} onClick={() => void inspectSelectedServer()} type="button">
+                        <Button variant="outline" disabled={busyAction === "inspect"} onClick={() => void inspectSelectedServer()} type="button">
                           {busyAction === "inspect" ? "Testing" : "Test connection"}
-                        </button>
-                        <button className="primary-action" disabled={busyAction === "save" || !selectedServer} onClick={() => void saveSelectedServer()} type="button">
+                        </Button>
+                        <Button disabled={busyAction === "save" || !selectedServer} onClick={() => void saveSelectedServer()} type="button">
                           {busyAction === "save" ? "Saving" : "Save service"}
-                        </button>
-                        <button className="danger-action" disabled={busyAction === "delete"} onClick={() => void deleteSelectedServer()} type="button">
+                        </Button>
+                        <Button variant="destructive" disabled={busyAction === "delete"} onClick={() => void deleteSelectedServer()} type="button">
                           {busyAction === "delete" ? "Deleting" : "Delete service"}
-                        </button>
+                        </Button>
                       </div>
                     </div>
 
@@ -849,18 +844,23 @@ export function McpWorkspace() {
                     <div className="mcp-form-grid two-up">
                       <section className="form-section stack-gap-sm">
                         <h3 className="editor-section-title">Basics</h3>
-                        <label className="form-field">
-                          <span>Name</span>
-                          <input onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} value={form.name} />
-                        </label>
-                        <label className="form-field">
-                          <span>Transport</span>
-                          <select onChange={(event) => setForm((current) => ({ ...current, transport: event.target.value as McpServerConfig["transport"] }))} value={form.transport}>
-                            <option value="streamable_http">streamable_http</option>
-                            <option value="sse">sse</option>
-                            <option value="stdio">stdio</option>
-                          </select>
-                        </label>
+                        <div className="form-field">
+                          <Label htmlFor="mcp-service-name">Name</Label>
+                          <Input id="mcp-service-name" onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} value={form.name} />
+                        </div>
+                        <div className="form-field">
+                          <Label htmlFor="mcp-service-transport">Transport</Label>
+                          <Select value={form.transport} onValueChange={(value) => setForm((current) => ({ ...current, transport: value as McpServerConfig["transport"] }))}>
+                            <SelectTrigger id="mcp-service-transport" className="w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="streamable_http">streamable_http</SelectItem>
+                              <SelectItem value="sse">sse</SelectItem>
+                              <SelectItem value="stdio">stdio</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
                       </section>
 
                       <section className="form-section stack-gap-sm">
@@ -868,33 +868,36 @@ export function McpWorkspace() {
                         <p className="skill-inline-copy">
                           Remote transports use Endpoint. stdio uses Command plus optional Arguments.
                         </p>
-                        <label className="form-field">
-                          <span>Endpoint</span>
-                          <input
+                        <div className="form-field">
+                          <Label htmlFor="mcp-service-endpoint">Endpoint</Label>
+                          <Input
+                            id="mcp-service-endpoint"
                             disabled={form.transport === "stdio"}
                             onChange={(event) => setForm((current) => ({ ...current, endpoint: event.target.value }))}
                             placeholder="https://example.com/mcp/http"
                             value={form.endpoint}
                           />
-                        </label>
-                        <label className="form-field">
-                          <span>Command</span>
-                          <input
+                        </div>
+                        <div className="form-field">
+                          <Label htmlFor="mcp-service-command">Command</Label>
+                          <Input
+                            id="mcp-service-command"
                             disabled={form.transport !== "stdio"}
                             onChange={(event) => setForm((current) => ({ ...current, command: event.target.value }))}
                             placeholder="npx"
                             value={form.command}
                           />
-                        </label>
-                        <label className="form-field">
-                          <span>Arguments</span>
-                          <input
+                        </div>
+                        <div className="form-field">
+                          <Label htmlFor="mcp-service-args">Arguments</Label>
+                          <Input
+                            id="mcp-service-args"
                             disabled={form.transport !== "stdio"}
                             onChange={(event) => setForm((current) => ({ ...current, argsText: event.target.value }))}
                             placeholder="-y @modelcontextprotocol/server-filesystem ."
                             value={form.argsText}
                           />
-                        </label>
+                        </div>
                       </section>
                     </div>
 
@@ -907,9 +910,9 @@ export function McpWorkspace() {
                         <div className="stack-gap-2xs grow-block">
                           <p className="entity-meta">Use one row per environment variable.</p>
                         </div>
-                        <button className="secondary-action" onClick={appendEnvEntry} type="button">
+                        <Button variant="outline" onClick={appendEnvEntry} type="button">
                           Add variable
-                        </button>
+                        </Button>
                       </div>
 
                       {form.envEntries.length === 0 ? (
@@ -926,25 +929,27 @@ export function McpWorkspace() {
                                 alignItems: "end",
                               }}
                             >
-                              <label className="form-field">
-                                <span>Key</span>
-                                <input
+                              <div className="form-field">
+                                <Label htmlFor={`env-key-${entry.id}`}>Key</Label>
+                                <Input
+                                  id={`env-key-${entry.id}`}
                                   onChange={(event) => updateEnvEntry(entry.id, "key", event.target.value)}
                                   placeholder="TAVILY_API_KEY"
                                   value={entry.key}
                                 />
-                              </label>
-                              <label className="form-field">
-                                <span>Value</span>
-                                <input
+                              </div>
+                              <div className="form-field">
+                                <Label htmlFor={`env-value-${entry.id}`}>Value</Label>
+                                <Input
+                                  id={`env-value-${entry.id}`}
                                   onChange={(event) => updateEnvEntry(entry.id, "value", event.target.value)}
                                   placeholder="tvly-..."
                                   value={entry.value}
                                 />
-                              </label>
-                              <button className="danger-action" onClick={() => removeEnvEntry(entry.id)} style={{ alignSelf: "end" }} type="button">
+                              </div>
+                              <Button variant="destructive" onClick={() => removeEnvEntry(entry.id)} style={{ alignSelf: "end" }} type="button">
                                 Remove
-                              </button>
+                              </Button>
                             </div>
                           ))}
                         </div>
@@ -957,7 +962,7 @@ export function McpWorkspace() {
                           <h3 className="panel-title">Discovered tools</h3>
                           <p className="entity-meta">Run Test connection after edits to inspect the tool surface exposed by this MCP server.</p>
                         </div>
-                        <span className="trace-pill">{inspection?.tools.length || 0} tools</span>
+                        <Badge>{inspection?.tools.length || 0} tools</Badge>
                       </div>
 
                       {!inspection ? <p className="empty-copy padded-empty">No inspection yet. Test the connection to load tool schemas.</p> : null}
@@ -997,15 +1002,15 @@ export function McpWorkspace() {
                             <h3 className="panel-title">Run selected tool</h3>
                             <p className="entity-meta">Send a JSON object to the selected MCP tool and inspect the raw response.</p>
                           </div>
-                          <button className="secondary-action" disabled={busyAction === "call-tool"} onClick={() => void runSelectedTool()} type="button">
+                          <Button variant="outline" disabled={busyAction === "call-tool"} onClick={() => void runSelectedTool()} type="button">
                             {busyAction === "call-tool" ? "Running" : `Run ${selectedTool.name}`}
-                          </button>
+                          </Button>
                         </div>
 
-                        <label className="form-field">
-                          <span>Arguments JSON</span>
-                          <textarea onChange={(event) => setToolArgumentsText(event.target.value)} rows={7} value={toolArgumentsText} />
-                        </label>
+                        <div className="form-field">
+                          <Label htmlFor="mcp-tool-arguments">Arguments JSON</Label>
+                          <Textarea id="mcp-tool-arguments" onChange={(event) => setToolArgumentsText(event.target.value)} rows={7} value={toolArgumentsText} />
+                        </div>
 
                         <div className="mcp-tool-result">
                           <div className="skill-file-preview-head">
@@ -1028,27 +1033,22 @@ export function McpWorkspace() {
           </div>
         </section>
 
-        {isImportModalOpen ? (
-          <div className="modal-overlay" onClick={closeImportModal} role="presentation">
-            <section className="modal-card is-compact" onClick={(event) => event.stopPropagation()}>
-              <div className="panel-title-row align-start-row">
-                <div className="stack-gap-2xs grow-block">
-                  <h2 className="panel-title">Build Service From JSON</h2>
-                  <p className="entity-meta">Paste a single MCP service JSON object, an array of services, or a config containing `mcpServers` or `mcp.servers`.</p>
-                </div>
-                <button className="secondary-action" onClick={closeImportModal} type="button">
-                  Close
-                </button>
-              </div>
+        <Dialog open={isImportModalOpen} onOpenChange={(open) => { if (!open) closeImportModal(); }}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Build Service From JSON</DialogTitle>
+              <DialogDescription>Paste a single MCP service JSON object, an array of services, or a config containing `mcpServers` or `mcp.servers`.</DialogDescription>
+            </DialogHeader>
 
-              <div className="new-skill-shell stack-gap-md">
-                {error ? <p className="inline-error">{error}</p> : null}
+            <div className="stack-gap-md">
+              {error ? <p className="inline-error">{error}</p> : null}
 
-                <label className="form-field">
-                  <span>Service JSON</span>
-                  <textarea
-                    onChange={(event) => setImportJsonText(event.target.value)}
-                    placeholder={`{
+              <div className="form-field">
+                <Label htmlFor="import-service-json">Service JSON</Label>
+                <Textarea
+                  id="import-service-json"
+                  onChange={(event) => setImportJsonText(event.target.value)}
+                  placeholder={`{
   "mcpServers": {
     "query-server": {
       "transport": {
@@ -1058,30 +1058,29 @@ export function McpWorkspace() {
     }
   }
 }`}
-                    rows={16}
-                    value={importJsonText}
-                  />
-                </label>
-
-                <p className="skill-inline-copy">
-                  Import creates draft services in the list immediately. Review anything you want to adjust, then use Save service to persist the config.
-                </p>
-
-                <div className="align-end-row page-action-row">
-                  <button className="secondary-action" onClick={createDraftServiceForManualSetup} type="button">
-                    Manual setup
-                  </button>
-                  <button className="secondary-action" onClick={closeImportModal} type="button">
-                    Cancel
-                  </button>
-                  <button className="primary-action" disabled={busyAction === "import"} onClick={importServicesFromJson} type="button">
-                    {busyAction === "import" ? "Importing" : "Build service"}
-                  </button>
-                </div>
+                  rows={16}
+                  value={importJsonText}
+                />
               </div>
-            </section>
-          </div>
-        ) : null}
+
+              <p className="skill-inline-copy">
+                Import creates draft services in the list immediately. Review anything you want to adjust, then use Save service to persist the config.
+              </p>
+
+              <div className="align-end-row page-action-row">
+                <Button variant="outline" onClick={createDraftServiceForManualSetup} type="button">
+                  Manual setup
+                </Button>
+                <Button variant="outline" onClick={closeImportModal} type="button">
+                  Cancel
+                </Button>
+                <Button disabled={busyAction === "import"} onClick={importServicesFromJson} type="button">
+                  {busyAction === "import" ? "Importing" : "Build service"}
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </section>
     </main>
   );

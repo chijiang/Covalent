@@ -1,13 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { ManagementRail } from "@/components/management-rail";
+import { useResizablePanel } from "@/components/use-resizable-panel";
 import {
   disableSkill,
   enableSkill,
+  exportManagementConfig,
+  exportSkillBundle,
   getSkillPreview,
   getSkills,
+  importManagementConfig,
   installSkill,
   uninstallSkill,
   uploadSkill,
@@ -17,6 +26,11 @@ import type { SkillPreviewResponse, SkillSummary } from "@/lib/types";
 type SkillModalMode = "new" | null;
 type PreviewFile = SkillPreviewResponse["files"][number];
 const EMPTY_PREVIEW_FILES: PreviewFile[] = [];
+const SKILL_LIST_PANEL_STORAGE_KEY = "agent-framework.service-console.skills-list-width";
+const DEFAULT_SKILL_LIST_PANEL_WIDTH = 324;
+const MIN_SKILL_LIST_PANEL_WIDTH = 272;
+const MAX_SKILL_LIST_PANEL_WIDTH = 500;
+const MIN_SKILL_DETAIL_PANEL_WIDTH = 700;
 
 type PreviewTreeNode = {
   name: string;
@@ -137,7 +151,18 @@ function skillSourceLabel(skill: SkillSummary): string {
   return isGitSkill(skill) ? "Git" : "Local";
 }
 
+function downloadTextFile(filename: string, content: string, contentType = "text/plain;charset=utf-8") {
+  const blob = new Blob([content], { type: contentType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export function SkillsWorkspace() {
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [selectedSkillName, setSelectedSkillName] = useState("");
   const [preview, setPreview] = useState<SkillPreviewResponse | null>(null);
@@ -434,29 +459,102 @@ export function SkillsWorkspace() {
     });
   }
 
+  async function handleExportSkillBundle() {
+    if (!selectedSkill) {
+      return;
+    }
+    const skillName = selectedSkill.name;
+    await runAction("export-bundle", async () => {
+      await exportSkillBundle(skillName);
+      setMessage(`Exported "${skillName}" as ZIP.`);
+    });
+  }
+
+  function promptImportFile() {
+    importInputRef.current?.click();
+  }
+
+  async function handleExport() {
+    await runAction("export", async () => {
+      const exported = await exportManagementConfig("skills", "yaml");
+      downloadTextFile(exported.file_name, exported.content, exported.content_type);
+      setMessage(`Exported ${exported.item_count} skills.`);
+    });
+  }
+
+  async function handleImportFile(file: File | null) {
+    if (!file) {
+      return;
+    }
+    await runAction("import-file", async () => {
+      const result = await importManagementConfig("skills", file);
+      setMessage(result.warnings.length ? `${result.summary} ${result.warnings.join(" ")}` : result.summary);
+      await refresh();
+    });
+  }
+
+  const {
+    handleResizeKeyDown,
+    handleResizeStart,
+    isResizing: isInventoryResizing,
+    panelStyle: inventoryPanelStyle,
+    panelWidth: inventoryPanelWidth,
+    panelWidthMax: inventoryPanelWidthMax,
+    panelWidthMin: inventoryPanelWidthMin,
+    splitRef: inventorySplitRef,
+  } = useResizablePanel({
+    collapseMediaQuery: "(max-width: 820px)",
+    defaultWidth: DEFAULT_SKILL_LIST_PANEL_WIDTH,
+    maxPanelWidth: MAX_SKILL_LIST_PANEL_WIDTH,
+    minPanelWidth: MIN_SKILL_LIST_PANEL_WIDTH,
+    minRemainingWidth: MIN_SKILL_DETAIL_PANEL_WIDTH,
+    storageKey: SKILL_LIST_PANEL_STORAGE_KEY,
+  });
+
   return (
-    <main className="workspace-shell console-page-shell skill-settings-shell">
+    <main className="workspace-shell console-page-shell service-console-shell skill-settings-shell">
       <section className="page-section stack-gap-md skill-settings-page">
+        <input
+          accept=".yaml,.yml,.json"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0] || null;
+            event.currentTarget.value = "";
+            void handleImportFile(file);
+          }}
+          ref={importInputRef}
+          type="file"
+        />
         <div className="page-heading-row">
           <div className="stack-gap-xs">
             <h1 className="page-title is-console-title">Skill settings</h1>
             <p className="page-subtitle">Install, inspect, and govern which skills agents can actually see and use.</p>
           </div>
           <div className="page-action-row">
-            <button className="primary-action" onClick={openCreateSkillModal} type="button">
+            <Button variant="outline" disabled={busyAction === "export"} onClick={() => void handleExport()} type="button">
+              {busyAction === "export" ? "Exporting" : "Export YAML"}
+            </Button>
+            <Button variant="outline" disabled={busyAction === "import-file"} onClick={promptImportFile} type="button">
+              {busyAction === "import-file" ? "Importing" : "Import file"}
+            </Button>
+            <Button onClick={openCreateSkillModal} type="button">
               Add skill
-            </button>
+            </Button>
           </div>
         </div>
 
         {message ? <p className="inline-feedback">{message}</p> : null}
         {error ? <p className="inline-error">{error}</p> : null}
 
-        <section className="management-layout skill-settings-layout">
+        <section className="management-layout service-console-layout skill-settings-layout">
           <ManagementRail />
 
           <div className="management-main skill-settings-main">
-            <section className="skill-management-grid skill-settings-grid">
+            <section
+              className={isInventoryResizing ? "skill-management-grid skill-settings-grid console-split-layout is-resizing" : "skill-management-grid skill-settings-grid console-split-layout"}
+              ref={inventorySplitRef}
+              style={inventoryPanelStyle}
+            >
               <section className="panel-surface skill-inventory-panel stack-gap-sm">
                 <div className="panel-title-row align-start-row">
                   <div className="stack-gap-2xs grow-block">
@@ -465,27 +563,28 @@ export function SkillsWorkspace() {
                       {loading ? "Loading skill inventory..." : `${filteredSkills.length} shown · ${skills.length} total · ${enabledCount} enabled · ${gitCount} git`}
                     </p>
                   </div>
-                  <span className="trace-pill">{enabledCount} active</span>
+                  <Badge>{enabledCount} active</Badge>
                 </div>
 
                 <div className="console-toolbar skill-toolbar">
-                  <label className="search-field grow-block">
-                    <input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search skills, tools, or files" value={searchQuery} />
-                  </label>
+                  <Label className="search-field grow-block">
+                    <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search skills, tools, or files" value={searchQuery} />
+                  </Label>
                   <div className="filter-chip-row">
                     {([
                       ["all", "All"],
                       ["local", "Local"],
                       ["git", "Git"],
                     ] as const).map(([value, label]) => (
-                      <button
-                        className={sourceFilter === value ? "filter-chip is-active" : "filter-chip"}
+                      <Button
+                        variant={sourceFilter === value ? "default" : "ghost"}
+                        size="sm"
                         key={value}
                         onClick={() => setSourceFilter(value)}
                         type="button"
                       >
                         {label}
-                      </button>
+                      </Button>
                     ))}
                   </div>
                 </div>
@@ -503,15 +602,15 @@ export function SkillsWorkspace() {
                         >
                           <div className="skill-list-title-row">
                             <strong>{skill.name}</strong>
-                            <span className={`skill-status-badge is-${skillStatusTone(skill.enabled)}`}>
+                            <Badge variant={skill.enabled ? "default" : "secondary"}>
                               {skillStatusLabel(skill.enabled)}
-                            </span>
+                            </Badge>
                           </div>
                           <p className="skill-list-description">{skill.description || "No description provided."}</p>
                           <div className="skill-list-meta">
-                            <span className="skill-meta-pill">{skillSourceLabel(skill)}</span>
-                            <span className="skill-meta-pill">{skill.runtime_type || "static"}</span>
-                            <span className="skill-meta-pill">{skill.tools.length} tools</span>
+                            <Badge variant="outline">{skillSourceLabel(skill)}</Badge>
+                            <Badge variant="outline">{skill.runtime_type || "static"}</Badge>
+                            <Badge variant="outline">{skill.tools.length} tools</Badge>
                           </div>
                         </button>
                       ))
@@ -519,16 +618,33 @@ export function SkillsWorkspace() {
                 </div>
               </section>
 
-              <section className="panel-surface skill-detail-panel">
+              <div
+                aria-controls="skill-detail-panel"
+                aria-label="Resize skill inventory panel"
+                aria-orientation="vertical"
+                aria-valuemax={inventoryPanelWidthMax}
+                aria-valuemin={inventoryPanelWidthMin}
+                aria-valuenow={inventoryPanelWidth}
+                className="console-panel-resizer"
+                onKeyDown={handleResizeKeyDown}
+                onMouseDown={handleResizeStart}
+                role="separator"
+                tabIndex={0}
+                title="Drag to resize the inventory panel"
+              >
+                <span className="console-panel-resizer-grip" />
+              </div>
+
+              <section className="panel-surface skill-detail-panel" id="skill-detail-panel">
                 {selectedSkill ? (
                   <div className="skill-detail-scroll stack-gap-sm">
                     <div className="skill-detail-header">
                       <div className="stack-gap-xs grow-block">
                         <div className="skill-detail-title-row">
                           <h2 className="panel-title">{selectedSkill.name}</h2>
-                          <span className={`skill-status-badge is-${skillStatusTone(selectedSkill.enabled)}`}>
+                          <Badge variant={selectedSkill.enabled ? "default" : "secondary"}>
                             {skillStatusLabel(selectedSkill.enabled)}
-                          </span>
+                          </Badge>
                         </div>
                         <p className="entity-meta skill-detail-description">{selectedSkill.description || "No description provided."}</p>
                         <p className="skill-inline-copy">
@@ -539,8 +655,8 @@ export function SkillsWorkspace() {
                       </div>
 
                       <div className="page-action-row skill-detail-actions">
-                        <button
-                          className="secondary-action"
+                        <Button
+                          variant="outline"
                           disabled={busyAction === "enable-skill" || busyAction === "disable-skill"}
                           onClick={() => void handleToggleSkill()}
                           type="button"
@@ -552,12 +668,20 @@ export function SkillsWorkspace() {
                               : selectedSkill.enabled
                                 ? "Disable skill"
                                 : "Enable skill"}
-                        </button>
+                        </Button>
                         {canDeleteSelectedSkill ? (
-                          <button className="danger-action" disabled={busyAction === "delete-skill"} onClick={() => void handleDeleteSkill()} type="button">
+                          <Button variant="destructive" disabled={busyAction === "delete-skill"} onClick={() => void handleDeleteSkill()} type="button">
                             {busyAction === "delete-skill" ? "Deleting" : "Delete skill"}
-                          </button>
+                          </Button>
                         ) : null}
+                        <Button
+                          variant="outline"
+                          disabled={busyAction === "export-bundle"}
+                          onClick={() => void handleExportSkillBundle()}
+                          type="button"
+                        >
+                          {busyAction === "export-bundle" ? "Exporting" : "Export ZIP"}
+                        </Button>
                       </div>
                     </div>
 
@@ -593,7 +717,7 @@ export function SkillsWorkspace() {
                         <div className="stack-gap-2xs grow-block">
                           <h3 className="panel-title">Bundled files</h3>
                         </div>
-                        <span className="trace-pill">{previewFiles.length} files</span>
+                        <Badge>{previewFiles.length} files</Badge>
                       </div>
 
                       {previewLoading ? <p className="empty-copy padded-empty">Loading file preview...</p> : null}
@@ -627,43 +751,36 @@ export function SkillsWorkspace() {
           </div>
         </section>
 
-        {modalMode === "new" ? (
-          <div className="modal-overlay" onClick={closeCreateSkillModal} role="presentation">
-            <section className="modal-card is-compact" onClick={(event) => event.stopPropagation()}>
-              <div className="panel-title-row align-start-row">
-                <div className="stack-gap-2xs grow-block">
-                  <h2 className="panel-title">Add skill</h2>
-                  <p className="entity-meta">Install from a zip bundle or sync from a Git repository.</p>
-                </div>
-                <button className="secondary-action" onClick={closeCreateSkillModal} type="button">
-                  Close
-                </button>
+        <Dialog open={modalMode === "new"} onOpenChange={(open) => { if (!open) closeCreateSkillModal(); }}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Add skill</DialogTitle>
+              <DialogDescription>Install from a zip bundle or sync from a Git repository.</DialogDescription>
+            </DialogHeader>
+
+            <div className="stack-gap-md">
+              <label className="upload-dropzone">
+                <span className="upload-title">Upload zip bundle</span>
+                <span className="upload-copy">{uploadFile?.name || "Choose a .zip package from your machine"}</span>
+                <span className="secondary-action file-picker-action">
+                  Select zip
+                  <input accept=".zip" hidden onChange={(event) => setUploadFile(event.target.files?.[0] || null)} type="file" />
+                </span>
+              </label>
+
+              <div className="form-field is-modal-field">
+                <Label>Git repository URL</Label>
+                <Input onChange={(event) => setGitUrl(event.target.value)} placeholder="https://github.com/org/repo.git" value={gitUrl} />
               </div>
 
-              <div className="new-skill-shell stack-gap-md">
-                <label className="upload-dropzone">
-                  <span className="upload-title">Upload zip bundle</span>
-                  <span className="upload-copy">{uploadFile?.name || "Choose a .zip package from your machine"}</span>
-                  <span className="secondary-action file-picker-action">
-                    Select zip
-                    <input accept=".zip" hidden onChange={(event) => setUploadFile(event.target.files?.[0] || null)} type="file" />
-                  </span>
-                </label>
-
-                <label className="form-field is-modal-field">
-                  <span>Git repository URL</span>
-                  <input onChange={(event) => setGitUrl(event.target.value)} placeholder="https://github.com/org/repo.git" value={gitUrl} />
-                </label>
-
-                <div className="align-end-row page-action-row">
-                  <button className="primary-action" disabled={busyAction === "upload" || busyAction === "install-git"} onClick={() => void submitNewSkill()} type="button">
-                    {busyAction === "upload" || busyAction === "install-git" ? "Installing" : "Install skill"}
-                  </button>
-                </div>
+              <div className="align-end-row page-action-row">
+                <Button disabled={busyAction === "upload" || busyAction === "install-git"} onClick={() => void submitNewSkill()} type="button">
+                  {busyAction === "upload" || busyAction === "install-git" ? "Installing" : "Install skill"}
+                </Button>
               </div>
-            </section>
-          </div>
-        ) : null}
+            </div>
+          </DialogContent>
+        </Dialog>
       </section>
     </main>
   );

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from logging.config import fileConfig
+import logging
 import sys
 from pathlib import Path
 
@@ -20,7 +20,7 @@ from agent_framework.infra.settings import AppSettings  # noqa: E402
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    logging.getLogger("alembic").setLevel(logging.INFO)
 
 settings = AppSettings()
 if settings.database_url:

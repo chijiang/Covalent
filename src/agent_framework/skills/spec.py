@@ -64,7 +64,7 @@ class ProcessConfig(BaseModel):
     max_instances: int = 1
     idle_timeout_seconds: float = 300.0
     startup_timeout_seconds: float = 15.0
-    max_request_timeout_seconds: float = 60.0
+    max_request_timeout_seconds: float = 500.0
 
 
 class HealthCheckConfig(BaseModel):
