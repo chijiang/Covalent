@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 import uvicorn
 
-from agent_framework.api.app import create_app, sync_env_seeds
+# from api.app import create_app, sync_env_seeds
 
 
 def _parse_args() -> argparse.Namespace:
@@ -26,19 +26,19 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def _run_sync_config(overwrite: bool) -> None:
-    app = create_app()
-    async with app.router.lifespan_context(app):
-        result = await sync_env_seeds(app, ["mcp", "skill_sources", "agents"], overwrite=overwrite)
-        for item in result.results:
-            print(f"{item.kind}: {item.status} ({item.items})")
+# async def _run_sync_config(overwrite: bool) -> None:
+#     app = create_app()
+#     async with app.router.lifespan_context(app):
+#         result = await sync_env_seeds(app, ["mcp", "skill_sources", "agents"], overwrite=overwrite)
+#         for item in result.results:
+#             print(f"{item.kind}: {item.status} ({item.items})")
 
 
 def main() -> None:
     args = _parse_args()
-    if args.command == "sync-config":
-        asyncio.run(_run_sync_config(args.overwrite))
-        return
+    # if args.command == "sync-config":
+    #     asyncio.run(_run_sync_config(args.overwrite))
+    #     return
 
     host = getattr(args, "host", "0.0.0.0")
     port = getattr(args, "port", 5170)

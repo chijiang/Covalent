@@ -1,6 +1,21 @@
 export type Capability = "chat" | "react" | "tool_calling" | "streaming" | string;
 
-export type ConfigKind = "agents" | "mcp" | "skill_sources";
+export type ConfigKind = "agents" | "mcp" | "skill_sources" | "providers";
+export type ManagementKind = "agents" | "mcp" | "skills";
+export type ManagementExportFormat = "yaml" | "json";
+
+export type ProviderEntry = {
+  name: string;
+  provider_type: string;
+  base_url: string;
+  api_key?: string | null;
+  has_api_key?: boolean;
+  api_key_masked?: string | null;
+  default_model?: string | null;
+  is_default: boolean;
+  position: number;
+  models?: string[];
+};
 
 export type ProviderConfig = {
   provider: string;
@@ -12,9 +27,7 @@ export type ProviderConfig = {
 };
 
 export type ProviderSummary = {
-  provider: string;
   model: string;
-  base_url?: string | null;
   timeout_seconds: number;
 };
 
@@ -30,6 +43,7 @@ export type AgentConfig = {
   description: string;
   system_prompt: string;
   reasoning_prompt?: string;
+  reasoning_level?: string;
   provider: ProviderConfig;
   skills: string[];
   local_tools?: string[];
@@ -51,6 +65,7 @@ export type AgentDetail = {
   description: string;
   system_prompt: string;
   reasoning_prompt: string;
+  reasoning_level: string;
   skills: string[];
   local_tools: string[];
   delegate_agents: string[];
@@ -59,7 +74,14 @@ export type AgentDetail = {
   provider: ProviderSummary;
 };
 
+export type LocalToolSummary = {
+  name: string;
+  description?: string | null;
+  enabled_by_default: boolean;
+};
+
 export type AgentInputPart = Record<string, unknown>;
+export type AttachmentDeliveryMode = "parse" | "workspace";
 
 export type AgentRunRequest = {
   input: string | AgentInputPart[];
@@ -74,6 +96,7 @@ export type AttachmentUploadItem = {
   last_modified: number;
   workspace_path: string;
   uploaded_at: string;
+  delivery_mode: AttachmentDeliveryMode;
   kind: "text" | "image" | "pdf" | "binary";
   summary: string;
   model_prompt_text: string;
@@ -154,14 +177,11 @@ export type ConfigDocument = {
   lastModified: string | null;
 };
 
-export type SeedSyncResult = {
-  kind: ConfigKind;
-  status: "seeded" | "overwritten" | "skipped" | "empty_seed";
-  items: number;
-};
-
-export type SeedSyncResponse = {
-  results: SeedSyncResult[];
+export type ConfigDocumentUpdateMetadata = {
+  agent_renames?: Array<{
+    old_name: string;
+    new_name: string;
+  }>;
 };
 
 export type McpServerConfig = {
@@ -229,4 +249,21 @@ export type SkillInstallResponse = {
   version: string;
   description: string;
   status: "installed" | "already_exists";
+};
+
+export type ManagementExportResponse = {
+  kind: ManagementKind;
+  format: ManagementExportFormat;
+  file_name: string;
+  content_type: string;
+  content: string;
+  item_count: number;
+};
+
+export type ManagementImportResponse = {
+  kind: ManagementKind;
+  imported_items: number;
+  applied_items: number;
+  summary: string;
+  warnings: string[];
 };

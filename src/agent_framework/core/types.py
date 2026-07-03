@@ -77,6 +77,7 @@ class Message(BaseModel):
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    reasoning_content: str | None = ''
 
 
 class GenerationRequest(BaseModel):
@@ -84,9 +85,16 @@ class GenerationRequest(BaseModel):
     messages: list[Message]
     system_prompt: str | None = None
     tools: list[dict[str, Any]] = Field(default_factory=list)
+    reasoning_level: str = "none"
     temperature: float = 0.0
     max_tokens: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TokenUsage(BaseModel):
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
 
 
 class GenerationResponse(BaseModel):
@@ -94,6 +102,7 @@ class GenerationResponse(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     assistant_message: Message | None = None
     raw_response: dict[str, Any] = Field(default_factory=dict)
+    usage: TokenUsage | None = None
 
 
 class RunContext(BaseModel):

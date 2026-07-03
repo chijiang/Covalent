@@ -4,22 +4,27 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 import json
 import logging
+import os
 import mimetypes
 from pathlib import Path
 import re
 import shutil
 import tempfile
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 import zipfile
 
+import anyio
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import ValidationError
+import yaml
 
 from agent_framework.api.schemas import (
     AgentRunRequest,
     AgentRunResponse,
+    LocalToolSummaryResponse,
     AgentSummaryResponse,
     AttachmentUploadResponse,
     AttachmentUploadItemResponse,
@@ -30,17 +35,20 @@ from agent_framework.api.schemas import (
     ChatSessionUpdateRequest,
     ConfigDocumentResponse,
     ConfigDocumentUpdateRequest,
+    ManagementExportFormat,
+    ManagementExportResponse,
+    ManagementImportResponse,
+    ManagementKind,
     McpInspectRequest,
     McpInspectResponse,
     McpToolCallRequest,
     McpToolCallResponse,
     McpToolSummaryResponse,
     ProviderSummaryResponse,
-    SeedSyncRequest,
-    SeedSyncResponse,
-    SeedSyncResult,
     SkillInstallRequest,
     SkillInstallResponse,
+    SkillManagementItemResponse,
+    SkillManagementSourceResponse,
     SkillPreviewFileResponse,
     SkillPreviewResponse,
     SkillSummaryResponse,
@@ -53,6 +61,7 @@ from agent_framework.infra.config_store import ConfigKind, ConfigStore, Persiste
 from sqlalchemy import text
 
 from agent_framework.infra.db import DatabaseManager
+from agent_framework.infra.migrations import run_database_migrations
 from agent_framework.infra.memory import (
     ChatActivityItem,
     ChatSessionRecord,
@@ -82,12 +91,24 @@ SSE_EVENT_FINAL = "final"
 SSE_EVENT_TOOL_CALLS = "tool_calls"
 SSE_EVENT_TOOL_RESULTS = "tool_results"
 SSE_EVENT_ITERATION = "iteration"
+SSE_EVENT_THOUGHT = "thought"
 SSE_EVENT_ERROR = "error"
 SSE_EVENT_INPUT_REQUIRED = "input_required"
 SSE_EVENT_INPUT_RESOLVED = "input_resolved"
 SSE_EVENT_SESSION = "session"
 SSE_EVENT_CONTEXT_WINDOW = "context_window"
 SSE_EVENT_MODEL_CALL = "model_call"
+SSE_EVENT_DELEGATE_PREFIX = "delegate_"
+SSE_EVENT_DELEGATE_ASSISTANT = f"{SSE_EVENT_DELEGATE_PREFIX}{SSE_EVENT_ASSISTANT}"
+SSE_EVENT_DELEGATE_FINAL = f"{SSE_EVENT_DELEGATE_PREFIX}{SSE_EVENT_FINAL}"
+SSE_EVENT_DELEGATE_TOOL_CALLS = f"{SSE_EVENT_DELEGATE_PREFIX}{SSE_EVENT_TOOL_CALLS}"
+SSE_EVENT_DELEGATE_TOOL_RESULTS = f"{SSE_EVENT_DELEGATE_PREFIX}{SSE_EVENT_TOOL_RESULTS}"
+SSE_EVENT_DELEGATE_ITERATION = f"{SSE_EVENT_DELEGATE_PREFIX}{SSE_EVENT_ITERATION}"
+SSE_EVENT_DELEGATE_THOUGHT = f"{SSE_EVENT_DELEGATE_PREFIX}{SSE_EVENT_THOUGHT}"
+SSE_EVENT_DELEGATE_ERROR = f"{SSE_EVENT_DELEGATE_PREFIX}{SSE_EVENT_ERROR}"
+SSE_EVENT_DELEGATE_INPUT_REQUIRED = f"{SSE_EVENT_DELEGATE_PREFIX}{SSE_EVENT_INPUT_REQUIRED}"
+SSE_EVENT_DELEGATE_CONTEXT_WINDOW = f"{SSE_EVENT_DELEGATE_PREFIX}{SSE_EVENT_CONTEXT_WINDOW}"
+SSE_EVENT_DELEGATE_MODEL_CALL = f"{SSE_EVENT_DELEGATE_PREFIX}{SSE_EVENT_MODEL_CALL}"
 
 DELEGATE_TOOL_PREFIX = "agent__"
 
@@ -99,10 +120,31 @@ WORKSPACE_AGENT_TOOLS = (
     "delete_workspace_entry",
     "publish_downloadable_file",
 )
-BUILTIN_AGENT_TOOLS = ("echo", "get_current_time", "ask_user", *WORKSPACE_AGENT_TOOLS)
+BUILTIN_AGENT_TOOLS = ("get_current_time", "ask_user", *WORKSPACE_AGENT_TOOLS)
+DEFAULT_AGENT_LOCAL_TOOLS = ("get_current_time",)
 _SAFE_STORAGE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _SKILL_PREVIEW_IGNORED_DIRS = {".git", ".next", ".venv", "__pycache__", "node_modules", "venv"}
 _SKILL_PREVIEW_MAX_BYTES = 128 * 1024
+TRACE_ACTIVITY_EVENTS = {
+    SSE_EVENT_TOOL_CALLS,
+    SSE_EVENT_TOOL_RESULTS,
+    SSE_EVENT_ITERATION,
+    SSE_EVENT_THOUGHT,
+    SSE_EVENT_ERROR,
+    SSE_EVENT_INPUT_REQUIRED,
+    SSE_EVENT_CONTEXT_WINDOW,
+    SSE_EVENT_MODEL_CALL,
+    SSE_EVENT_DELEGATE_ASSISTANT,
+    SSE_EVENT_DELEGATE_FINAL,
+    SSE_EVENT_DELEGATE_TOOL_CALLS,
+    SSE_EVENT_DELEGATE_TOOL_RESULTS,
+    SSE_EVENT_DELEGATE_ITERATION,
+    SSE_EVENT_DELEGATE_THOUGHT,
+    SSE_EVENT_DELEGATE_ERROR,
+    SSE_EVENT_DELEGATE_INPUT_REQUIRED,
+    SSE_EVENT_DELEGATE_CONTEXT_WINDOW,
+    SSE_EVENT_DELEGATE_MODEL_CALL,
+}
 
 
 def _safe_extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
@@ -131,26 +173,32 @@ def _dedupe_strings(values: list[str]) -> list[str]:
 def _default_agent_local_tools(settings: AppSettings | None) -> list[str]:
     if settings is not None and not settings.enable_builtin_tools:
         return []
-    return list(BUILTIN_AGENT_TOOLS)
+    return list(DEFAULT_AGENT_LOCAL_TOOLS)
 
 
 def _normalize_agent_payload_item(item: dict[str, object], settings: AppSettings | None) -> dict[str, object]:
     normalized = dict(item)
     legacy_reasoning_skill_name = settings.reasoning_skill_name if settings is not None else LEGACY_REASONING_SKILL_NAME
     skills = _dedupe_strings([str(value) for value in normalized.get("skills", []) if isinstance(value, str)])
-    local_tools = _dedupe_strings([str(value) for value in normalized.get("local_tools", []) if isinstance(value, str)])
+    local_tools = [t for t in _dedupe_strings([str(value) for value in normalized.get("local_tools", []) if isinstance(value, str)]) if t != "echo"]
     reasoning_prompt_raw = normalized.get("reasoning_prompt")
     reasoning_prompt = reasoning_prompt_raw.strip() if isinstance(reasoning_prompt_raw, str) else ""
+    reasoning_level_raw = normalized.get("reasoning_level")
+    reasoning_level = reasoning_level_raw.strip().lower() if isinstance(reasoning_level_raw, str) else "none"
+    if not reasoning_level:
+        reasoning_level = "none"
 
     if legacy_reasoning_skill_name in skills:
         skills = [skill for skill in skills if skill != legacy_reasoning_skill_name]
         if not reasoning_prompt and settings is not None:
             reasoning_prompt = settings.reasoning_skill_instructions
 
-    default_tools = _default_agent_local_tools(settings)
     normalized["skills"] = skills
-    normalized["local_tools"] = _dedupe_strings(local_tools + default_tools)
+    if "local_tools" not in item:
+        local_tools = _dedupe_strings(local_tools + _default_agent_local_tools(settings))
+    normalized["local_tools"] = local_tools
     normalized["reasoning_prompt"] = reasoning_prompt
+    normalized["reasoning_level"] = reasoning_level
     return normalized
 
 
@@ -171,7 +219,7 @@ async def build_registry(
         for server in mcp_servers:
             registry.register_mcp_server(server)
 
-    provider_config = default_provider_config(settings)
+    provider_config = await _resolve_default_provider(settings, config_store)
     agent_payload = await config_store.ensure_document(
         "agents",
         _seed_agent_payload(settings, provider_config, mcp_servers),
@@ -195,7 +243,7 @@ async def lifespan(app: FastAPI):
     database_url = settings.database_url
     if not database_url:
         raise RuntimeError("AGENT_FRAMEWORK_DATABASE_URL must be set when using persistent config storage")
-
+    await anyio.to_thread.run_sync(run_database_migrations, database_url.replace('+asyncpg', ''))
     db_manager = DatabaseManager(database_url)
     config_store = ConfigStore(db_manager.session_factory)
     registry, loader, skill_source_payload = await build_registry(settings, config_store)
@@ -218,6 +266,10 @@ async def lifespan(app: FastAPI):
         registry,
         session_store=app.state.session_store,
         session_history_limit=settings.session_history_limit,
+        context_token_budget=settings.context_token_budget,
+        context_compact_threshold=settings.context_compact_threshold,
+        context_summary_model=settings.context_summary_model,
+        enable_llm_summarization=settings.enable_llm_summarization,
     )
 
     yield
@@ -260,6 +312,36 @@ def create_app() -> FastAPI:
 
         return checks
 
+    @app.get("/providers/{provider_name}/models")
+    async def list_provider_models(provider_name: str) -> list[str]:
+        """Fetch available models from an OpenAI-compatible provider."""
+        settings: AppSettings = app.state.settings
+        config_store: ConfigStore = app.state.config_store
+        providers = await config_store.get_document("providers")
+        target = None
+        for p in providers:
+            if p.get("name") == provider_name:
+                target = p
+                break
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"Provider '{provider_name}' not found")
+        base_url = str(target.get("base_url", ""))
+        api_key = target.get("api_key")
+        if not base_url or not api_key:
+            raise HTTPException(status_code=400, detail="Provider missing base_url or api_key")
+        try:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=settings.request_timeout_seconds,
+            )
+            result = await client.models.list()
+            models = sorted([m.id for m in result.data if m.id])
+            return models
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch models: {exc}") from exc
+
     @app.get("/sessions")
     async def list_sessions() -> list[ChatSessionSummaryResponse]:
         session_store: SessionStore = app.state.session_store
@@ -289,6 +371,7 @@ def create_app() -> FastAPI:
         if not await session_store.delete_session(session_id):
             raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
         shutil.rmtree(_attachment_session_dir(settings.workspace_root(), session_id), ignore_errors=True)
+        shutil.rmtree(_chat_upload_session_dir(settings, session_id), ignore_errors=True)
         shutil.rmtree(_download_session_dir(settings.workspace_root(), session_id), ignore_errors=True)
         if settings.session_workspace_enabled:
             shutil.rmtree(settings.session_workspace_dir(session_id), ignore_errors=True)
@@ -297,6 +380,7 @@ def create_app() -> FastAPI:
     @app.post("/attachments/upload")
     async def upload_attachments(
         session_id: str = Form(...),
+        delivery_mode: Literal["parse", "workspace"] = Form("parse"),
         metadata_json: str = Form("[]"),
         files: list[UploadFile] = File(...),
     ) -> AttachmentUploadResponse:
@@ -310,8 +394,8 @@ def create_app() -> FastAPI:
         if not isinstance(metadata_items, list):
             raise HTTPException(status_code=400, detail="metadata_json must be a JSON array")
 
-        workspace_root = settings.workspace_root()
-        target_dir = _attachment_session_dir(workspace_root, session_id)
+        workspace_root = _chat_upload_visible_root(settings, session_id)
+        target_dir = _chat_upload_session_dir(settings, session_id)
         target_dir.mkdir(parents=True, exist_ok=True)
 
         uploaded_files: list[AttachmentUploadItemResponse] = []
@@ -326,7 +410,7 @@ def create_app() -> FastAPI:
                     detail=f"File '{safe_name}' exceeds maximum upload size ({settings.max_upload_bytes} bytes)",
                 )
             target_path.write_bytes(content)
-            content_type = str(file.content_type or metadata.get("type") or "application/octet-stream")
+            content_type = str(file.content_type or metadata.get("type") or "application/octet-xx")
             workspace_path = target_path.relative_to(workspace_root).as_posix()
             try:
                 processed = process_attachment_bytes(
@@ -334,6 +418,7 @@ def create_app() -> FastAPI:
                     content_type=content_type,
                     raw_bytes=content,
                     workspace_path=workspace_path,
+                    delivery_mode=delivery_mode,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -346,6 +431,7 @@ def create_app() -> FastAPI:
                     last_modified=_coerce_int(metadata.get("lastModified") or metadata.get("last_modified")),
                     workspace_path=workspace_path,
                     uploaded_at=datetime.now(UTC),
+                    delivery_mode=delivery_mode,
                     kind=str(processed["kind"]),
                     summary=str(processed["summary"]),
                     model_prompt_text=str(processed["model_prompt_text"]),
@@ -374,6 +460,12 @@ def create_app() -> FastAPI:
     async def list_agents() -> list[dict[str, str]]:
         registry: FrameworkRegistry = app.state.registry
         return [{"name": agent.name, "description": agent.description} for agent in registry.agents.values()]
+
+    @app.get("/local-tools")
+    async def list_local_tools() -> list[LocalToolSummaryResponse]:
+        registry: FrameworkRegistry = app.state.registry
+        settings: AppSettings = app.state.settings
+        return _available_local_tool_summaries(registry, settings)
 
     @app.get("/agents/{agent_name}")
     async def get_agent(agent_name: str) -> AgentSummaryResponse:
@@ -471,17 +563,9 @@ def create_app() -> FastAPI:
                         text = _payload_output_text(payload)
                         if text:
                             _replace_assistant_transcript(transcript_messages, assistant_message_id, text)
-                    elif event_name in {
-                        SSE_EVENT_TOOL_CALLS,
-                        SSE_EVENT_TOOL_RESULTS,
-                        SSE_EVENT_ITERATION,
-                        SSE_EVENT_ERROR,
-                        SSE_EVENT_INPUT_REQUIRED,
-                        SSE_EVENT_CONTEXT_WINDOW,
-                        SSE_EVENT_MODEL_CALL,
-                    }:
+                    elif event_name in TRACE_ACTIVITY_EVENTS:
                         activity.append(ChatActivityItem(id=_new_chat_item_id(event_name), title=event_name, payload=payload))
-                        if event_name == SSE_EVENT_TOOL_RESULTS:
+                        if event_name in {SSE_EVENT_TOOL_RESULTS, SSE_EVENT_DELEGATE_TOOL_RESULTS}:
                             _append_assistant_attachments(
                                 transcript_messages,
                                 assistant_message_id,
@@ -539,7 +623,15 @@ def create_app() -> FastAPI:
                     },
                 )
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.get("/config/{kind}")
     async def get_config(kind: str) -> ConfigDocumentResponse:
@@ -562,14 +654,47 @@ def create_app() -> FastAPI:
         if not isinstance(raw_payload, list):
             raise HTTPException(status_code=400, detail="Config payload must be a JSON array")
 
-        validated = _validate_config_payload(normalized, raw_payload)
-        payload = await config_store.save_document(normalized, validated)
+        try:
+            validated = _validate_config_payload(normalized, raw_payload)
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=exc.errors()) from exc
+        agent_renames = _extract_agent_renames(request.metadata) if normalized == "agents" else None
+        payload = await config_store.save_document(normalized, validated, agent_renames=agent_renames)
         await _apply_runtime_config(app, normalized, payload)
         return _config_document_response(normalized, payload, settings)
 
-    @app.post("/config/sync-from-env")
-    async def sync_config_from_env(request: SeedSyncRequest) -> SeedSyncResponse:
-        return await sync_env_seeds(app, request.kinds, overwrite=request.overwrite)
+    @app.get("/management/{kind}/export")
+    async def export_management_config(kind: str, format: str = "yaml") -> ManagementExportResponse:
+        normalized_kind = _normalize_management_kind(kind)
+        normalized_format = _normalize_management_export_format(format)
+        payload, item_count = await _build_management_export_payload(app, normalized_kind)
+        content = _serialize_management_export_payload(payload, normalized_format)
+        extension = "yaml" if normalized_format == "yaml" else "json"
+        content_type = "application/x-yaml" if normalized_format == "yaml" else "application/json"
+        return ManagementExportResponse(
+            kind=normalized_kind,
+            format=normalized_format,
+            file_name=f"agent-framework-{normalized_kind}.{extension}",
+            content_type=content_type,
+            content=content,
+            item_count=item_count,
+        )
+
+    @app.post("/management/{kind}/import")
+    async def import_management_config(kind: str, file: UploadFile = File(...)) -> ManagementImportResponse:
+        settings: AppSettings = app.state.settings
+        normalized_kind = _normalize_management_kind(kind)
+        raw = await file.read()
+        if len(raw) > settings.max_upload_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Uploaded file exceeds maximum size ({settings.max_upload_bytes} bytes)",
+            )
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Imported file must be UTF-8 encoded text") from exc
+        return await _import_management_payload(app, normalized_kind, text, file.filename)
 
     @app.get("/skills")
     async def list_skills() -> list[SkillSummaryResponse]:
@@ -821,6 +946,38 @@ def create_app() -> FastAPI:
 
         return {"status": "uninstalled", "skill": skill_name}
 
+    @app.get("/skills/{skill_name}/export")
+    async def export_skill(skill_name: str) -> FileResponse:
+        registry: FrameworkRegistry = app.state.registry
+        manifest = registry.manifest_skills.get(skill_name)
+        if not manifest:
+            raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
+        if not manifest.source_dir:
+            raise HTTPException(status_code=400, detail=f"Skill '{skill_name}' has no local source directory")
+
+        source = Path(manifest.source_dir)
+        if not source.is_dir():
+            raise HTTPException(status_code=404, detail=f"Skill directory not found: {source}")
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False, prefix=f"{skill_name}_")
+        try:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
+                for file_path in sorted(source.rglob("*")):
+                    if not file_path.is_file():
+                        continue
+                    if "__pycache__" in file_path.parts or file_path.suffix == ".pyc":
+                        continue
+                    archive.write(file_path, file_path.relative_to(source))
+        except Exception:
+            os.unlink(tmp.name)
+            raise
+
+        return FileResponse(
+            tmp.name,
+            media_type="application/zip",
+            filename=f"{skill_name}.zip",
+        )
+
     @app.post("/skills/{skill_name}/enable")
     async def enable_skill(skill_name: str) -> dict[str, str]:
         await _set_skill_enabled(app, skill_name, True)
@@ -908,24 +1065,6 @@ def create_app() -> FastAPI:
 def register_builtin_tools(registry: FrameworkRegistry, settings: AppSettings) -> None:
     register_workspace_tools(registry, settings)
     registry.register_local_tool(
-        "echo",
-        {
-            "type": "function",
-            "function": {
-                "name": "echo",
-                "description": "Echoes input text for testing and traceability.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"},
-                    },
-                    "required": ["text"],
-                },
-            },
-        },
-        handler=lambda args, _: args["text"],
-    )
-    registry.register_local_tool(
         "get_current_time",
         {
             "type": "function",
@@ -993,18 +1132,39 @@ def to_agent_summary(agent: AgentSpec) -> AgentSummaryResponse:
         description=agent.description,
         system_prompt=agent.system_prompt,
         reasoning_prompt=agent.reasoning_prompt,
+        reasoning_level=agent.reasoning_level,
         skills=agent.skills,
         local_tools=agent.local_tools,
         delegate_agents=agent.delegate_agents,
         capabilities=agent.capabilities,
         max_iterations=agent.max_iterations,
         provider=ProviderSummaryResponse(
-            provider=agent.provider.provider,
             model=agent.provider.model,
-            base_url=agent.provider.base_url,
             timeout_seconds=agent.provider.timeout_seconds,
         ),
     )
+
+
+def _available_local_tool_summaries(
+    registry: FrameworkRegistry,
+    settings: AppSettings,
+) -> list[LocalToolSummaryResponse]:
+    default_tools = set(_default_agent_local_tools(settings))
+    summaries: list[LocalToolSummaryResponse] = []
+    for name in BUILTIN_AGENT_TOOLS:
+        tool = registry.local_tools.get(name)
+        if tool is None:
+            continue
+        function_payload = tool.schema.get("function", {}) if isinstance(tool.schema, dict) else {}
+        description = function_payload.get("description") if isinstance(function_payload, dict) else None
+        summaries.append(
+            LocalToolSummaryResponse(
+                name=name,
+                description=description.strip() if isinstance(description, str) and description.strip() else None,
+                enabled_by_default=name in default_tools,
+            )
+        )
+    return summaries
 
 
 def to_chat_session_summary_response(record: ChatSessionSummary) -> ChatSessionSummaryResponse:
@@ -1045,6 +1205,19 @@ def _safe_storage_component(raw: str, default: str) -> str:
 
 def _attachment_session_dir(workspace_root: Path, session_id: str) -> Path:
     return workspace_root / ".agent_framework" / "attachments" / _safe_storage_component(session_id, "session")
+
+
+def _chat_upload_visible_root(settings: AppSettings, session_id: str) -> Path:
+    if settings.session_workspace_enabled:
+        return settings.session_workspace_dir(session_id)
+    return settings.workspace_root()
+
+
+def _chat_upload_session_dir(settings: AppSettings, session_id: str) -> Path:
+    visible_root = _chat_upload_visible_root(settings, session_id)
+    if settings.session_workspace_enabled:
+        return visible_root / "uploads"
+    return visible_root / ".agent_framework" / "uploads" / _safe_storage_component(session_id, "session")
 
 
 def _download_session_dir(workspace_root: Path, session_id: str) -> Path:
@@ -1382,6 +1555,17 @@ async def _apply_runtime_config(app: FastAPI, kind: ConfigKind, payload: list[di
     registry: FrameworkRegistry = app.state.registry
     config_store: ConfigStore = app.state.config_store
     settings: AppSettings = app.state.settings
+    provider_config = await _resolve_default_provider(settings, config_store)
+
+    if kind == "providers":
+        mcp_payload = await config_store.get_document("mcp")
+        agent_payload = await config_store.get_document("agents")
+        provider_config = await _resolve_default_provider(settings, config_store, payload)
+        registry.agents = {
+            agent.name: agent
+            for agent in _build_agent_specs(agent_payload, provider_config, _parse_mcp_servers(mcp_payload), settings)
+        }
+        return
 
     if kind == "mcp":
         registry.mcp_servers.clear()
@@ -1390,9 +1574,10 @@ async def _apply_runtime_config(app: FastAPI, kind: ConfigKind, payload: list[di
         for server in _parse_mcp_servers(payload):
             registry.register_mcp_server(server)
         agent_payload = await config_store.get_document("agents")
+        provider_config = await _resolve_default_provider(settings, config_store)
         registry.agents = {
             agent.name: agent
-            for agent in _build_agent_specs(agent_payload, default_provider_config(settings), _parse_mcp_servers(payload), settings)
+            for agent in _build_agent_specs(agent_payload, provider_config, _parse_mcp_servers(payload), settings)
         }
         return
 
@@ -1402,69 +1587,343 @@ async def _apply_runtime_config(app: FastAPI, kind: ConfigKind, payload: list[di
 
     if kind == "agents":
         mcp_payload = await config_store.get_document("mcp")
+        provider_config = await _resolve_default_provider(settings, config_store)
         registry.agents = {
             agent.name: agent
-            for agent in _build_agent_specs(payload, default_provider_config(settings), _parse_mcp_servers(mcp_payload), settings)
+            for agent in _build_agent_specs(payload, provider_config, _parse_mcp_servers(mcp_payload), settings)
         }
         return
 
 
-async def sync_env_seeds(
+def _normalize_management_kind(kind: str) -> ManagementKind:
+    if kind not in {"agents", "mcp", "skills"}:
+        raise HTTPException(status_code=404, detail=f"Unknown management kind: {kind}")
+    return kind
+
+
+def _normalize_management_export_format(value: str) -> ManagementExportFormat:
+    normalized = value.strip().lower()
+    if normalized not in {"yaml", "json"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported export format: {value}")
+    return normalized  # type: ignore[return-value]
+
+
+async def _build_management_export_payload(
     app: FastAPI,
-    kinds: list[ConfigKind],
-    *,
-    overwrite: bool,
-) -> SeedSyncResponse:
+    kind: ManagementKind,
+) -> tuple[dict[str, Any], int]:
     settings: AppSettings = app.state.settings
     config_store: ConfigStore = app.state.config_store
-    results: list[SeedSyncResult] = []
+    exported_at = datetime.now(UTC).isoformat()
 
-    for kind in _normalize_sync_kinds(kinds):
-        payload = await _seed_payload_for_kind(kind, settings, config_store)
-        if not payload:
-            results.append(SeedSyncResult(kind=kind, status="empty_seed", items=0))
+    if kind in {"agents", "mcp"}:
+        raw_items = await config_store.get_document(kind)
+        items = [
+            _normalize_agent_payload_item(item, settings) if kind == "agents" else item
+            for item in raw_items
+        ]
+        return {
+            "version": 1,
+            "kind": kind,
+            "exported_at": exported_at,
+            "items": items,
+        }, len(items)
+
+    payload = await _build_skill_management_export_payload(app)
+    return payload, len(payload.get("items", []))
+
+
+async def _build_skill_management_export_payload(app: FastAPI) -> dict[str, Any]:
+    registry: FrameworkRegistry = app.state.registry
+    settings: AppSettings = app.state.settings
+    config_store: ConfigStore = app.state.config_store
+    skill_sources = await config_store.get_document("skill_sources")
+
+    items: list[dict[str, Any]] = []
+    for skill_name in sorted(registry.skills):
+        manifest = registry.manifest_skills.get(skill_name)
+        if manifest is None:
+            inline_skill = registry.skills[skill_name]
+            items.append(
+                SkillManagementItemResponse(
+                    name=inline_skill.name,
+                    enabled=registry.is_skill_enabled(skill_name),
+                    category="unknown",
+                    source_type="local",
+                    version=str(inline_skill.metadata.get("version", "")),
+                    description=inline_skill.description,
+                    source=SkillManagementSourceResponse(type="inline", category="unknown"),
+                ).model_dump(mode="json")
+            )
             continue
 
-        if overwrite:
-            saved = await config_store.save_document(kind, payload)
-            await _apply_runtime_config(app, kind, saved)
-            results.append(SeedSyncResult(kind=kind, status="overwritten", items=len(saved)))
-            continue
+        category = _skill_category(manifest, settings)
+        items.append(
+            SkillManagementItemResponse(
+                name=manifest.name,
+                enabled=registry.is_skill_enabled(skill_name),
+                category=category,
+                source_type=manifest.source_type,
+                version=manifest.version,
+                description=manifest.description,
+                source=_build_skill_management_source(manifest, category, skill_sources),
+            ).model_dump(mode="json")
+        )
 
-        existing = await config_store.get_document(kind)
-        if existing:
-            results.append(SeedSyncResult(kind=kind, status="skipped", items=len(existing)))
-            continue
+    return {
+        "version": 1,
+        "kind": "skills",
+        "exported_at": datetime.now(UTC).isoformat(),
+        "notes": [
+            "This export captures skill enablement plus git skill source configuration.",
+            "Uploaded, authored, and other local skills are referenced by name only; their bundle files are not embedded.",
+        ],
+        "skill_sources": skill_sources,
+        "items": items,
+    }
 
-        saved = await config_store.save_document(kind, payload)
+
+def _build_skill_management_source(
+    spec: ManifestSkillSpec,
+    category: str,
+    skill_sources: list[dict[str, object]],
+) -> SkillManagementSourceResponse:
+    if spec.source_type == "git":
+        matched_source = next((item for item in skill_sources if _matches_skill_source(spec, item)), None)
+        return SkillManagementSourceResponse(
+            type="git",
+            category="github_synced",
+            url=spec.git_url,
+            ref=spec.git_ref,
+            subdir=str(matched_source.get("subdir")) if matched_source and matched_source.get("subdir") else None,
+            name=str(matched_source.get("name")) if matched_source and matched_source.get("name") else None,
+        )
+
+    if category == "built_in":
+        return SkillManagementSourceResponse(type="built_in", category="built_in")
+    if category in {"uploaded", "authored"}:
+        return SkillManagementSourceResponse(type="managed", category=category)
+    return SkillManagementSourceResponse(type="unknown", category="unknown")
+
+
+def _serialize_management_export_payload(
+    payload: dict[str, Any],
+    export_format: ManagementExportFormat,
+) -> str:
+    if export_format == "yaml":
+        return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+    return f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+
+
+async def _import_management_payload(
+    app: FastAPI,
+    kind: ManagementKind,
+    raw_text: str,
+    file_name: str | None,
+) -> ManagementImportResponse:
+    settings: AppSettings = app.state.settings
+    config_store: ConfigStore = app.state.config_store
+    parsed = _parse_management_upload(raw_text, file_name)
+
+    if kind in {"agents", "mcp"}:
+        raw_items = _extract_management_items(kind, parsed)
+        validated = _validate_config_payload(kind, raw_items, settings)
+        saved = await config_store.save_document(kind, validated)
         await _apply_runtime_config(app, kind, saved)
-        results.append(SeedSyncResult(kind=kind, status="seeded", items=len(saved)))
+        label = "agents" if kind == "agents" else "MCP services"
+        return ManagementImportResponse(
+            kind=kind,
+            imported_items=len(validated),
+            applied_items=len(saved),
+            summary=f"Imported {len(saved)} {label}.",
+        )
 
-    return SeedSyncResponse(results=results)
+    return await _import_skill_management_payload(app, parsed)
+
+
+def _parse_management_upload(raw_text: str, file_name: str | None) -> Any:
+    if not raw_text.strip():
+        raise HTTPException(status_code=400, detail="Imported file is empty")
+    try:
+        parsed = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        target_name = file_name or "uploaded file"
+        raise HTTPException(status_code=400, detail=f"Could not parse {target_name}: {exc}") from exc
+    if parsed is None:
+        raise HTTPException(status_code=400, detail="Imported file did not contain any configuration data")
+    return parsed
+
+
+def _extract_management_items(kind: ConfigKind, payload: Any) -> list[object]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Imported configuration must be a YAML/JSON object or array")
+
+    payload_kind = payload.get("kind")
+    if isinstance(payload_kind, str) and payload_kind and payload_kind != kind:
+        raise HTTPException(status_code=400, detail=f"Imported file is for '{payload_kind}', not '{kind}'")
+
+    items = payload.get("items")
+    if items is None and isinstance(payload.get("data"), list):
+        items = payload.get("data")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="Imported configuration must include an 'items' array")
+    return items
+
+
+async def _import_skill_management_payload(
+    app: FastAPI,
+    payload: Any,
+) -> ManagementImportResponse:
+    registry: FrameworkRegistry = app.state.registry
+    config_store: ConfigStore = app.state.config_store
+
+    imported_items, imported_sources = _extract_skill_management_payload(payload)
+    saved_sources = await config_store.save_document("skill_sources", imported_sources)
+    await _apply_runtime_config(app, "skill_sources", saved_sources)
+
+    warnings: list[str] = []
+    applied_items = 0
+    seen_names: set[str] = set()
+
+    for item in imported_items:
+        if item.name in seen_names:
+            raise HTTPException(status_code=400, detail=f"Duplicate skill entry: {item.name}")
+        seen_names.add(item.name)
+
+        if item.name not in registry.skills:
+            warnings.append(
+                (
+                    f"Skill '{item.name}' is not installed in this workspace. "
+                    "Its enabled state was not applied."
+                )
+            )
+            continue
+
+        registry.set_skill_enabled(item.name, item.enabled)
+        await config_store.set_skill_enabled(item.name, item.enabled)
+        if not item.enabled and registry.skill_process_manager is not None:
+            await registry.skill_process_manager.stop_skill(item.name)
+        applied_items += 1
+
+    await _reconcile_skill_process_manager(registry)
+
+    summary = (
+        f"Imported {len(imported_items)} skill entries and synced {len(saved_sources)} git skill sources. "
+        f"Applied state to {applied_items} installed skills."
+    )
+    return ManagementImportResponse(
+        kind="skills",
+        imported_items=len(imported_items),
+        applied_items=applied_items,
+        summary=summary,
+        warnings=warnings,
+    )
+
+
+def _extract_skill_management_payload(
+    payload: Any,
+) -> tuple[list[SkillManagementItemResponse], list[dict[str, object]]]:
+    if isinstance(payload, list):
+        if all(_looks_like_skill_source_entry(item) for item in payload):
+            return [], _validate_config_payload("skill_sources", payload)
+        imported_items = _validate_skill_management_items(payload)
+        return imported_items, _derive_skill_sources_from_skill_items(imported_items)
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Imported skill configuration must be a YAML/JSON object or array")
+
+    payload_kind = payload.get("kind")
+    if isinstance(payload_kind, str) and payload_kind not in {"skills", "skill_sources"}:
+        raise HTTPException(status_code=400, detail=f"Imported file is for '{payload_kind}', not 'skills'")
+
+    if payload_kind == "skill_sources":
+        raw_sources = payload.get("items")
+        if raw_sources is None and isinstance(payload.get("data"), list):
+            raw_sources = payload.get("data")
+        if raw_sources is None:
+            raw_sources = payload.get("skill_sources")
+        if not isinstance(raw_sources, list):
+            raise HTTPException(status_code=400, detail="Imported skill source payload must include an array of sources")
+        return [], _validate_config_payload("skill_sources", raw_sources)
+
+    items_raw = payload.get("items")
+    if items_raw is None and isinstance(payload.get("data"), list):
+        items_raw = payload.get("data")
+    if items_raw is None:
+        items_raw = []
+    if not isinstance(items_raw, list):
+        raise HTTPException(status_code=400, detail="Imported skill configuration 'items' field must be an array")
+
+    imported_items = _validate_skill_management_items(items_raw)
+    raw_sources = payload.get("skill_sources")
+    if raw_sources is None:
+        return imported_items, _derive_skill_sources_from_skill_items(imported_items)
+    if not isinstance(raw_sources, list):
+        raise HTTPException(status_code=400, detail="Imported skill configuration 'skill_sources' field must be an array")
+    return imported_items, _validate_config_payload("skill_sources", raw_sources)
+
+
+def _validate_skill_management_items(items: list[object]) -> list[SkillManagementItemResponse]:
+    validated: list[SkillManagementItemResponse] = []
+    seen_names: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="Skill entries must be objects")
+        try:
+            parsed = SkillManagementItemResponse.model_validate(item)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid skill entry: {exc}") from exc
+        if parsed.name in seen_names:
+            raise HTTPException(status_code=400, detail=f"Duplicate skill entry: {parsed.name}")
+        seen_names.add(parsed.name)
+        validated.append(parsed)
+    return validated
+
+
+def _looks_like_skill_source_entry(item: object) -> bool:
+    return isinstance(item, dict) and isinstance(item.get("url"), str) and (
+        item.get("source_type") == "git" or item.get("category") == "github_synced"
+    )
+
+
+def _derive_skill_sources_from_skill_items(items: list[SkillManagementItemResponse]) -> list[dict[str, object]]:
+    derived_sources: list[dict[str, object]] = []
+    seen_keys: set[tuple[str, str | None, str | None]] = set()
+    for item in items:
+        if item.source.type != "git" or not item.source.url:
+            continue
+        source = PersistedSkillSourceConfig(
+            source_type="git",
+            category="github_synced",
+            name=item.source.name,
+            url=item.source.url,
+            ref=item.source.ref,
+            subdir=item.source.subdir,
+        ).model_dump(mode="json")
+        dedupe_key = (str(source["url"]), source.get("ref"), source.get("subdir"))
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        derived_sources.append(source)
+    return derived_sources
 
 
 def _normalize_config_kind(kind: str) -> ConfigKind:
-    if kind not in {"agents", "mcp", "skill_sources"}:
+    if kind not in {"agents", "mcp", "skill_sources", "providers"}:
         raise HTTPException(status_code=404, detail=f"Unknown config kind: {kind}")
     return kind
 
 
-def _normalize_sync_kinds(kinds: list[ConfigKind]) -> list[ConfigKind]:
-    ordered_unique: list[ConfigKind] = []
-    seen: set[str] = set()
-    for kind in ["mcp", "skill_sources", "agents"]:
-        if kind in kinds and kind not in seen:
-            ordered_unique.append(kind)
-            seen.add(kind)
-    return ordered_unique
-
-
 def _config_document_response(kind: ConfigKind, payload: list[dict[str, object]], settings: AppSettings) -> ConfigDocumentResponse:
-    label_map = {"agents": "Agents", "mcp": "MCP Servers", "skill_sources": "Skill Sources"}
+    label_map = {"agents": "Agents", "mcp": "MCP Servers", "skill_sources": "Skill Sources", "providers": "Providers"}
     normalized_payload = [
         _normalize_agent_payload_item(item, settings) if kind == "agents" else item
         for item in payload
     ]
+    if kind == "providers":
+        normalized_payload = [_mask_provider_api_key(item) for item in normalized_payload]
     return ConfigDocumentResponse(
         kind=kind,
         label=label_map[kind],
@@ -1476,6 +1935,16 @@ def _config_document_response(kind: ConfigKind, payload: list[dict[str, object]]
 
 
 def _example_config_raw(kind: ConfigKind, settings: AppSettings) -> str:
+    if kind == "providers":
+        example = {
+            "name": "my-provider",
+            "provider_type": "openai_compatible",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-...",
+            "default_model": "gpt-4.1",
+            "position": 0,
+        }
+        return f"{json.dumps([example], ensure_ascii=False, indent=2)}\n"
     raw_map = {
         "agents": settings.agents_json,
         "mcp": settings.mcp_servers_json,
@@ -1499,19 +1968,6 @@ def _seed_skill_source_payload(settings: AppSettings) -> list[dict[str, object]]
         return []
     raw = json.loads(settings.skill_sources_json)
     return _validate_config_payload("skill_sources", raw)
-
-
-async def _seed_payload_for_kind(
-    kind: ConfigKind,
-    settings: AppSettings,
-    config_store: ConfigStore,
-) -> list[dict[str, object]]:
-    if kind == "mcp":
-        return _seed_mcp_payload(settings)
-    if kind == "skill_sources":
-        return _seed_skill_source_payload(settings)
-    mcp_payload = await config_store.get_document("mcp")
-    return _seed_agent_payload(settings, default_provider_config(settings), _parse_mcp_servers(mcp_payload))
 
 
 def _seed_agent_payload(
@@ -1541,6 +1997,56 @@ def _seed_agent_payload(
 def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: AppSettings | None = None) -> list[dict[str, object]]:
     if kind == "mcp":
         return [McpServerConfig.model_validate(item).model_dump(mode="json") for item in payload]
+
+    if kind == "providers":
+        from agent_framework.infra.config_store import PersistedProviderConfig
+        normalized_providers = [PersistedProviderConfig.model_validate(item).model_dump(mode="json") for item in payload]
+        default_model_names = [
+            str(item.get("name") or "")
+            for item in normalized_providers
+            if str(item.get("default_model") or "").strip()
+        ]
+        if len(default_model_names) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Only one provider may declare a default_model. "
+                    f"Found: {', '.join(default_model_names)}"
+                ),
+            )
+
+        if default_model_names:
+            default_name = default_model_names[0]
+            return [
+                {
+                    **item,
+                    "default_model": str(item.get("default_model") or "").strip(),
+                    "is_default": str(item.get("name") or "") == default_name,
+                }
+                for item in normalized_providers
+            ]
+
+        legacy_default_names = [
+            str(item.get("name") or "")
+            for item in normalized_providers
+            if bool(item.get("is_default"))
+        ]
+        if len(legacy_default_names) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Only one provider may be marked as default. "
+                    f"Found: {', '.join(legacy_default_names)}"
+                ),
+            )
+
+        return [
+            {
+                **item,
+                "default_model": str(item.get("default_model") or "").strip(),
+            }
+            for item in normalized_providers
+        ]
 
     if kind == "skill_sources":
         normalized_sources: list[dict[str, object]] = []
@@ -1589,6 +2095,31 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
         seen_names.add(agent.name)
         normalized.append(agent.model_dump(mode="json"))
     return normalized
+
+
+def _extract_agent_renames(metadata: object) -> dict[str, str]:
+    if not isinstance(metadata, dict):
+        return {}
+
+    raw_renames = metadata.get("agent_renames")
+    if not isinstance(raw_renames, list):
+        return {}
+
+    rename_map: dict[str, str] = {}
+    for item in raw_renames:
+        if not isinstance(item, dict):
+            continue
+        old_name = item.get("old_name")
+        new_name = item.get("new_name")
+        if not isinstance(old_name, str) or not isinstance(new_name, str):
+            continue
+        old_normalized = old_name.strip()
+        new_normalized = new_name.strip()
+        if not old_normalized or not new_normalized or old_normalized == new_normalized:
+            continue
+        rename_map[old_normalized] = new_normalized
+
+    return rename_map
 
 
 def _parse_mcp_servers(payload: list[dict[str, object]]) -> list[McpServerConfig]:
@@ -1693,9 +2224,10 @@ def _build_agent_specs(
                 description=persisted.description,
                 system_prompt=persisted.system_prompt,
                 reasoning_prompt=persisted.reasoning_prompt,
+                reasoning_level=persisted.reasoning_level,
                 provider=_merge_provider_config(persisted.provider, provider_config),
                 skills=persisted.skills,
-                local_tools=_dedupe_strings(persisted.local_tools + _default_agent_local_tools(settings)),
+                local_tools=[t for t in _dedupe_strings(persisted.local_tools) if t != "echo"],
                 delegate_agents=persisted.delegate_agents,
                 mcp_servers=resolved_mcp,
                 mcp_tools=persisted.mcp_tools,
@@ -1707,7 +2239,65 @@ def _build_agent_specs(
     return agents
 
 
-def _merge_provider_config(provider: ProviderConfig, default_provider: ProviderConfig) -> ProviderConfig:
+async def _resolve_default_provider(
+    settings: AppSettings,
+    config_store: ConfigStore,
+    providers_payload: list[dict[str, object]] | None = None,
+) -> ProviderConfig:
+    if providers_payload is None:
+        try:
+            providers_payload = await config_store.get_document("providers")
+        except Exception:
+            providers_payload = []
+
+    from agent_framework.infra.config_store import PersistedProviderConfig
+
+    for item in providers_payload or []:
+        default_model = str(item.get("default_model") or "").strip()
+        if default_model and item.get("base_url"):
+            cfg = PersistedProviderConfig.model_validate(item)
+            return ProviderConfig(
+                provider=cfg.provider_type,
+                model=default_model,
+                api_key=cfg.api_key,
+                base_url=cfg.base_url,
+                timeout_seconds=settings.request_timeout_seconds,
+            )
+
+    for item in providers_payload or []:
+        if item.get("is_default") and item.get("base_url"):
+            cfg = PersistedProviderConfig.model_validate(item)
+            return ProviderConfig(
+                provider=cfg.provider_type,
+                model=settings.default_model,
+                api_key=cfg.api_key,
+                base_url=cfg.base_url,
+                timeout_seconds=settings.request_timeout_seconds,
+            )
+
+    return default_provider_config(settings)
+
+
+def _mask_provider_api_key(item: dict[str, object]) -> dict[str, object]:
+    masked = dict(item)
+    if masked.get("api_key"):
+        key = str(masked["api_key"])
+        if len(key) <= 8:
+            masked["has_api_key"] = bool(key)
+            masked["api_key"] = None
+        else:
+            masked["has_api_key"] = True
+            masked["api_key_masked"] = key[:4] + "..." + key[-4:]
+            masked["api_key"] = None
+    else:
+        masked["has_api_key"] = False
+    return masked
+
+
+def _merge_provider_config(
+    provider: ProviderConfig,
+    default_provider: ProviderConfig,
+) -> ProviderConfig:
     return ProviderConfig(
         provider=provider.provider or default_provider.provider,
         model=provider.model or default_provider.model,

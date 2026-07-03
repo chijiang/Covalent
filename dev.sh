@@ -1,6 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Development server startup script for Agent Framework
 # Loads configuration from .env file and starts both backend and frontend
+
+set -euo pipefail
 
 set -a
 [ -f .env ] && source .env
@@ -24,29 +26,35 @@ echo ""
 # Check if command provided
 if [ "$1" == "backend" ]; then
     echo "Starting backend on port $BACKEND_PORT..."
-    python main.py serve --port $BACKEND_PORT
+    uv run python main.py serve --host "$BACKEND_HOST" --port "$BACKEND_PORT"
 elif [ "$1" == "frontend" ]; then
     echo "Starting frontend on port $FRONTEND_PORT..."
     cd frontend
-    PORT=$FRONTEND_PORT npm run dev
+    PORT=$FRONTEND_PORT pnpm dev
 elif [ "$1" == "both" ] || [ -z "$1" ]; then
     echo "Starting both backend and frontend..."
     echo ""
     
     # Start backend in background
     echo "[Backend] Starting on port $BACKEND_PORT..."
-    python main.py serve --port $BACKEND_PORT &
+    uv run python main.py serve --host "$BACKEND_HOST" --port "$BACKEND_PORT" &
     BACKEND_PID=$!
     
     sleep 2
+
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+        echo "[Backend] Failed to start. Check the backend logs above."
+        wait "$BACKEND_PID"
+        exit 1
+    fi
     
     # Start frontend
     echo "[Frontend] Starting on port $FRONTEND_PORT..."
     cd frontend
-    PORT=$FRONTEND_PORT npm run dev
+    PORT=$FRONTEND_PORT pnpm dev
     
     # If frontend exits, kill backend
-    kill $BACKEND_PID 2>/dev/null
+    kill "$BACKEND_PID" 2>/dev/null
 else
     echo "Usage: ./dev.sh [backend|frontend|both]"
     echo ""

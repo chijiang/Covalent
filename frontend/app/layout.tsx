@@ -5,8 +5,8 @@ import { SiteHeader } from "@/components/site-header";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Covalent",
-  description: "A Multi-UI Agentic Framework",
+  title: "Agent Framework",
+  description: "Accenture-inspired control plane for agents, MCP services, and skills.",
 };
 
 export default function RootLayout({
@@ -15,7 +15,7 @@ export default function RootLayout({
   children: ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
         <div className="app-shell">
           <SiteHeader />

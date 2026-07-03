@@ -14,6 +14,7 @@ class AgentSpec(BaseModel):
     description: str
     system_prompt: str
     reasoning_prompt: str = ""
+    reasoning_level: str = "none"
     provider: ProviderConfig
     skills: list[str] = Field(default_factory=list)
     local_tools: list[str] = Field(default_factory=list)

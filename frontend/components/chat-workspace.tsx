@@ -1,9 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  isValidElement,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentPropsWithoutRef,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ArrowUp, Loader2, Plus, Upload } from "lucide-react";
 
 import {
   deleteChatSession,
@@ -16,7 +32,16 @@ import {
   streamAgent,
   uploadChatAttachments,
 } from "@/lib/client-api";
-import type { AgentDetail, AgentInputPart, AttachmentUploadItem, ChatSession, ChatSessionSummary, HealthResponse, PendingQuestionRequest } from "@/lib/types";
+import type {
+  AgentDetail,
+  AgentInputPart,
+  AttachmentDeliveryMode,
+  AttachmentUploadItem,
+  ChatSession,
+  ChatSessionSummary,
+  HealthResponse,
+  PendingQuestionRequest,
+} from "@/lib/types";
 
 type Message = {
   id: string;
@@ -34,6 +59,7 @@ type ComposerAttachment = {
   workspacePath?: string;
   downloadUrl?: string;
   uploadedAt?: string;
+  deliveryMode?: AttachmentDeliveryMode;
   kind?: "text" | "image" | "pdf" | "binary";
   summary?: string;
   modelPromptText?: string;
@@ -66,6 +92,8 @@ type ChatThread = {
   isLoaded: boolean;
   isPersisted: boolean;
   pendingQuestion: PendingQuestionRequest | null;
+  contextTruncated: boolean;
+  compactionMethod: string | null;
 };
 
 type HistorySection = {
@@ -73,12 +101,33 @@ type HistorySection = {
   items: ChatThread[];
 };
 
+const TRACE_PANEL_STORAGE_KEY = "agent-framework.chat-trace-width";
+const DEFAULT_TRACE_PANEL_WIDTH = 360;
+const MIN_TRACE_PANEL_WIDTH = 280;
+const MAX_TRACE_PANEL_WIDTH = 640;
+const MIN_CONVERSATION_PANEL_WIDTH = 560;
+const CODE_BLOCK_COPY_RESET_MS = 1600;
+
+type ChatCodeBlockTone = "inbound" | "outbound";
+
+function getMaxTracePanelWidth(containerWidth: number): number {
+  if (!Number.isFinite(containerWidth) || containerWidth <= 0) {
+    return MAX_TRACE_PANEL_WIDTH;
+  }
+  return Math.max(MIN_TRACE_PANEL_WIDTH, Math.min(MAX_TRACE_PANEL_WIDTH, containerWidth - MIN_CONVERSATION_PANEL_WIDTH));
+}
+
+function clampTracePanelWidth(value: number, containerWidth: number): number {
+  const maxWidth = getMaxTracePanelWidth(containerWidth);
+  return Math.min(maxWidth, Math.max(MIN_TRACE_PANEL_WIDTH, Math.round(value)));
+}
+
 function uid(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function buildAttachmentId(file: Pick<File, "name" | "size" | "lastModified">): string {
-  return `${file.name}-${file.size}-${file.lastModified}`;
+function buildAttachmentId(file: Pick<File, "name" | "size" | "lastModified">, deliveryMode?: AttachmentDeliveryMode): string {
+  return `${file.name}-${file.size}-${file.lastModified}-${deliveryMode || "default"}`;
 }
 
 function normalizePastedImage(file: File, index: number): File {
@@ -92,21 +141,299 @@ function normalizePastedImage(file: File, index: number): File {
   });
 }
 
+function extractMarkdownText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map((child) => extractMarkdownText(child)).join("");
+  }
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    return extractMarkdownText(node.props.children);
+  }
+  return "";
+}
+
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+
+  const successful = document.execCommand("copy");
+  textarea.remove();
+
+  if (!successful) {
+    throw new Error("Copy command failed");
+  }
+}
+
+function ChatBubbleCopy({ content, tone }: { content: string; tone: "inbound" | "outbound" }) {
+  const copyResetRef = useRef<number | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const isOutbound = tone === "outbound";
+
+  useEffect(() => {
+    return () => {
+      if (copyResetRef.current !== null) {
+        window.clearTimeout(copyResetRef.current);
+      }
+    };
+  }, []);
+
+  async function handleCopy(): Promise<void> {
+    try {
+      await copyText(content);
+      setCopyState("copied");
+    } catch {
+      return;
+    }
+    if (copyResetRef.current !== null) {
+      window.clearTimeout(copyResetRef.current);
+    }
+    copyResetRef.current = window.setTimeout(() => {
+      setCopyState("idle");
+      copyResetRef.current = null;
+    }, CODE_BLOCK_COPY_RESET_MS);
+  }
+
+  return (
+    <button
+      className="chat-bubble-copy"
+      onClick={handleCopy}
+      type="button"
+      aria-label="Copy message"
+      style={{
+        position: "absolute",
+        top: 6,
+        right: 6,
+        zIndex: 2,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 28,
+        height: 28,
+        borderRadius: 6,
+        border: isOutbound ? "1px solid rgba(255, 255, 255, 0.32)" : "1px solid rgba(16, 16, 16, 0.12)",
+        background: isOutbound ? "rgba(255, 255, 255, 0.22)" : "#ffffff",
+        boxShadow: isOutbound ? "0 6px 14px rgba(0, 0, 0, 0.16)" : "0 6px 14px rgba(16, 16, 16, 0.1)",
+        color: isOutbound ? "var(--fg-inverse)" : "var(--fg-primary)",
+        cursor: "pointer",
+        fontSize: 13,
+        lineHeight: 1,
+        padding: 0,
+      } satisfies CSSProperties}
+    >
+      {copyState === "copied" ? (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+function ChatCodeBlock({ children, tone, ...props }: ComponentPropsWithoutRef<"pre"> & { tone: ChatCodeBlockTone }) {
+  const copyResetRef = useRef<number | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const codeChild = isValidElement<ComponentPropsWithoutRef<"code">>(children) ? children : null;
+  const codeContent = codeChild?.props.children ?? children;
+  const codeText = useMemo(() => extractMarkdownText(codeContent).replace(/\n$/, ""), [codeContent]);
+  const isOutbound = tone === "outbound";
+  const containerStyle: CSSProperties = {
+    position: "relative",
+    display: "block",
+    width: "100%",
+    maxWidth: "100%",
+    minWidth: 0,
+    overflow: "hidden",
+    borderRadius: 12,
+    background: isOutbound ? "rgba(0, 0, 0, 0.16)" : "#f6f6f6",
+    boxShadow: isOutbound ? undefined : "inset 0 0 0 1px rgba(16, 16, 16, 0.06)",
+  };
+  const toolbarStyle: CSSProperties = {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    zIndex: 1,
+  };
+  const copyButtonStyle: CSSProperties = {
+    minHeight: 28,
+    padding: "0 10px",
+    borderRadius: 8,
+    border: isOutbound ? "1px solid rgba(255, 255, 255, 0.18)" : "1px solid rgba(16, 16, 16, 0.08)",
+    background: isOutbound ? "rgba(255, 255, 255, 0.14)" : "#ffffff",
+    color: isOutbound ? "var(--fg-inverse)" : "var(--fg-primary)",
+    fontSize: 11,
+    fontWeight: 700,
+    lineHeight: 1,
+    cursor: "pointer",
+  };
+  const preStyle: CSSProperties = {
+    display: "block",
+    width: "100%",
+    maxWidth: "100%",
+    minWidth: 0,
+    margin: 0,
+    overflowX: "auto",
+    overflowY: "hidden",
+    borderRadius: "inherit",
+    padding: "44px 14px 14px",
+    background: "transparent",
+    boxShadow: "none",
+    color: isOutbound ? "var(--fg-inverse)" : "var(--fg-primary)",
+    fontFamily: "var(--font-mono), monospace",
+    fontSize: 12,
+    lineHeight: 1.5,
+  };
+  const codeStyle: CSSProperties = {
+    display: "block",
+    width: "max-content",
+    minWidth: "100%",
+    borderRadius: 0,
+    padding: 0,
+    background: "transparent",
+    color: "inherit",
+  };
+
+  useEffect(() => {
+    return () => {
+      if (copyResetRef.current !== null) {
+        window.clearTimeout(copyResetRef.current);
+      }
+    };
+  }, []);
+
+  async function handleCopy(): Promise<void> {
+    if (!codeText) {
+      return;
+    }
+    try {
+      await copyText(codeText);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+
+    if (copyResetRef.current !== null) {
+      window.clearTimeout(copyResetRef.current);
+    }
+    copyResetRef.current = window.setTimeout(() => {
+      setCopyState("idle");
+      copyResetRef.current = null;
+    }, CODE_BLOCK_COPY_RESET_MS);
+  }
+
+  return (
+    <div className="chat-code-block" style={containerStyle}>
+      <div className="chat-code-block-toolbar" style={toolbarStyle}>
+        <button className="chat-code-block-copy" onClick={handleCopy} style={copyButtonStyle} type="button">
+          {copyState === "copied" ? "Copied" : copyState === "error" ? "Retry copy" : "Copy"}
+        </button>
+      </div>
+      <pre {...props} style={preStyle}>
+        <code className={codeChild?.props.className} style={codeStyle}>
+          {codeContent}
+        </code>
+      </pre>
+    </div>
+  );
+}
+
+function ChatMessageBubble({ message, sending }: { message: Message; sending: boolean }) {
+  const tone = message.role === "user" ? "outbound" : "inbound";
+
+  return (
+    <article className={message.role === "user" ? "chat-message-row outbound" : "chat-message-row inbound"}>
+      <div className={message.role === "user" ? "chat-bubble outbound" : "chat-bubble inbound"}>
+        <ChatBubbleCopy content={message.content || ""} tone={tone} />
+        {message.attachments?.length ? (
+          <div className="chat-attachment-list">
+            {message.attachments.map((file) =>
+              file.downloadUrl ? (
+                <a className="chat-attachment-chip chat-attachment-chip-link" download href={file.downloadUrl} key={file.id}>
+                  <span className="chat-attachment-topline">
+                    <strong>{file.name}</strong>
+                    <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
+                  </span>
+                  <span className="chat-attachment-meta">{formatAttachmentMeta(file)}</span>
+                  {file.summary ? <span className="chat-attachment-summary">{file.summary}</span> : null}
+                  <span className="chat-attachment-action">Download</span>
+                </a>
+              ) : (
+                <span className="chat-attachment-chip" key={file.id}>
+                  <span className="chat-attachment-topline">
+                    <strong>{file.name}</strong>
+                    <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
+                  </span>
+                  <span className="chat-attachment-meta">{formatAttachmentMeta(file)}</span>
+                  {file.summary ? <span className="chat-attachment-summary">{file.summary}</span> : null}
+                </span>
+              ),
+            )}
+          </div>
+        ) : null}
+        <div className="chat-markdown">
+          <ReactMarkdown
+            components={{
+              pre({ children, ...props }) {
+                return (
+                  <ChatCodeBlock {...props} tone={tone}>
+                    {children}
+                  </ChatCodeBlock>
+                );
+              },
+            }}
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeSanitize]}
+          >
+            {message.content || (sending && message.role === "assistant" ? "Thinking..." : "")}
+          </ReactMarkdown>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function toUploadedComposerAttachment(file: AttachmentUploadItem): ComposerAttachment {
   return {
-    id: buildAttachmentId({ name: file.name, size: file.size, lastModified: file.last_modified }),
+    id: buildAttachmentId({ name: file.name, size: file.size, lastModified: file.last_modified }, file.delivery_mode),
     name: file.name,
     size: file.size,
     type: file.content_type || "application/octet-stream",
     lastModified: file.last_modified,
     workspacePath: file.workspace_path,
     uploadedAt: file.uploaded_at,
+    deliveryMode: file.delivery_mode,
     kind: file.kind,
     summary: file.summary,
     modelPromptText: file.model_prompt_text,
     modelContent: file.model_content,
     pageCount: file.page_count,
   };
+}
+
+function formatDeliveryModeLabel(mode?: AttachmentDeliveryMode): string | null {
+  if (mode === "workspace") {
+    return "workspace only";
+  }
+  if (mode === "parse") {
+    return "inline parsed";
+  }
+  return null;
 }
 
 function formatAttachmentBadge(file: ComposerAttachment): string {
@@ -123,6 +450,10 @@ function formatAttachmentMeta(file: ComposerAttachment): string {
   const parts = [formatFileSize(file.size)];
   if (typeof file.pageCount === "number") {
     parts.push(`${file.pageCount} pages`);
+  }
+  const deliveryLabel = formatDeliveryModeLabel(file.deliveryMode);
+  if (deliveryLabel) {
+    parts.push(deliveryLabel);
   }
   return parts.join(" • ");
 }
@@ -152,7 +483,15 @@ function buildRequestInput(prompt: string, attachments: ComposerAttachment[]): s
   if (prompt) {
     parts.push({ type: "text", text: prompt });
   } else {
-    parts.push({ type: "text", text: "Analyze the uploaded attachments and answer based on their contents." });
+    const hasWorkspaceOnly = attachments.some((file) => file.deliveryMode === "workspace");
+    const hasInlineParsed = attachments.some((file) => file.deliveryMode !== "workspace");
+    const lead =
+      hasWorkspaceOnly && hasInlineParsed
+        ? "Use the uploaded attachments and inspect any workspace-only files directly before answering."
+        : hasWorkspaceOnly
+          ? "The user uploaded files to your workspace. Inspect those files directly and answer based on their contents."
+          : "Analyze the uploaded attachments and answer based on their contents.";
+    parts.push({ type: "text", text: lead });
   }
 
   for (const file of attachments) {
@@ -182,6 +521,10 @@ function formatAttachmentMemoryPrompt(attachments: ComposerAttachment[]): string
       if (typeof file.pageCount === "number") {
         details.push(`${file.pageCount} pages`);
       }
+      const deliveryLabel = formatDeliveryModeLabel(file.deliveryMode);
+      if (deliveryLabel) {
+        details.push(deliveryLabel);
+      }
       const suffix = file.workspacePath ? ` [${file.workspacePath}]` : "";
       const summary = file.summary ? `: ${file.summary}` : "";
       return `- ${file.name} (${details.join(", ")})${summary}${suffix}`;
@@ -198,6 +541,7 @@ function serializeAttachmentForMetadata(file: ComposerAttachment): Record<string
     lastModified: file.lastModified,
     workspacePath: file.workspacePath,
     uploadedAt: file.uploadedAt,
+    deliveryMode: file.deliveryMode,
     kind: file.kind,
     summary: file.summary,
     pageCount: file.pageCount,
@@ -316,7 +660,22 @@ function createThread(agentName = ""): ChatThread {
     isLoaded: true,
     isPersisted: false,
     pendingQuestion: null,
+    contextTruncated: false,
+    compactionMethod: null,
   };
+}
+
+function pickAvailableAgentName(agents: AgentDetail[], ...candidates: Array<string | null | undefined>): string {
+  for (const candidate of candidates) {
+    const normalized = candidate?.trim();
+    if (!normalized) {
+      continue;
+    }
+    if (agents.some((agent) => agent.name === normalized)) {
+      return normalized;
+    }
+  }
+  return agents[0]?.name || "";
 }
 
 function normalizePendingQuestionOption(raw: unknown) {
@@ -502,6 +861,12 @@ function normalizeAttachment(raw: Record<string, unknown>): ComposerAttachment {
       : typeof raw.uploaded_at === "string"
         ? raw.uploaded_at
         : undefined;
+  const deliveryMode =
+    raw.deliveryMode === "parse" || raw.deliveryMode === "workspace"
+      ? raw.deliveryMode
+      : raw.delivery_mode === "parse" || raw.delivery_mode === "workspace"
+        ? raw.delivery_mode
+        : undefined;
   const kind =
     raw.kind === "text" || raw.kind === "image" || raw.kind === "pdf" || raw.kind === "binary"
       ? raw.kind
@@ -510,7 +875,7 @@ function normalizeAttachment(raw: Record<string, unknown>): ComposerAttachment {
   const pageCountValue = raw.pageCount ?? raw.page_count;
   const pageCount = typeof pageCountValue === "number" ? pageCountValue : Number(pageCountValue);
   return {
-    id: explicitId || buildAttachmentId({ name, size, lastModified }),
+    id: explicitId || buildAttachmentId({ name, size, lastModified }, deliveryMode),
     name,
     size,
     type,
@@ -518,6 +883,7 @@ function normalizeAttachment(raw: Record<string, unknown>): ComposerAttachment {
     workspacePath,
     downloadUrl,
     uploadedAt,
+    deliveryMode,
     kind,
     summary,
     pageCount: Number.isFinite(pageCount) ? pageCount : undefined,
@@ -539,6 +905,8 @@ function threadFromSummary(summary: ChatSessionSummary): ChatThread {
     isLoaded: false,
     isPersisted: true,
     pendingQuestion: null,
+    contextTruncated: false,
+    compactionMethod: null,
   };
 }
 
@@ -562,6 +930,8 @@ function threadFromSession(session: ChatSession): ChatThread {
     isLoaded: true,
     isPersisted: true,
     pendingQuestion: getPendingQuestionFromActivity(session.activity.map((item) => ({ id: item.id, title: item.title, payload: item.payload }))),
+    contextTruncated: false,
+    compactionMethod: null,
   };
 }
 
@@ -633,13 +1003,64 @@ function formatTracePayload(payload: unknown): string {
   return `${text.slice(0, 4_000).trimEnd()}\n... truncated ...\n`;
 }
 
+function truncateTraceSummaryText(value: string, maxChars = 240): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(maxChars - 3, 1)).trimEnd()}...`;
+}
+
+const DELEGATE_EVENT_PREFIX = "delegate_";
+
+function isDelegateEventTitle(value: string): boolean {
+  return value.startsWith(DELEGATE_EVENT_PREFIX);
+}
+
+function getBaseEventTitle(value: string): string {
+  return isDelegateEventTitle(value) ? value.slice(DELEGATE_EVENT_PREFIX.length) : value;
+}
+
+function getTraceSourceBadges(isDelegate: boolean, payload: Record<string, unknown>): string[] {
+  if (!isDelegate) {
+    return [];
+  }
+
+  const agentName = typeof payload.agent_name === "string" ? payload.agent_name.trim() : "";
+  const delegatedBy = typeof payload.delegated_by === "string" ? payload.delegated_by.trim() : "";
+  const parentIteration = Number(payload.parent_iteration) || 0;
+
+  return [
+    agentName ? `delegate ${agentName}` : "delegate",
+    delegatedBy ? `via ${delegatedBy}` : "",
+    parentIteration > 0 ? `parent ${parentIteration}` : "",
+  ].filter(Boolean);
+}
+
+function withTraceSourcePrefix(isDelegate: boolean, payload: Record<string, unknown>, summary: string): string {
+  if (!isDelegate) {
+    return summary;
+  }
+
+  const agentName = typeof payload.agent_name === "string" ? payload.agent_name.trim() : "";
+  if (!agentName) {
+    return `Delegate: ${summary}`;
+  }
+
+  const delegatedBy = typeof payload.delegated_by === "string" ? payload.delegated_by.trim() : "";
+  const sourceLabel = delegatedBy ? `${agentName} via ${delegatedBy}` : agentName;
+  return `Delegate ${sourceLabel}: ${summary}`;
+}
+
 function getTraceSummary(item: ActivityItem): string | null {
   const payload = asTracePayloadRecord(item.payload);
   if (!payload) {
     return null;
   }
+  const baseTitle = getBaseEventTitle(item.title);
+  const isDelegate = isDelegateEventTitle(item.title);
 
-  if (item.title === "context_window") {
+  if (baseTitle === "context_window") {
     const originalMessages = Number(payload.original_message_count) || 0;
     const requestMessages = Number(payload.request_message_count) || 0;
     const originalChars = Number(payload.original_char_count) || 0;
@@ -648,10 +1069,19 @@ function getTraceSummary(item: ActivityItem): string | null {
     const dropped = Number(payload.dropped_message_count) || 0;
     const truncated = Number(payload.truncated_message_count) || 0;
     const phase = typeof payload.phase === "string" ? payload.phase : "react";
-    return `${phase} pass compacted ${originalMessages} to ${requestMessages} messages and ${formatCompactNumber(originalChars)} to ${formatCompactNumber(requestChars)} chars. Summarized ${summarized}, dropped ${dropped}, truncated ${truncated}.`;
+    const method = typeof payload.compaction_method === "string" ? payload.compaction_method : "";
+    const estimatedTokens = Number(payload.estimated_prompt_tokens) || 0;
+    const tokenBudget = Number(payload.token_budget) || 0;
+    const tokenInfo = estimatedTokens && tokenBudget ? ` ~${formatCompactNumber(estimatedTokens)}/${formatCompactNumber(tokenBudget)} tokens` : "";
+    const methodLabel = method === "summarize" ? "LLM summarized" : method === "prune+summarize" ? "pruned + LLM summarized" : method === "prune" ? "pruned" : "compacted";
+    return withTraceSourcePrefix(
+      isDelegate,
+      payload,
+      `${phase} ${methodLabel} ${originalMessages} to ${requestMessages} messages${tokenInfo}. Summarized ${summarized}, dropped ${dropped}, truncated ${truncated}.`,
+    );
   }
 
-  if (item.title === "model_call") {
+  if (baseTitle === "model_call") {
     const provider = typeof payload.provider === "string" ? payload.provider : "provider";
     const model = typeof payload.model === "string" ? payload.model : "model";
     const phase = typeof payload.phase === "string" ? payload.phase : "react";
@@ -659,14 +1089,61 @@ function getTraceSummary(item: ActivityItem): string | null {
     const duration = formatDurationLabel(payload.elapsed_ms);
     const requestMessages = Number(payload.request_message_count) || 0;
     const requestChars = Number(payload.request_char_count) || 0;
+    const promptTokens = Number(payload.prompt_tokens) || 0;
+    const completionTokens = Number(payload.completion_tokens) || 0;
+    const tokenInfo = promptTokens ? ` (${formatCompactNumber(promptTokens)}+${formatCompactNumber(completionTokens)} tokens)` : "";
     const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
-    const base = `${provider} / ${model} ${phase} call ${status}${duration ? ` in ${duration}` : ""} with ${requestMessages} messages and ${formatCompactNumber(requestChars)} chars.`;
-    return detail ? `${base} ${detail}` : base;
+    const base = `${provider} / ${model} ${phase} call ${status}${duration ? ` in ${duration}` : ""} with ${requestMessages} messages${tokenInfo}.`;
+    return withTraceSourcePrefix(isDelegate, payload, detail ? `${base} ${detail}` : base);
   }
 
-  if (item.title === "error") {
+  if (baseTitle === "tool_calls") {
+    const toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls.length : 0;
+    if (!toolCalls) {
+      return isDelegate ? withTraceSourcePrefix(isDelegate, payload, "Requested tool execution.") : null;
+    }
+    return withTraceSourcePrefix(isDelegate, payload, `Requested ${toolCalls} tool call${toolCalls === 1 ? "" : "s"}.`);
+  }
+
+  if (baseTitle === "tool_results") {
+    const results = Array.isArray(payload.results) ? payload.results.length : 0;
+    if (!results) {
+      return isDelegate ? withTraceSourcePrefix(isDelegate, payload, "Collected tool results.") : null;
+    }
+    return withTraceSourcePrefix(isDelegate, payload, `Collected ${results} tool result${results === 1 ? "" : "s"}.`);
+  }
+
+  if (baseTitle === "thought") {
+    const summary = typeof payload.summary === "string" ? payload.summary.trim() : "";
+    return summary ? withTraceSourcePrefix(isDelegate, payload, summary) : null;
+  }
+
+  if (baseTitle === "iteration") {
+    const iteration = Number(payload.iteration) || 0;
+    const base = iteration ? `Started ReAct iteration ${iteration}.` : "Started a ReAct iteration.";
+    return withTraceSourcePrefix(isDelegate, payload, base);
+  }
+
+  if (baseTitle === "assistant") {
+    const text = typeof payload.text === "string" ? payload.text.trim() : "";
+    return text ? withTraceSourcePrefix(isDelegate, payload, `Streaming response: ${truncateTraceSummaryText(text)}`) : null;
+  }
+
+  if (baseTitle === "final") {
+    const text = typeof payload.output_text === "string" ? payload.output_text.trim() : "";
+    return text
+      ? withTraceSourcePrefix(isDelegate, payload, `Completed with final response: ${truncateTraceSummaryText(text)}`)
+      : withTraceSourcePrefix(isDelegate, payload, "Completed with final response.");
+  }
+
+  if (baseTitle === "input_required") {
+    const title = typeof payload.title === "string" ? payload.title.trim() : "";
+    return withTraceSourcePrefix(isDelegate, payload, title ? `Paused for input: ${title}` : "Paused for input.");
+  }
+
+  if (baseTitle === "error") {
     const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
-    return detail || null;
+    return detail ? withTraceSourcePrefix(isDelegate, payload, detail) : null;
   }
 
   return null;
@@ -677,9 +1154,12 @@ function getTraceBadges(item: ActivityItem): string[] {
   if (!payload) {
     return [];
   }
+  const baseTitle = getBaseEventTitle(item.title);
+  const isDelegate = isDelegateEventTitle(item.title);
 
-  if (item.title === "context_window") {
+  if (baseTitle === "context_window") {
     return [
+      ...getTraceSourceBadges(isDelegate, payload),
       `${payload.iteration || "?"} iter`,
       `${payload.request_message_count || 0} msgs`,
       `${formatCompactNumber(Number(payload.request_char_count) || 0)} chars`,
@@ -687,8 +1167,9 @@ function getTraceBadges(item: ActivityItem): string[] {
     ].filter(Boolean) as string[];
   }
 
-  if (item.title === "model_call") {
+  if (baseTitle === "model_call") {
     return [
+      ...getTraceSourceBadges(isDelegate, payload),
       `${payload.iteration || "?"} iter`,
       typeof payload.phase === "string" ? payload.phase : "react",
       formatDurationLabel(payload.elapsed_ms) || "",
@@ -697,9 +1178,54 @@ function getTraceBadges(item: ActivityItem): string[] {
     ].filter(Boolean) as string[];
   }
 
-  if (item.title === "error") {
+  if (baseTitle === "tool_calls") {
+    const toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls.length : 0;
+    return [
+      ...getTraceSourceBadges(isDelegate, payload),
+      toolCalls ? `${toolCalls} call${toolCalls === 1 ? "" : "s"}` : "",
+    ].filter(Boolean) as string[];
+  }
+
+  if (baseTitle === "tool_results") {
+    const results = Array.isArray(payload.results) ? payload.results.length : 0;
+    return [
+      ...getTraceSourceBadges(isDelegate, payload),
+      results ? `${results} result${results === 1 ? "" : "s"}` : "",
+    ].filter(Boolean) as string[];
+  }
+
+  if (baseTitle === "thought") {
+    return [
+      ...getTraceSourceBadges(isDelegate, payload),
+      `${payload.iteration || "?"} iter`,
+      typeof payload.stage === "string" ? payload.stage : "react",
+      typeof payload.kind === "string" ? payload.kind.replaceAll("_", " ") : "",
+    ].filter(Boolean) as string[];
+  }
+
+  if (baseTitle === "iteration") {
+    return [
+      ...getTraceSourceBadges(isDelegate, payload),
+      typeof payload.iteration === "number" ? `${payload.iteration} iter` : "",
+    ].filter(Boolean) as string[];
+  }
+
+  if (baseTitle === "assistant") {
+    return [...getTraceSourceBadges(isDelegate, payload), `${payload.iteration || "?"} iter`, "stream"].filter(Boolean) as string[];
+  }
+
+  if (baseTitle === "final") {
+    return [...getTraceSourceBadges(isDelegate, payload), "complete"].filter(Boolean) as string[];
+  }
+
+  if (baseTitle === "input_required") {
+    const questions = Array.isArray(payload.questions) ? payload.questions.length : 0;
+    return [...getTraceSourceBadges(isDelegate, payload), questions ? `${questions} questions` : "awaiting input"].filter(Boolean) as string[];
+  }
+
+  if (baseTitle === "error") {
     const statusCode = Number(payload.status_code) || 0;
-    return [statusCode ? `HTTP ${statusCode}` : ""].filter(Boolean) as string[];
+    return [...getTraceSourceBadges(isDelegate, payload), statusCode ? `HTTP ${statusCode}` : ""].filter(Boolean) as string[];
   }
 
   return [];
@@ -722,6 +1248,22 @@ function historyLabel(timestamp: number): string {
     return "Last 7 days";
   }
   return "Earlier";
+}
+
+function isTraceStreamEvent(event: string): boolean {
+  const baseEvent = getBaseEventTitle(event);
+  return [
+    "assistant",
+    "final",
+    "tool_calls",
+    "tool_results",
+    "iteration",
+    "thought",
+    "context_window",
+    "model_call",
+    "input_required",
+    "error",
+  ].includes(baseEvent);
 }
 
 function isReusableDraftThread(thread: ChatThread): boolean {
@@ -749,17 +1291,67 @@ export function ChatWorkspace() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [attachmentDeliveryMode, setAttachmentDeliveryMode] = useState<AttachmentDeliveryMode>("workspace");
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [composerMultiline, setComposerMultiline] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isRenamingTitle, setIsRenamingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [pendingDrafts, setPendingDrafts] = useState<Record<string, PendingQuestionDraft>>({});
+  const [tracePanelWidth, setTracePanelWidth] = useState(DEFAULT_TRACE_PANEL_WIDTH);
+  const [isTraceResizing, setIsTraceResizing] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const chatSplitRef = useRef<HTMLDivElement | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
 
   useEffect(() => {
     threadsRef.current = threads;
   }, [threads]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const stored = window.localStorage.getItem(TRACE_PANEL_STORAGE_KEY);
+    if (!stored) {
+      return;
+    }
+    const parsed = Number(stored);
+    if (Number.isFinite(parsed)) {
+      setTracePanelWidth(parsed);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(TRACE_PANEL_STORAGE_KEY, `${tracePanelWidth}`);
+  }, [tracePanelWidth]);
+
+  useEffect(() => {
+    const splitLayout = chatSplitRef.current;
+    if (!splitLayout || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const syncWidth = (containerWidth: number) => {
+      setTracePanelWidth((current) => clampTracePanelWidth(current, containerWidth));
+    };
+
+    syncWidth(splitLayout.clientWidth);
+
+    const observer = new ResizeObserver((entries) => {
+      const nextWidth = entries[0]?.contentRect.width ?? splitLayout.clientWidth;
+      syncWidth(nextWidth);
+    });
+
+    observer.observe(splitLayout);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -778,7 +1370,7 @@ export function ChatWorkspace() {
           : [createThread(sortedAgents[0]?.name || "")];
         setHealth(healthResult);
         setAgents(sortedAgents);
-        setSelectedAgent((current) => current || initialThreads[0]?.agentName || sortedAgents[0]?.name || "");
+        setSelectedAgent((current) => pickAvailableAgentName(sortedAgents, current, initialThreads[0]?.agentName, sortedAgents[0]?.name));
         setThreads(initialThreads);
         setActiveThreadId((current) => current || initialThreads[0]?.id || "");
       } catch (loadError) {
@@ -817,6 +1409,13 @@ export function ChatWorkspace() {
   );
 
   useEffect(() => {
+    const nextSelectedAgent = pickAvailableAgentName(agents, selectedAgent, activeThread?.agentName, threads[0]?.agentName);
+    if (nextSelectedAgent !== selectedAgent) {
+      setSelectedAgent(nextSelectedAgent);
+    }
+  }, [activeThread?.agentName, agents, selectedAgent, threads]);
+
+  useEffect(() => {
     setIsRenamingTitle(false);
     setTitleDraft(activeThread?.title || "");
   }, [activeThread?.id, activeThread?.title]);
@@ -836,9 +1435,7 @@ export function ChatWorkspace() {
         }
         const hydratedThread = threadFromSession(session);
         setThreads((current) => current.map((thread) => (thread.id === activeThread.id ? hydratedThread : thread)));
-        if (hydratedThread.agentName) {
-          setSelectedAgent((current) => current || hydratedThread.agentName);
-        }
+        setSelectedAgent((current) => pickAvailableAgentName(agents, current, hydratedThread.agentName));
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load conversation.");
@@ -850,7 +1447,7 @@ export function ChatWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, [activeThread]);
+  }, [activeThread, agents]);
 
   useEffect(() => {
     setDraftAttachments([]);
@@ -872,11 +1469,22 @@ export function ChatWorkspace() {
     const paddingBottom = Number.parseFloat(computedStyle.paddingBottom) || 0;
     const borderTop = Number.parseFloat(computedStyle.borderTopWidth) || 0;
     const borderBottom = Number.parseFloat(computedStyle.borderBottomWidth) || 0;
+    const singleLineHeight = Math.ceil(lineHeight + paddingTop + paddingBottom + borderTop + borderBottom);
     const maxHeight = lineHeight * 5 + paddingTop + paddingBottom + borderTop + borderBottom;
-    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
 
-    textarea.style.height = `${Math.max(nextHeight, lineHeight + paddingTop + paddingBottom)}px`;
+    if (!input.trim()) {
+      textarea.style.height = `${singleLineHeight}px`;
+      textarea.style.overflowY = "hidden";
+      setComposerMultiline(false);
+      return;
+    }
+
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    const isMultiline = textarea.scrollHeight > singleLineHeight + 2;
+
+    textarea.style.height = `${Math.max(nextHeight, singleLineHeight)}px`;
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+    setComposerMultiline(isMultiline);
   }, [input]);
 
   const currentAgent = useMemo(
@@ -909,21 +1517,35 @@ export function ChatWorkspace() {
   const traceEntries = useMemo(() => {
     const items = activeThread?.activity || [];
     return items.map((item, index) => {
-      const timestamp = getTimestampFromId(item.id, activeThread?.updatedAt || Date.now()) + index * 60000;
+      const timestamp = getTimestampFromId(item.id, activeThread?.updatedAt || Date.now());
+      const baseTitle = getBaseEventTitle(item.title);
+      const payload = asTracePayloadRecord(item.payload);
+      const isDelegate = isDelegateEventTitle(item.title);
       return {
         ...item,
-        label:
-          item.title === "error"
+        label: isDelegate
+          ? "Delegate"
+          : baseTitle === "error"
             ? "Error"
-            : item.title === "tool_results"
+            : baseTitle === "tool_results"
               ? "Result"
-              : item.title === "tool_calls"
+              : baseTitle === "tool_calls"
                 ? "Tool"
-                : item.title === "model_call"
+                : baseTitle === "iteration"
+                  ? "Iteration"
+                  : baseTitle === "thought"
+                    ? "Thought"
+                : baseTitle === "model_call"
                   ? "Model"
-                  : item.title === "context_window"
+                  : baseTitle === "context_window"
                     ? "Context"
-                    : "Thought",
+                    : baseTitle === "assistant"
+                      ? "Stream"
+                      : baseTitle === "final"
+                        ? "Final"
+                        : baseTitle === "input_required" || baseTitle === "input_resolved"
+                      ? "Input"
+                      : "Event",
         displayTime: formatTime(timestamp),
       };
     });
@@ -932,10 +1554,84 @@ export function ChatWorkspace() {
   const conversationMessages = activeThread?.messages || [];
   const displayedTraceEntries = traceEntries;
   const activePendingQuestion = activeThread?.pendingQuestion || null;
+  const chatSplitStyle = {
+    "--chat-trace-width": `${tracePanelWidth}px`,
+  } as CSSProperties;
 
   useEffect(() => {
     setPendingDrafts(buildInitialPendingDrafts(activePendingQuestion));
   }, [activePendingQuestion]);
+
+  function handleTraceResizeStart(event: React.MouseEvent<HTMLDivElement>) {
+    if (event.button !== 0 || window.matchMedia("(max-width: 980px)").matches) {
+      return;
+    }
+
+    const splitLayout = chatSplitRef.current;
+    if (!splitLayout) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.focus();
+
+    const startX = event.clientX;
+    const startWidth = tracePanelWidth;
+    const rootStyle = document.documentElement.style;
+    const previousCursor = rootStyle.cursor;
+    const previousUserSelect = rootStyle.userSelect;
+
+    setIsTraceResizing(true);
+    rootStyle.cursor = "col-resize";
+    rootStyle.userSelect = "none";
+
+    const handlePointerMove = (moveEvent: MouseEvent) => {
+      const delta = startX - moveEvent.clientX;
+      setTracePanelWidth(clampTracePanelWidth(startWidth + delta, splitLayout.clientWidth));
+    };
+
+    const stopResizing = () => {
+      setIsTraceResizing(false);
+      rootStyle.cursor = previousCursor;
+      rootStyle.userSelect = previousUserSelect;
+      window.removeEventListener("mousemove", handlePointerMove);
+      window.removeEventListener("mouseup", stopResizing);
+    };
+
+    window.addEventListener("mousemove", handlePointerMove);
+    window.addEventListener("mouseup", stopResizing);
+  }
+
+  function handleTraceResizeKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (window.matchMedia("(max-width: 980px)").matches) {
+      return;
+    }
+
+    const splitLayout = chatSplitRef.current;
+    if (!splitLayout) {
+      return;
+    }
+
+    const maxWidth = getMaxTracePanelWidth(splitLayout.clientWidth);
+    let nextWidth: number | null = null;
+
+    if (event.key === "ArrowLeft") {
+      nextWidth = tracePanelWidth + 24;
+    } else if (event.key === "ArrowRight") {
+      nextWidth = tracePanelWidth - 24;
+    } else if (event.key === "Home") {
+      nextWidth = MIN_TRACE_PANEL_WIDTH;
+    } else if (event.key === "End") {
+      nextWidth = maxWidth;
+    }
+
+    if (nextWidth === null) {
+      return;
+    }
+
+    event.preventDefault();
+    setTracePanelWidth(clampTracePanelWidth(nextWidth, splitLayout.clientWidth));
+  }
 
   function updateThread(threadId: string, updater: (thread: ChatThread) => ChatThread) {
     setThreads((current) => current.map((thread) => (thread.id === threadId ? updater(thread) : thread)));
@@ -990,7 +1686,7 @@ export function ChatWorkspace() {
     }
 
     const knownIds = new Set(draftAttachments.map((file) => file.id));
-    const uniqueFiles = incomingFiles.filter((file) => !knownIds.has(buildAttachmentId(file)));
+    const uniqueFiles = incomingFiles.filter((file) => !knownIds.has(buildAttachmentId(file, attachmentDeliveryMode)));
     if (uniqueFiles.length === 0) {
       return;
     }
@@ -998,7 +1694,9 @@ export function ChatWorkspace() {
     setError(null);
     setUploadingAttachments(true);
     try {
-      const uploaded = (await uploadChatAttachments(activeThread.sessionId, uniqueFiles)).files.map((file) => toUploadedComposerAttachment(file));
+      const uploaded = (await uploadChatAttachments(activeThread.sessionId, uniqueFiles, attachmentDeliveryMode)).files.map((file) =>
+        toUploadedComposerAttachment(file),
+      );
       setDraftAttachments((current) => {
         const existing = new Set(current.map((file) => file.id));
         return [...current, ...uploaded.filter((file) => !existing.has(file.id))];
@@ -1196,8 +1894,23 @@ export function ChatWorkspace() {
             return;
           }
 
-          if (event === "tool_calls" || event === "tool_results" || event === "iteration" || event === "context_window" || event === "model_call") {
-            const publishedDownloads = event === "tool_results" ? extractPublishedDownloadsFromPayload(payload) : [];
+          if (getBaseEventTitle(event) === "context_window") {
+            const ctxPayload = payload as { truncated_message_count?: number; compaction_method?: string; summarized_message_count?: number };
+            const truncated = Number(ctxPayload.truncated_message_count) || 0;
+            const summarized = Number(ctxPayload.summarized_message_count) || 0;
+            const method = typeof ctxPayload.compaction_method === "string" ? ctxPayload.compaction_method : null;
+            updateThread(threadId, (thread) => ({
+              ...thread,
+              updatedAt: Date.now(),
+              contextTruncated: (truncated > 0 || summarized > 0) ? true : thread.contextTruncated,
+              compactionMethod: method || thread.compactionMethod,
+              activity: [...thread.activity, { id: uid(event), title: event, payload }],
+            }));
+            return;
+          }
+
+          if (isTraceStreamEvent(event)) {
+            const publishedDownloads = getBaseEventTitle(event) === "tool_results" ? extractPublishedDownloadsFromPayload(payload) : [];
             updateThread(threadId, (thread) => ({
               ...thread,
               updatedAt: Date.now(),
@@ -1210,6 +1923,7 @@ export function ChatWorkspace() {
                   )
                 : thread.messages,
             }));
+            return;
           }
         },
       );
@@ -1243,7 +1957,7 @@ export function ChatWorkspace() {
   }
 
   async function handleSend() {
-    if (!selectedAgent || sending || uploadingAttachments || !activeThread || (!input.trim() && attachmentDrafts.length === 0)) {
+    if (!currentAgent || sending || uploadingAttachments || !activeThread || (!input.trim() && attachmentDrafts.length === 0)) {
       return;
     }
 
@@ -1251,7 +1965,15 @@ export function ChatWorkspace() {
     const attachments = [...attachmentDrafts];
     const attachmentMemoryPrompt = formatAttachmentMemoryPrompt(attachments);
     const requestInput = buildRequestInput(prompt, attachments);
-    const userContent = prompt || (attachments.length ? "Shared uploaded files." : "Shared selected file metadata.");
+    const hasWorkspaceOnly = attachments.some((file) => file.deliveryMode === "workspace");
+    const hasInlineParsed = attachments.some((file) => file.deliveryMode !== "workspace");
+    const defaultAttachmentContent =
+      hasWorkspaceOnly && hasInlineParsed
+        ? "Shared uploaded files and workspace file references."
+        : hasWorkspaceOnly
+          ? "Shared uploaded files in the agent workspace."
+          : "Shared uploaded files.";
+    const userContent = prompt || (attachments.length ? defaultAttachmentContent : "Shared selected file metadata.");
     const memoryUserInput = [prompt, attachmentMemoryPrompt].filter(Boolean).join("\n\n") || userContent;
 
     setInput("");
@@ -1272,7 +1994,7 @@ export function ChatWorkspace() {
   }
 
   async function handleSubmitPendingQuestion() {
-    if (!selectedAgent || sending || !activeThread || !activePendingQuestion) {
+    if (!currentAgent || sending || !activeThread || !activePendingQuestion) {
       return;
     }
 
@@ -1297,18 +2019,25 @@ export function ChatWorkspace() {
   return (
     <main className="workspace-shell chat-page-shell">
       {error ? <p className="inline-error chat-page-alert">{error}</p> : null}
+      {activeThread?.contextTruncated && !error ? (
+        <p className="inline-warning chat-page-alert">
+          {activeThread.compactionMethod === "summarize" || activeThread.compactionMethod === "prune+summarize"
+            ? "Conversation context was summarized to stay within the model limit. Earlier details are preserved in a condensed summary."
+            : "Some conversation context was truncated to fit the model limit. The agent may be missing earlier details."}
+        </p>
+      ) : null}
 
       <section className="chat-layout-grid">
         <aside className="panel-surface chat-history-panel">
           <div className="chat-sidebar-header">
             <h1 className="chat-sidebar-title">Chats</h1>
-            <button className="secondary-action chat-new-button" onClick={handleNewChat} type="button">
+            <Button variant="outline" className="chat-new-button" onClick={handleNewChat} type="button">
               New conversation
-            </button>
+            </Button>
           </div>
 
           <label className="search-field chat-search-field">
-            <input onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Search" value={historyQuery} />
+            <Input onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Search" value={historyQuery} />
           </label>
 
           <div className="history-stack">
@@ -1322,9 +2051,7 @@ export function ChatWorkspace() {
                       key={thread.id}
                       onClick={() => {
                         setActiveThreadId(thread.id);
-                        if (thread.agentName) {
-                          setSelectedAgent(thread.agentName);
-                        }
+                        setSelectedAgent((current) => pickAvailableAgentName(agents, thread.agentName, current));
                       }}
                       type="button"
                     >
@@ -1337,14 +2064,15 @@ export function ChatWorkspace() {
           </div>
         </aside>
 
-        <section className="panel-surface chat-conversation-panel">
+        <div className={isTraceResizing ? "chat-split-layout is-resizing" : "chat-split-layout"} ref={chatSplitRef} style={chatSplitStyle}>
+          <section className="panel-surface chat-conversation-panel">
           <div className="chat-main-header stack-gap-sm">
             <div className="chat-main-title-row">
               <div className="stack-gap-2xs grow-block">
                 {isRenamingTitle ? (
                   <label className="chat-title-edit">
                     <span className="detail-label">Session title</span>
-                    <input
+                    <Input
                       className="chat-title-input"
                       onChange={(event) => setTitleDraft(event.target.value)}
                       onKeyDown={(event) => {
@@ -1370,26 +2098,26 @@ export function ChatWorkspace() {
               <div className="chat-main-title-actions">
                 {isRenamingTitle ? (
                   <>
-                    <button className="secondary-action" onClick={() => setIsRenamingTitle(false)} type="button">
+                    <Button variant="outline" onClick={() => setIsRenamingTitle(false)} type="button">
                       Cancel
-                    </button>
-                    <button className="primary-action" onClick={() => void handleSaveTitle()} type="button">
+                    </Button>
+                    <Button onClick={() => void handleSaveTitle()} type="button">
                       Save title
-                    </button>
+                    </Button>
                   </>
                 ) : (
                   <>
-                    <button className="secondary-action" onClick={() => setIsRenamingTitle(true)} type="button">
+                    <Button variant="outline" onClick={() => setIsRenamingTitle(true)} type="button">
                       Rename
-                    </button>
-                    <button
-                      className="secondary-action danger-action"
+                    </Button>
+                    <Button
+                      variant="destructive"
                       disabled={!activeThread}
                       onClick={() => void handleDeleteThread(activeThread?.id || "")}
                       type="button"
                     >
                       Delete
-                    </button>
+                    </Button>
                   </>
                 )}
               </div>
@@ -1426,41 +2154,7 @@ export function ChatWorkspace() {
               </div>
             ) : (
               conversationMessages.map((message) => (
-                <article className={message.role === "user" ? "chat-message-row outbound" : "chat-message-row inbound"} key={message.id}>
-                  <div className={message.role === "user" ? "chat-bubble outbound" : "chat-bubble inbound"}>
-                    {message.attachments?.length ? (
-                      <div className="chat-attachment-list">
-                        {message.attachments.map((file) => (
-                          file.downloadUrl ? (
-                            <a className="chat-attachment-chip chat-attachment-chip-link" download href={file.downloadUrl} key={file.id}>
-                              <span className="chat-attachment-topline">
-                                <strong>{file.name}</strong>
-                                <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
-                              </span>
-                              <span className="chat-attachment-meta">{formatAttachmentMeta(file)}</span>
-                              {file.summary ? <span className="chat-attachment-summary">{file.summary}</span> : null}
-                              <span className="chat-attachment-action">Download</span>
-                            </a>
-                          ) : (
-                            <span className="chat-attachment-chip" key={file.id}>
-                              <span className="chat-attachment-topline">
-                                <strong>{file.name}</strong>
-                                <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
-                              </span>
-                              <span className="chat-attachment-meta">{formatAttachmentMeta(file)}</span>
-                              {file.summary ? <span className="chat-attachment-summary">{file.summary}</span> : null}
-                            </span>
-                          )
-                        ))}
-                      </div>
-                    ) : null}
-                    <div className="chat-markdown">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
-                        {message.content || (sending && message.role === "assistant" ? "Thinking..." : "")}
-                      </ReactMarkdown>
-                    </div>
-                  </div>
-                </article>
+                <ChatMessageBubble key={message.id} message={message} sending={sending} />
               ))
             )}
           </div>
@@ -1529,7 +2223,7 @@ export function ChatWorkspace() {
                           </div>
                         ) : null}
                         {question.allow_freeform_input || question.options.length === 0 ? (
-                          <input
+                          <Input
                             className="pending-response-input"
                             onChange={(event) => {
                               const nextValue = event.target.value;
@@ -1550,52 +2244,136 @@ export function ChatWorkspace() {
                   })}
                 </div>
                 <div className="pending-question-actions">
-                  <button className="primary-action" disabled={sending} onClick={() => void handleSubmitPendingQuestion()} type="button">
+                  <Button disabled={sending} onClick={() => void handleSubmitPendingQuestion()} type="button">
                     {sending ? "Continuing" : "Continue"}
-                  </button>
+                  </Button>
                 </div>
               </section>
             ) : null}
-            <div className="composer-inline">
-              <div className="composer-input-wrap grow-block">
-                <input
-                  accept=".txt,.md,.json,.py,.yaml,.yml,.pdf,image/*"
-                  hidden
-                  multiple
-                  onChange={handleFileSelection}
-                  ref={fileInputRef}
-                  type="file"
-                />
-                <button
-                  aria-label="Upload files"
-                  className="composer-prefix composer-upload-button"
-                  disabled={Boolean(activePendingQuestion) || sending || uploadingAttachments}
-                  onClick={() => fileInputRef.current?.click()}
-                  type="button"
-                >
-                  +
-                </button>
-                <textarea
-                  className="chat-composer"
-                  disabled={Boolean(activePendingQuestion) || sending}
-                  onChange={(event) => setInput(event.target.value)}
-                  onPaste={(event) => {
-                    void handleComposerPaste(event);
-                  }}
-                  placeholder={activePendingQuestion ? "Answer the pending questions above to continue..." : "Message the current agent..."}
-                  ref={composerRef}
-                  rows={1}
-                  value={input}
-                />
+            <div className="composer-inline composer-gemini">
+              <input hidden multiple onChange={handleFileSelection} ref={fileInputRef} type="file" />
+              <div className={`composer-gemini-input-area${composerMultiline ? " is-multiline" : ""}`}>
+                <div className="composer-gemini-row">
+                  {!composerMultiline && (
+                    <Popover open={attachMenuOpen} onOpenChange={setAttachMenuOpen}>
+                      <PopoverTrigger
+                        className="composer-gemini-plus"
+                        disabled={Boolean(activePendingQuestion) || sending || uploadingAttachments}
+                        aria-label="Attach files"
+                      >
+                        <Plus className="size-5" />
+                      </PopoverTrigger>
+                      <PopoverContent align="start" side="top" className="w-64">
+                        <div className="stack-gap-md" style={{ padding: "4px 0" }}>
+                          <button
+                            className="composer-gemini-menu-item"
+                            disabled={Boolean(activePendingQuestion) || sending || uploadingAttachments}
+                            onClick={() => {
+                              fileInputRef.current?.click();
+                              setAttachMenuOpen(false);
+                            }}
+                            type="button"
+                          >
+                            <Upload className="size-4" />
+                            <span>Upload files</span>
+                          </button>
+                          <div className="composer-gemini-menu-divider" />
+                          <label className="composer-gemini-menu-item composer-gemini-menu-check">
+                            <input
+                              checked={attachmentDeliveryMode === "parse"}
+                              onChange={() => setAttachmentDeliveryMode((current) => (current === "parse" ? "workspace" : "parse"))}
+                              type="checkbox"
+                            />
+                            <span>Parse uploads</span>
+                            {attachmentDeliveryMode === "parse" ? <span className="composer-gemini-menu-check-badge">ON</span> : null}
+                          </label>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  )}
+                  <Textarea
+                    className="chat-composer composer-gemini-textarea"
+                    disabled={Boolean(activePendingQuestion) || sending}
+                    onChange={(event) => setInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                        event.preventDefault();
+                        void handleSend();
+                      }
+                    }}
+                    onPaste={(event) => {
+                      void handleComposerPaste(event);
+                    }}
+                    placeholder={activePendingQuestion ? "Answer the pending questions above to continue..." : "Message the current agent..."}
+                    ref={composerRef}
+                    rows={1}
+                    value={input}
+                  />
+                  {!composerMultiline && (
+                    <Button
+                      variant="default"
+                      size="icon"
+                      className="composer-gemini-send"
+                      disabled={!currentAgent || (!input.trim() && attachmentDrafts.length === 0) || sending || uploadingAttachments || Boolean(activePendingQuestion)}
+                      onClick={handleSend}
+                      type="button"
+                      aria-label="Send message"
+                    >
+                      {uploadingAttachments ? <Loader2 className="size-4 animate-spin" /> : sending ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+                    </Button>
+                  )}
+                </div>
+                {composerMultiline && (
+                  <div className="composer-gemini-bottom-bar">
+                    <Popover open={attachMenuOpen} onOpenChange={setAttachMenuOpen}>
+                      <PopoverTrigger
+                        className="composer-gemini-plus"
+                        disabled={Boolean(activePendingQuestion) || sending || uploadingAttachments}
+                        aria-label="Attach files"
+                      >
+                        <Plus className="size-5" />
+                      </PopoverTrigger>
+                      <PopoverContent align="start" side="top" className="w-64">
+                        <div className="stack-gap-md" style={{ padding: "4px 0" }}>
+                          <button
+                            className="composer-gemini-menu-item"
+                            disabled={Boolean(activePendingQuestion) || sending || uploadingAttachments}
+                            onClick={() => {
+                              fileInputRef.current?.click();
+                              setAttachMenuOpen(false);
+                            }}
+                            type="button"
+                          >
+                            <Upload className="size-4" />
+                            <span>Upload files</span>
+                          </button>
+                          <div className="composer-gemini-menu-divider" />
+                          <label className="composer-gemini-menu-item composer-gemini-menu-check">
+                            <input
+                              checked={attachmentDeliveryMode === "parse"}
+                              onChange={() => setAttachmentDeliveryMode((current) => (current === "parse" ? "workspace" : "parse"))}
+                              type="checkbox"
+                            />
+                            <span>Parse uploads</span>
+                            {attachmentDeliveryMode === "parse" ? <span className="composer-gemini-menu-check-badge">ON</span> : null}
+                          </label>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                    <Button
+                      variant="default"
+                      size="icon"
+                      className="composer-gemini-send"
+                      disabled={!currentAgent || (!input.trim() && attachmentDrafts.length === 0) || sending || uploadingAttachments || Boolean(activePendingQuestion)}
+                      onClick={handleSend}
+                      type="button"
+                      aria-label="Send message"
+                    >
+                      {uploadingAttachments ? <Loader2 className="size-4 animate-spin" /> : sending ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+                    </Button>
+                  </div>
+                )}
               </div>
-              <button
-                className="primary-action composer-send"
-                disabled={!selectedAgent || (!input.trim() && attachmentDrafts.length === 0) || sending || uploadingAttachments || Boolean(activePendingQuestion)}
-                onClick={handleSend}
-                type="button"
-              >
-                {uploadingAttachments ? "Processing files" : sending ? "Sending" : "Send"}
-              </button>
             </div>
             {attachmentDrafts.length ? (
               <div className="composer-file-list" role="list">
@@ -1609,61 +2387,87 @@ export function ChatWorkspace() {
                       <span className="composer-file-meta">{formatAttachmentMeta(file)}</span>
                       {file.summary ? <span className="composer-file-summary">{file.summary}</span> : null}
                     </div>
-                    <button className="composer-file-remove" onClick={() => handleRemoveFile(file.id)} type="button">
+                    <Button variant="ghost" className="composer-file-remove" onClick={() => handleRemoveFile(file.id)} type="button">
                       Remove
-                    </button>
+                    </Button>
                   </div>
                 ))}
               </div>
             ) : null}
-            <p className="helper-copy">
+            <p
+              className={
+                attachmentDeliveryMode === "workspace"
+                  ? "helper-copy composer-mode-hint is-inactive"
+                  : "helper-copy composer-mode-hint is-active"
+              }
+            >
               {activePendingQuestion
                 ? "The session is paused until you answer the pending questions."
                 : uploadingAttachments
                   ? "Processing attachments before they are sent to the agent."
-                  : "Context stays scoped to this thread. Switch agents without leaving the conversation surface."}
+                  : attachmentDeliveryMode === "workspace"
+                    ? "Parsing is off. New uploads go to the agent workspace and are only announced with file paths."
+                    : "Parsing is on. New uploads are parsed into chat context when that format is supported."}
             </p>
           </div>
-        </section>
+          </section>
 
-        <aside className="panel-surface chat-trace-panel stack-gap-sm">
-          <div className="panel-title-row align-start-row">
-            <div className="stack-gap-2xs grow-block">
-              <h2 className="panel-title is-trace-title">Agent trace</h2>
-              <div className="trace-filter-row">
-                <span className="trace-pill is-accent">{displayedTraceEntries.length} events</span>
-                <span className="trace-pill">local only</span>
-                <span className="trace-pill">All</span>
-              </div>
-            </div>
-            <button className="secondary-action trace-hide-button" type="button">
-              Hide
-            </button>
+          <div
+            aria-controls="chat-trace-panel"
+            aria-label="Resize agent trace panel"
+            aria-orientation="vertical"
+            aria-valuemax={MAX_TRACE_PANEL_WIDTH}
+            aria-valuemin={MIN_TRACE_PANEL_WIDTH}
+            aria-valuenow={tracePanelWidth}
+            className="chat-trace-resizer"
+            onKeyDown={handleTraceResizeKeyDown}
+            onMouseDown={handleTraceResizeStart}
+            role="separator"
+            tabIndex={0}
+            title="Drag to resize the trace panel"
+          >
+            <span className="chat-trace-resizer-grip" />
           </div>
 
-          <div className="trace-feed is-console-feed">
-            {displayedTraceEntries.map((item) => (
-              <article className="trace-entry compact-trace-entry" key={item.id}>
-                <div className="trace-entry-head">
-                  <span className="trace-pill is-accent">{item.label}</span>
-                  <span className="trace-time">{item.displayTime}</span>
+          <aside className="panel-surface chat-trace-panel stack-gap-sm" id="chat-trace-panel">
+            <div className="panel-title-row align-start-row">
+              <div className="stack-gap-2xs grow-block">
+                <h2 className="panel-title is-trace-title">Agent trace</h2>
+                <div className="trace-filter-row">
+                  <Badge className="trace-pill is-accent">{displayedTraceEntries.length} events</Badge>
+                  <Badge variant="outline" className="trace-pill">local only</Badge>
+                  <Badge variant="outline" className="trace-pill">All</Badge>
                 </div>
-                <strong>{formatActivityTitle(item.title)}</strong>
-                {getTraceSummary(item) ? <p className="trace-summary-copy">{getTraceSummary(item)}</p> : null}
-                {getTraceBadges(item).length ? (
-                  <div className="trace-badge-row">
-                    {getTraceBadges(item).map((badge) => (
-                      <span className="trace-inline-badge" key={`${item.id}-${badge}`}>
-                        {badge}
-                      </span>
-                    ))}
+              </div>
+              <Button variant="outline" className="trace-hide-button" type="button">
+                Hide
+              </Button>
+            </div>
+
+            <div className="trace-feed is-console-feed">
+              {displayedTraceEntries.map((item) => (
+                <article className="trace-entry compact-trace-entry" key={item.id}>
+                  <div className="trace-entry-head">
+                    <Badge className="trace-pill is-accent">{item.label}</Badge>
+                    <span className="trace-time">{item.displayTime}</span>
                   </div>
-                ) : null}
-                <pre className="trace-note">{formatTracePayload(item.payload)}</pre>
-              </article>
-            ))}
-          </div>
-        </aside>
+                  <strong>{formatActivityTitle(item.title)}</strong>
+                  {getTraceSummary(item) ? <p className="trace-summary-copy">{getTraceSummary(item)}</p> : null}
+                  {getTraceBadges(item).length ? (
+                    <div className="trace-badge-row">
+                      {getTraceBadges(item).map((badge) => (
+                        <span className="trace-inline-badge" key={`${item.id}-${badge}`}>
+                          {badge}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <pre className="trace-note">{formatTracePayload(item.payload)}</pre>
+                </article>
+              ))}
+            </div>
+          </aside>
+        </div>
       </section>
     </main>
   );

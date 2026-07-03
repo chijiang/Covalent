@@ -9,14 +9,14 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_framework.core.types import Message
-from agent_framework.infra.db import ChatSessionRow
+from agent_framework.infra.db import ChatSessionRow, run_session_operation
 
 
 SessionTitleSource = Literal["auto", "manual"]
 
 
 class ChatTranscriptMessage(BaseModel):
-    id: str
+    id: str 
     role: Literal["user", "assistant"]
     content: str
     attachments: list[dict[str, Any]] = Field(default_factory=list)
@@ -139,14 +139,16 @@ class PersistentSessionStore(SessionStore):
         self._session_factory = session_factory
 
     async def load_messages(self, session_id: str) -> list[Message]:
-        async with self._session_factory() as session:
+        async def _load(session: AsyncSession) -> list[Message]:
             row = await session.get(ChatSessionRow, session_id)
             if row is None:
                 return []
             return [Message.model_validate(item) for item in row.memory_messages_json]
 
+        return await run_session_operation(self._session_factory, _load)
+
     async def save_messages(self, session_id: str, messages: list[Message]) -> None:
-        async with self._session_factory() as session:
+        async def _save(session: AsyncSession) -> None:
             async with session.begin():
                 row = await session.get(ChatSessionRow, session_id)
                 if row is None:
@@ -154,20 +156,26 @@ class PersistentSessionStore(SessionStore):
                     session.add(row)
                 row.memory_messages_json = [message.model_dump(mode="json") for message in messages]
 
+        await run_session_operation(self._session_factory, _save)
+
     async def list_sessions(self) -> list[ChatSessionSummary]:
-        async with self._session_factory() as session:
-            rows = list(await session.scalars(select(ChatSessionRow).order_by(desc(ChatSessionRow.updated_at))))
+        async def _list(session: AsyncSession) -> list[ChatSessionRow]:
+            return list(await session.scalars(select(ChatSessionRow).order_by(desc(ChatSessionRow.updated_at))))
+
+        rows = await run_session_operation(self._session_factory, _list)
         return [self._summary_from_row(row) for row in rows]
 
     async def get_session(self, session_id: str) -> ChatSessionRecord | None:
-        async with self._session_factory() as session:
+        async def _get(session: AsyncSession) -> ChatSessionRecord | None:
             row = await session.get(ChatSessionRow, session_id)
             if row is None:
                 return None
             return self._record_from_row(row)
 
+        return await run_session_operation(self._session_factory, _get)
+
     async def save_session(self, record: ChatSessionRecord) -> ChatSessionRecord:
-        async with self._session_factory() as session:
+        async def _save(session: AsyncSession) -> ChatSessionRecord:
             async with session.begin():
                 row = await session.get(ChatSessionRow, record.id)
                 if row is None:
@@ -183,8 +191,10 @@ class PersistentSessionStore(SessionStore):
             await session.refresh(row)
             return self._record_from_row(row)
 
+        return await run_session_operation(self._session_factory, _save)
+
     async def update_title(self, session_id: str, title: str, title_source: SessionTitleSource = "manual") -> ChatSessionRecord:
-        async with self._session_factory() as session:
+        async def _update(session: AsyncSession) -> ChatSessionRecord:
             async with session.begin():
                 row = await session.get(ChatSessionRow, session_id)
                 if row is None:
@@ -194,14 +204,18 @@ class PersistentSessionStore(SessionStore):
             await session.refresh(row)
             return self._record_from_row(row)
 
+        return await run_session_operation(self._session_factory, _update)
+
     async def delete_session(self, session_id: str) -> bool:
-        async with self._session_factory() as session:
+        async def _delete(session: AsyncSession) -> bool:
             async with session.begin():
                 row = await session.get(ChatSessionRow, session_id)
                 if row is None:
                     return False
                 await session.delete(row)
                 return True
+
+        return await run_session_operation(self._session_factory, _delete)
 
     @staticmethod
     def _summary_from_row(row: ChatSessionRow) -> ChatSessionSummary:

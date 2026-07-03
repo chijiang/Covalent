@@ -21,8 +21,8 @@ class AgentRunRequest(BaseModel):
             normalized = value.strip()
             if not normalized:
                 raise ValueError("input must not be empty")
-            if len(value) > 32768:
-                raise ValueError("string input must be at most 32768 characters; use structured content for large attachments")
+            if len(value) > 1_000_000:
+                raise ValueError("string input must be at most 1M characters; use structured content for large attachments")
             return value
         if not value:
             raise ValueError("input content list must not be empty")
@@ -40,9 +40,7 @@ class AgentRunResponse(BaseModel):
 
 
 class ProviderSummaryResponse(BaseModel):
-    provider: str
     model: str
-    base_url: str | None = None
     timeout_seconds: float
 
 
@@ -51,12 +49,19 @@ class AgentSummaryResponse(BaseModel):
     description: str
     system_prompt: str
     reasoning_prompt: str
+    reasoning_level: str
     skills: list[str]
     local_tools: list[str]
     delegate_agents: list[str]
     capabilities: set[Capability]
     max_iterations: int
     provider: ProviderSummaryResponse
+
+
+class LocalToolSummaryResponse(BaseModel):
+    name: str
+    description: str | None = None
+    enabled_by_default: bool = False
 
 
 class ChatSessionMessageResponse(BaseModel):
@@ -73,6 +78,7 @@ class AttachmentUploadItemResponse(BaseModel):
     last_modified: int = 0
     workspace_path: str
     uploaded_at: datetime
+    delivery_mode: Literal["parse", "workspace"] = "parse"
     kind: Literal["text", "image", "pdf", "binary"] = "binary"
     summary: str = ""
     model_prompt_text: str = ""
@@ -143,23 +149,6 @@ class SkillInstallResponse(BaseModel):
     status: Literal["installed", "already_exists"]
 
 
-class SeedSyncRequest(BaseModel):
-    kinds: list[Literal["agents", "mcp", "skill_sources"]] = Field(
-        default_factory=lambda: ["mcp", "skill_sources", "agents"]
-    )
-    overwrite: bool = False
-
-
-class SeedSyncResult(BaseModel):
-    kind: Literal["agents", "mcp", "skill_sources"]
-    status: Literal["seeded", "overwritten", "skipped", "empty_seed"]
-    items: int
-
-
-class SeedSyncResponse(BaseModel):
-    results: list[SeedSyncResult] = Field(default_factory=list)
-
-
 class SkillPreviewFileResponse(BaseModel):
     path: str
     language: str
@@ -200,7 +189,7 @@ class McpToolCallResponse(BaseModel):
 
 
 class ConfigDocumentResponse(BaseModel):
-    kind: Literal["agents", "mcp", "skill_sources"]
+    kind: Literal["agents", "mcp", "skill_sources", "providers"]
     label: str
     filePath: str = "database"
     exists: bool = True
@@ -212,3 +201,44 @@ class ConfigDocumentResponse(BaseModel):
 
 class ConfigDocumentUpdateRequest(BaseModel):
     raw: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+ManagementKind = Literal["agents", "mcp", "skills"]
+ManagementExportFormat = Literal["yaml", "json"]
+
+
+class ManagementExportResponse(BaseModel):
+    kind: ManagementKind
+    format: ManagementExportFormat
+    file_name: str
+    content_type: str
+    content: str
+    item_count: int = 0
+
+
+class ManagementImportResponse(BaseModel):
+    kind: ManagementKind
+    imported_items: int = 0
+    applied_items: int = 0
+    summary: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SkillManagementSourceResponse(BaseModel):
+    type: Literal["built_in", "managed", "git", "inline", "unknown"]
+    category: Literal["built_in", "uploaded", "authored", "github_synced", "unknown"] | None = None
+    url: str | None = None
+    ref: str | None = None
+    subdir: str | None = None
+    name: str | None = None
+
+
+class SkillManagementItemResponse(BaseModel):
+    name: str
+    enabled: bool = True
+    category: Literal["built_in", "uploaded", "authored", "github_synced", "unknown"] = "unknown"
+    source_type: Literal["local", "git"] = "local"
+    version: str = ""
+    description: str = ""
+    source: SkillManagementSourceResponse

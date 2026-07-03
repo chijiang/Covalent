@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_framework.core.types import Capability
@@ -15,15 +15,17 @@ from agent_framework.infra.db import (
     AgentMcpToolRow,
     AgentRow,
     AgentSkillRow,
+    ChatSessionRow,
     McpServerEnvVarRow,
     McpServerRow,
+    ProviderRow,
     SkillStateRow,
     SkillSourceRow,
 )
 from agent_framework.mcp.spec import McpServerConfig, McpToolReference
 from agent_framework.model.base import ProviderConfig
 
-ConfigKind = Literal["agents", "mcp", "skill_sources"]
+ConfigKind = Literal["agents", "mcp", "skill_sources", "providers"]
 
 
 class PersistedAgentConfig(BaseModel):
@@ -31,6 +33,7 @@ class PersistedAgentConfig(BaseModel):
     description: str
     system_prompt: str
     reasoning_prompt: str = ""
+    reasoning_level: str = "none"
     provider: ProviderConfig
     skills: list[str] = Field(default_factory=list)
     local_tools: list[str] = Field(default_factory=list)
@@ -51,6 +54,29 @@ class PersistedSkillSourceConfig(BaseModel):
     subdir: str | None = None
 
 
+class PersistedProviderConfig(BaseModel):
+    name: str = "default"
+    provider_type: str = "openai_compatible"
+    base_url: str = ""
+    api_key: str | None = None
+    default_model: str = ""
+    is_default: bool = False
+    position: int = 0
+
+def _resolve_provider_config(existing_row: ProviderRow | None, config: PersistedProviderConfig) -> PersistedProviderConfig:
+    if existing_row is None:
+        return config
+    return PersistedProviderConfig(
+        name=config.name or existing_row.name,
+        provider_type=config.provider_type,
+        base_url=config.base_url,
+        api_key=config.api_key if config.api_key is not None else existing_row.api_key,
+        default_model=config.default_model,
+        is_default=config.is_default,
+        position=config.position,
+    )
+
+
 class ConfigStore:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -60,15 +86,25 @@ class ConfigStore:
             return await self._get_mcp_servers()
         if kind == "skill_sources":
             return await self._get_skill_sources()
+        if kind == "providers":
+            return await self._get_providers()
         return await self._get_agents()
 
-    async def save_document(self, kind: ConfigKind, payload: list[dict[str, object]]) -> list[dict[str, object]]:
+    async def save_document(
+        self,
+        kind: ConfigKind,
+        payload: list[dict[str, object]],
+        *,
+        agent_renames: dict[str, str] | None = None,
+    ) -> list[dict[str, object]]:
         if kind == "mcp":
             await self._save_mcp_servers(payload)
         elif kind == "skill_sources":
             await self._save_skill_sources(payload)
+        elif kind == "providers":
+            await self._save_providers(payload)
         else:
-            await self._save_agents(payload)
+            await self._save_agents(payload, agent_renames=agent_renames)
         return await self.get_document(kind)
 
     async def ensure_document(self, kind: ConfigKind, payload: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -133,6 +169,51 @@ class ConfigStore:
                             subdir=source.subdir,
                         )
                     )
+
+    async def _get_providers(self) -> list[dict[str, object]]:
+        async with self._session_factory() as session:
+            rows = list(
+                await session.scalars(select(ProviderRow).order_by(ProviderRow.position, ProviderRow.name))
+            )
+        payload: list[dict[str, object]] = []
+        for row in rows:
+            payload.append(
+                PersistedProviderConfig(
+                    name=row.name,
+                    provider_type=row.provider_type,
+                    base_url=row.base_url,
+                    api_key=row.api_key,
+                    default_model=row.default_model,
+                    is_default=row.is_default,
+                    position=row.position,
+                ).model_dump(mode="json")
+            )
+        return payload
+
+    async def _save_providers(self, payload: list[dict[str, object]]) -> None:
+        configs = [PersistedProviderConfig.model_validate(item) for item in payload]
+        async with self._session_factory() as session:
+            async with session.begin():
+                existing = list(await session.scalars(select(ProviderRow)))
+                existing_map = {row.name: row for row in existing}
+                saved_names: set[str] = set()
+
+                for config in configs:
+                    saved_names.add(config.name)
+                    row = existing_map.pop(config.name, None)
+                    if row is None:
+                        row = ProviderRow(name=config.name)
+                        session.add(row)
+                    config = _resolve_provider_config(row, config)
+                    row.provider_type = config.provider_type
+                    row.base_url = config.base_url
+                    row.api_key = config.api_key
+                    row.default_model = config.default_model
+                    row.is_default = config.is_default
+                    row.position = config.position
+
+                for row in existing_map.values():
+                    await session.delete(row)
 
     async def _get_mcp_servers(self) -> list[dict[str, object]]:
         async with self._session_factory() as session:
@@ -229,6 +310,7 @@ class ConfigStore:
                     description=row.description,
                     system_prompt=row.system_prompt,
                     reasoning_prompt=row.reasoning_prompt,
+                    reasoning_level=row.reasoning_level,
                     provider=ProviderConfig(
                         provider=row.provider_name,
                         model=row.provider_model,
@@ -249,15 +331,21 @@ class ConfigStore:
             )
         return payload
 
-    async def _save_agents(self, payload: list[dict[str, object]]) -> None:
+    async def _save_agents(self, payload: list[dict[str, object]], *, agent_renames: dict[str, str] | None = None) -> None:
         agents = [PersistedAgentConfig.model_validate(item) for item in payload]
         agent_names = {agent.name for agent in agents}
+        rename_map = {
+            old_name: new_name
+            for old_name, new_name in (agent_renames or {}).items()
+            if old_name and new_name and old_name != new_name and new_name in agent_names
+        }
 
         async with self._session_factory() as session:
             async with session.begin():
                 known_mcp_servers = set(await session.scalars(select(McpServerRow.name)))
                 for agent in agents:
-                    missing_delegates = [name for name in agent.delegate_agents if name not in agent_names]
+                    normalized_delegate_agents = [rename_map.get(name, name) for name in agent.delegate_agents]
+                    missing_delegates = [name for name in normalized_delegate_agents if name not in agent_names]
                     if missing_delegates:
                         raise ValueError(f"Unknown delegate agents for '{agent.name}': {', '.join(missing_delegates)}")
                     missing_mcp = [name for name in agent.mcp_servers if name not in known_mcp_servers]
@@ -272,6 +360,14 @@ class ConfigStore:
                     if unselected_servers:
                         raise ValueError(
                             f"MCP tools for '{agent.name}' reference unselected servers: {', '.join(sorted(set(unselected_servers)))}"
+                        )
+
+                if rename_map:
+                    for old_name, new_name in rename_map.items():
+                        await session.execute(
+                            update(ChatSessionRow)
+                            .where(ChatSessionRow.agent_name == old_name)
+                            .values(agent_name=new_name, updated_at=ChatSessionRow.updated_at)
                         )
 
                 await session.execute(delete(AgentCapabilityRow))
@@ -289,6 +385,7 @@ class ConfigStore:
                             description=agent.description,
                             system_prompt=agent.system_prompt,
                             reasoning_prompt=agent.reasoning_prompt,
+                            reasoning_level=agent.reasoning_level,
                             local_tools=list(agent.local_tools),
                             provider_name=agent.provider.provider,
                             provider_model=agent.provider.model,
@@ -304,11 +401,12 @@ class ConfigStore:
                 await session.flush()
 
                 for agent in agents:
+                    normalized_delegate_agents = [rename_map.get(name, name) for name in agent.delegate_agents]
                     for position, capability in enumerate(agent.capabilities):
                         session.add(AgentCapabilityRow(agent_name=agent.name, capability=capability.value, position=position))
                     for position, skill_name in enumerate(agent.skills):
                         session.add(AgentSkillRow(agent_name=agent.name, skill_name=skill_name, position=position))
-                    for position, delegate_name in enumerate(agent.delegate_agents):
+                    for position, delegate_name in enumerate(normalized_delegate_agents):
                         session.add(
                             AgentDelegateRow(
                                 agent_name=agent.name,

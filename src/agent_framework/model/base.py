@@ -13,7 +13,7 @@ class ProviderConfig(BaseModel):
     model: str
     api_key: str | None = Field(default=None, exclude=True, repr=False)
     base_url: str | None = None
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = 500.0
     extra: dict[str, str] = Field(default_factory=dict)
 
     def cache_key(self) -> str:

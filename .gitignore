@@ -30,5 +30,11 @@ __pycache__
 *.pyo
 *.pyd
 
+# python env
+uv.lock
+
 # tmp
 tmp
+
+# build
+.next
