@@ -8,12 +8,12 @@ type PanelHeaderProps = {
 
 export function PanelHeader({ title, meta, badge }: PanelHeaderProps) {
   return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0 space-y-0.5">
-        <h2 className="text-[length:var(--text-xl)] font-semibold tracking-[var(--tracking-tight)] text-foreground">{title}</h2>
-        {meta ? <p className="text-[length:var(--text-sm)] leading-[var(--leading-normal)] text-muted-foreground">{meta}</p> : null}
+    <div className="console-panel-header">
+      <div className="min-w-0 space-y-1">
+        <h2 className="chat-sidebar-title">{title}</h2>
+        {meta ? <p className="entity-meta">{meta}</p> : null}
       </div>
-      {badge}
+      {badge ? <div className="console-panel-header-badge">{badge}</div> : null}
     </div>
   );
 }

@@ -558,7 +558,7 @@ export function SkillsWorkspace() {
                 />
 
                 <div className="console-toolbar skill-toolbar">
-                  <Label className="search-field grow-block">
+                  <Label className="search-field console-search-field grow-block">
                     <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search skills, tools, or files" value={searchQuery} />
                   </Label>
                   <FilterToggleGroup
