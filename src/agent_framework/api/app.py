@@ -2278,19 +2278,22 @@ async def _resolve_default_provider(
     return default_provider_config(settings)
 
 
+def _format_api_key_masked(key: str) -> str:
+    if len(key) <= 8:
+        return "•" * len(key)
+    return f"{key[:5]}{'•' * (len(key) - 8)}{key[-3:]}"
+
+
 def _mask_provider_api_key(item: dict[str, object]) -> dict[str, object]:
     masked = dict(item)
     if masked.get("api_key"):
         key = str(masked["api_key"])
-        if len(key) <= 8:
-            masked["has_api_key"] = bool(key)
-            masked["api_key"] = None
-        else:
-            masked["has_api_key"] = True
-            masked["api_key_masked"] = key[:4] + "..." + key[-4:]
-            masked["api_key"] = None
+        masked["has_api_key"] = bool(key)
+        masked["api_key_masked"] = _format_api_key_masked(key) if key else None
+        masked["api_key"] = None
     else:
         masked["has_api_key"] = False
+        masked["api_key_masked"] = None
     return masked
 
 

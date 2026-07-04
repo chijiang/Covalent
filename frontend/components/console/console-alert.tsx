@@ -14,10 +14,10 @@ export function ConsoleAlert({ variant, children, className }: ConsoleAlertProps
   return (
     <p
       className={cn(
-        "rounded-lg border px-3.5 py-2.5 text-sm leading-relaxed",
-        variant === "error" && "border-border bg-muted/40 text-destructive",
-        variant === "info" && "border-border bg-muted/30 text-muted-foreground",
-        variant === "warning" && "border-border bg-muted/40 text-foreground",
+        "console-alert",
+        variant === "error" && "is-error",
+        variant === "info" && "is-info",
+        variant === "warning" && "is-warning",
         className,
       )}
       role={variant === "error" ? "alert" : undefined}

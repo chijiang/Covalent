@@ -19,7 +19,19 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ArrowUp, Loader2, Plus, Upload } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  ArrowUp,
+  Loader2,
+  PanelLeft,
+  PanelLeftClose,
+  PanelRight,
+  PanelRightClose,
+  Pencil,
+  Plus,
+  Trash2,
+  Upload,
+} from "lucide-react";
 
 import {
   deleteChatSession,
@@ -263,8 +275,8 @@ function ChatCodeBlock({ children, tone, ...props }: ComponentPropsWithoutRef<"p
     minWidth: 0,
     overflow: "hidden",
     borderRadius: 12,
-    background: isOutbound ? "rgba(0, 0, 0, 0.16)" : "#f6f6f6",
-    boxShadow: isOutbound ? undefined : "inset 0 0 0 1px rgba(16, 16, 16, 0.06)",
+    background: isOutbound ? "rgba(255, 255, 255, 0.1)" : "#f6f6f6",
+    boxShadow: isOutbound ? "inset 0 0 0 1px rgba(255, 255, 255, 0.12)" : "inset 0 0 0 1px rgba(16, 16, 16, 0.06)",
   };
   const toolbarStyle: CSSProperties = {
     position: "absolute",
@@ -2061,15 +2073,8 @@ export function ChatWorkspace() {
               <h2 className="chat-sidebar-title">Sessions</h2>
               <div className="chat-sidebar-header-actions">
                 <Button className="chat-new-button" onClick={handleNewChat} type="button" variant="outline">
-                  New
-                </Button>
-                <Button
-                  className="chat-history-hide-button"
-                  onClick={() => setIsHistoryPanelOpen(false)}
-                  type="button"
-                  variant="outline"
-                >
-                  Hide
+                  <Plus className="size-3.5" />
+                  New chat
                 </Button>
               </div>
             </div>
@@ -2147,60 +2152,104 @@ export function ChatWorkspace() {
               <div className="chat-main-title-actions">
                 {isRenamingTitle ? (
                   <>
-                    <Button variant="outline" onClick={() => setIsRenamingTitle(false)} type="button">
+                    <Button variant="ghost" size="sm" onClick={() => setIsRenamingTitle(false)} type="button">
                       Cancel
                     </Button>
-                    <Button onClick={() => void handleSaveTitle()} type="button">
-                      Save title
+                    <Button size="sm" onClick={() => void handleSaveTitle()} type="button">
+                      Save
                     </Button>
                   </>
                 ) : (
                   <>
-                    {!isHistoryPanelOpen ? (
-                      <>
-                        <Button variant="outline" onClick={() => setIsHistoryPanelOpen(true)} type="button">
-                          Show sessions
-                        </Button>
+                    <div className="chat-title-action-group">
+                      {!isHistoryPanelOpen ? (
                         <Button variant="outline" onClick={handleNewChat} type="button">
+                          <Plus className="size-3.5" />
                           New chat
                         </Button>
-                      </>
-                    ) : null}
-                    {!isTracePanelOpen ? (
-                      <Button variant="outline" onClick={() => setIsTracePanelOpen(true)} type="button">
-                        Show trace
+                      ) : null}
+                      <Button
+                        className="chat-icon-button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setIsRenamingTitle(true)}
+                        type="button"
+                        aria-label="Rename conversation"
+                        title="Rename conversation"
+                      >
+                        <Pencil className="size-4" />
                       </Button>
-                    ) : null}
-                    <Button variant="outline" onClick={() => setIsRenamingTitle(true)} type="button">
-                      Rename
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      disabled={!activeThread}
-                      onClick={() => void handleDeleteThread(activeThread?.id || "")}
-                      type="button"
-                    >
-                      Delete
-                    </Button>
+                      <Button
+                        className="chat-icon-button is-danger"
+                        variant="ghost"
+                        size="icon"
+                        disabled={!activeThread}
+                        onClick={() => void handleDeleteThread(activeThread?.id || "")}
+                        type="button"
+                        aria-label="Delete conversation"
+                        title="Delete conversation"
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
+                    <div className="chat-title-action-group">
+                      <Button
+                        className="chat-icon-button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setIsHistoryPanelOpen((open) => !open)}
+                        type="button"
+                        aria-label={isHistoryPanelOpen ? "Hide sessions panel" : "Show sessions panel"}
+                        title={isHistoryPanelOpen ? "Hide sessions panel" : "Show sessions panel"}
+                      >
+                        {isHistoryPanelOpen ? <PanelLeftClose className="size-4" /> : <PanelLeft className="size-4" />}
+                      </Button>
+                      <Button
+                        className="chat-icon-button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setIsTracePanelOpen((open) => !open)}
+                        type="button"
+                        aria-label={isTracePanelOpen ? "Hide trace panel" : "Show trace panel"}
+                        title={isTracePanelOpen ? "Hide trace panel" : "Show trace panel"}
+                      >
+                        {isTracePanelOpen ? <PanelRightClose className="size-4" /> : <PanelRight className="size-4" />}
+                      </Button>
+                    </div>
                   </>
                 )}
               </div>
             </div>
 
             <div className="chat-toolbar-row">
-              <label className="chat-select-shell grow-block">
-                <select disabled={loading || agents.length === 0} onChange={(event) => setSelectedAgent(event.target.value)} value={selectedAgent}>
-                  {agents.map((agent) => (
-                    <option key={agent.name} value={agent.name}>
-                      {agent.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="tag-row wrap-row">
+              <div className="chat-agent-select">
+                <Select
+                  value={selectedAgent || null}
+                  onValueChange={(value) => setSelectedAgent(value ?? "")}
+                >
+                  <SelectTrigger
+                    className="chat-agent-select-trigger"
+                    disabled={loading || agents.length === 0}
+                    size="sm"
+                    aria-label="Select agent"
+                  >
+                    <SelectValue placeholder={loading ? "Loading agents..." : "Select agent"} />
+                  </SelectTrigger>
+                  <SelectContent align="start" alignItemWithTrigger>
+                    {agents.map((agent) => (
+                      <SelectItem key={agent.name} value={agent.name}>
+                        {agent.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="chat-meta-tags">
                 <span className="soft-tag">{currentAgent?.provider.model || "No model"}</span>
                 <span className="soft-tag">{currentAgent?.capabilities?.[0] || "Chat"}</span>
-                <span className="soft-tag">{activeThread?.sessionId || "Contextualized"}</span>
+                <span className="soft-tag is-session-id" title={activeThread?.sessionId}>
+                  {activeThread?.sessionId || "Contextualized"}
+                </span>
               </div>
             </div>
           </div>
@@ -2501,26 +2550,17 @@ export function ChatWorkspace() {
                 <div className="stack-gap-2xs grow-block">
                   <h2 className="panel-title is-trace-title">Agent trace</h2>
                   <div className="trace-filter-row">
-                    <Badge variant="outline" className="trace-pill is-accent">{displayedTraceEntries.length} events</Badge>
+                    <Badge variant="secondary" className="trace-pill">{displayedTraceEntries.length} events</Badge>
                     <Badge variant="outline" className="trace-pill">local only</Badge>
-                    <Badge variant="outline" className="trace-pill">All</Badge>
                   </div>
                 </div>
-                <Button
-                  className="trace-hide-button"
-                  onClick={() => setIsTracePanelOpen(false)}
-                  type="button"
-                  variant="outline"
-                >
-                  Hide
-                </Button>
               </div>
 
               <div className="trace-feed is-console-feed">
                 {displayedTraceEntries.map((item) => (
                   <article className="trace-entry compact-trace-entry" key={item.id}>
                     <div className="trace-entry-head">
-                      <Badge variant="outline" className="trace-pill is-accent">{item.label}</Badge>
+                      <Badge variant="secondary" className="trace-pill">{item.label}</Badge>
                       <span className="trace-time">{item.displayTime}</span>
                     </div>
                     <strong>{formatActivityTitle(item.title)}</strong>

@@ -61,8 +61,11 @@ function buildNewProviderDraft(index: number): ProviderFormState {
   };
 }
 
-function providerKeyLabel(hasKey: boolean): string {
-  return hasKey ? "API key stored" : "No API key";
+function providerKeyLabel(hasKey: boolean, masked?: string | null): string {
+  if (!hasKey) {
+    return "No API key";
+  }
+  return masked?.trim() || "API key stored";
 }
 
 function providerDefaultLabel(defaultModel: string): string {
@@ -83,6 +86,7 @@ export function ProviderWorkspace() {
   const [isCreatingProvider, setIsCreatingProvider] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [inventoryFilter, setInventoryFilter] = useState<ProviderInventoryFilter>("all");
+  const [isReplacingApiKey, setIsReplacingApiKey] = useState(false);
 
   const selectedProvider = providers.find((provider) => provider.name === selectedName) ?? null;
   const defaultCount = providers.filter((provider) => (provider.default_model || "").trim() || provider.is_default).length;
@@ -128,6 +132,10 @@ export function ProviderWorkspace() {
   }, [form.name, selectedName]);
 
   const savedProviderHasKey = Boolean(selectedProvider?.has_api_key);
+  const storedApiKeyPreview = selectedProvider?.api_key_masked?.trim() || null;
+  const showingStoredApiKeyPreview = Boolean(
+    savedProviderHasKey && storedApiKeyPreview && !form.api_key.trim() && !isReplacingApiKey,
+  );
 
   useEffect(() => {
     if (isCreatingProvider) {
@@ -138,6 +146,7 @@ export function ProviderWorkspace() {
 
   useEffect(() => {
     setModelList([]);
+    setIsReplacingApiKey(false);
   }, [selectedName]);
 
   useEffect(() => {
@@ -228,6 +237,7 @@ export function ProviderWorkspace() {
     setModelList([]);
     setError(null);
     setMessage(null);
+    setIsReplacingApiKey(false);
     setForm(buildNewProviderDraft(providers.length));
     setIsCreatingProvider(true);
   }
@@ -356,7 +366,7 @@ export function ProviderWorkspace() {
                   />
 
                   <div className="console-toolbar skill-toolbar">
-                    <label className="search-field grow-block">
+                    <label className="search-field console-search-field grow-block">
                       <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search providers or endpoints" value={searchQuery} />
                     </label>
                     <FilterToggleGroup
@@ -389,7 +399,7 @@ export function ProviderWorkspace() {
                               <>
                                 <Badge variant="outline">{provider.provider_type}</Badge>
                                 {(provider.default_model || "").trim() ? <Badge variant="outline">{provider.default_model}</Badge> : null}
-                                <Badge variant="outline">{providerKeyLabel(Boolean(provider.has_api_key))}</Badge>
+                                <Badge variant="outline">{providerKeyLabel(Boolean(provider.has_api_key), provider.api_key_masked)}</Badge>
                               </>
                             }
                             onClick={() => {
@@ -482,8 +492,8 @@ export function ProviderWorkspace() {
                         <div className="skill-meta-chip" role="listitem" aria-label={`Role ${providerDefaultLabel(activeDefaultModel)}`} title={`Role ${providerDefaultLabel(activeDefaultModel)}`}>
                           <strong className="skill-meta-summary">{providerDefaultLabel(activeDefaultModel)}</strong>
                         </div>
-                        <div className="skill-meta-chip" role="listitem" aria-label={providerKeyLabel(savedProviderHasKey)} title={providerKeyLabel(savedProviderHasKey)}>
-                          <strong className="skill-meta-summary">{providerKeyLabel(savedProviderHasKey)}</strong>
+                        <div className="skill-meta-chip" role="listitem" aria-label={providerKeyLabel(savedProviderHasKey, selectedProvider?.api_key_masked)} title={providerKeyLabel(savedProviderHasKey, selectedProvider?.api_key_masked)}>
+                          <strong className="skill-meta-summary">{providerKeyLabel(savedProviderHasKey, selectedProvider?.api_key_masked)}</strong>
                         </div>
                         <div className="skill-meta-chip skill-meta-chip-path" role="listitem" aria-label={`Endpoint ${form.base_url || "Not configured"}`} title={`Endpoint ${form.base_url || "Not configured"}`}>
                           <strong className="skill-meta-summary skill-path-value">{form.base_url || "No endpoint"}</strong>
@@ -514,10 +524,10 @@ export function ProviderWorkspace() {
                               value={form.provider_type}
                               onValueChange={(value) => handleFormChange("provider_type", value ?? "")}
                             >
-                              <SelectTrigger>
+                              <SelectTrigger className="console-select-trigger w-full">
                                 <SelectValue />
                               </SelectTrigger>
-                              <SelectContent>
+                              <SelectContent align="start" alignItemWithTrigger>
                                 <SelectItem value="openai_compatible">OpenAI Compatible</SelectItem>
                               </SelectContent>
                             </Select>
@@ -537,31 +547,46 @@ export function ProviderWorkspace() {
                           <Label className="form-field">
                             <span>API key</span>
                             <Input
+                              aria-label={showingStoredApiKeyPreview ? `Stored API key ${storedApiKeyPreview}` : "API key"}
                               autoComplete="off"
+                              className={showingStoredApiKeyPreview ? "console-api-key-preview-input" : undefined}
+                              onBlur={() => {
+                                if (!form.api_key.trim() && savedProviderHasKey) {
+                                  setIsReplacingApiKey(false);
+                                }
+                              }}
                               onChange={(event) => handleFormChange("api_key", event.target.value)}
-                              placeholder={savedProviderHasKey ? "Save to replace the stored key" : "sk-..."}
-                              type="password"
-                              value={form.api_key}
+                              onFocus={() => {
+                                if (showingStoredApiKeyPreview) {
+                                  setIsReplacingApiKey(true);
+                                }
+                              }}
+                              placeholder={savedProviderHasKey ? "Enter a new key to replace the stored one" : "sk-..."}
+                              readOnly={showingStoredApiKeyPreview}
+                              type={showingStoredApiKeyPreview ? "text" : "password"}
+                              value={showingStoredApiKeyPreview ? storedApiKeyPreview || "" : form.api_key}
                             />
                             <small className="entity-meta">
                               {savedProviderHasKey
-                                ? "A key is already stored. Leave this blank to keep it, or save a new key to replace it."
+                                ? showingStoredApiKeyPreview
+                                  ? "The stored key is shown with the middle hidden. Click the field to replace it, or leave it unchanged to keep the current key."
+                                  : "Leave this blank to keep the stored key, or enter a new key to replace it."
                                 : isCreatingProvider
                                   ? "The key is saved only when you create this provider."
                                   : "Save a key before loading the provider model catalog."}
                             </small>
                           </Label>
-                          <Label className="form-field">
+                          <Label className="form-field console-form-select">
                             <span>Default model</span>
                             {modelList.length > 0 ? (
                               <Select
                                 value={form.default_model}
                                 onValueChange={(value) => handleFormChange("default_model", value ?? "")}
                               >
-                                <SelectTrigger>
+                                <SelectTrigger className="console-select-trigger w-full">
                                   <SelectValue placeholder="Not the default route" />
                                 </SelectTrigger>
-                                <SelectContent>
+                                <SelectContent align="start" alignItemWithTrigger>
                                   <SelectItem value="">Not the default route</SelectItem>
                                   {!modelList.includes(form.default_model) && form.default_model ? (
                                     <SelectItem value={form.default_model}>{form.default_model} (current)</SelectItem>

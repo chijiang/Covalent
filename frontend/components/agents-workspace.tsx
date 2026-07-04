@@ -850,7 +850,7 @@ export function AgentsWorkspace() {
                 />
 
                 <div className="console-toolbar skill-toolbar">
-                  <div className="search-field grow-block">
+                  <div className="search-field console-search-field grow-block">
                     <Label className="sr-only" htmlFor="agent-search">
                       Search agents
                     </Label>
@@ -921,18 +921,7 @@ export function AgentsWorkspace() {
 
               <ConsolePanel className="skill-detail-panel agent-detail-panel" id="agent-detail-panel">
                 {selectedAgent ? (
-                  <div
-                    className="agent-detail-scroll stack-gap-sm"
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      minHeight: 0,
-                      height: "100%",
-                      overflow: "auto",
-                      gap: 6,
-                      paddingRight: 4,
-                    }}
-                  >
+                  <div className="agent-detail-scroll stack-gap-sm">
                     <div className="skill-detail-header">
                       <div className="stack-gap-xs grow-block">
                         <div className="skill-detail-title-row">
@@ -1017,10 +1006,10 @@ export function AgentsWorkspace() {
                             value={form.providerName}
                             onValueChange={(value) => setForm((current) => ({ ...current, providerName: value ?? "" }))}
                           >
-                            <SelectTrigger className="w-full">
+                            <SelectTrigger className="console-select-trigger w-full">
                               <SelectValue />
                             </SelectTrigger>
-                            <SelectContent>
+                            <SelectContent align="start" alignItemWithTrigger>
                               <SelectItem value="">{defaultRouteOptionLabel}</SelectItem>
                               {providers.map((p) => (
                                 <SelectItem key={p.name} value={p.name}>
@@ -1038,10 +1027,10 @@ export function AgentsWorkspace() {
                               value={form.model}
                               onValueChange={(value) => setForm((current) => ({ ...current, model: value ?? "" }))}
                             >
-                              <SelectTrigger className="w-full">
+                              <SelectTrigger className="console-select-trigger w-full">
                                 <SelectValue />
                               </SelectTrigger>
-                              <SelectContent>
+                              <SelectContent align="start" alignItemWithTrigger>
                                 <SelectItem value="">{form.providerName ? "Select a model..." : "Use configured default model"}</SelectItem>
                                 {!availableModels.includes(form.model) && form.model && (
                                   <SelectItem value={form.model}>{form.model} (current)</SelectItem>
@@ -1075,10 +1064,10 @@ export function AgentsWorkspace() {
                             value={form.reasoningLevel}
                             onValueChange={(value) => setForm((current) => ({ ...current, reasoningLevel: value ?? "none" }))}
                           >
-                            <SelectTrigger className="w-full">
+                            <SelectTrigger className="console-select-trigger w-full">
                               <SelectValue />
                             </SelectTrigger>
-                            <SelectContent>
+                            <SelectContent align="start" alignItemWithTrigger>
                               {REASONING_LEVEL_OPTIONS.map((level) => (
                                 <SelectItem key={level} value={level}>{level}</SelectItem>
                               ))}
@@ -1104,7 +1093,7 @@ export function AgentsWorkspace() {
                     </FormSection>
 
                     <FormSection title="Routing">
-                      <div className="form-grid two-up">
+                      <div className="form-grid console-routing-grid">
                         <MultiSelectField
                           helper="Attach reusable skill packages that add domain-specific instructions, files, or executable tools."
                           label="Skills"

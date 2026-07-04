@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +9,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 export type MultiSelectOption = {
@@ -45,6 +44,8 @@ export function MultiSelectField({
 }: MultiSelectFieldProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const [anchorWidth, setAnchorWidth] = useState<number | undefined>();
 
   const optionByValue = useMemo(() => new Map(options.map((option) => [option.value, option])), [options]);
 
@@ -58,6 +59,20 @@ export function MultiSelectField({
 
   const emptyMessage =
     typeof noOptionsMessage === "function" ? noOptionsMessage(query) : noOptionsMessage;
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function syncAnchorWidth() {
+      setAnchorWidth(anchorRef.current?.offsetWidth);
+    }
+
+    syncAnchorWidth();
+    window.addEventListener("resize", syncAnchorWidth);
+    return () => window.removeEventListener("resize", syncAnchorWidth);
+  }, [open]);
 
   function toggleOption(optionValue: string) {
     onChange(
@@ -74,71 +89,86 @@ export function MultiSelectField({
   }
 
   return (
-    <div className="space-y-1.5">
+    <div className="multi-select-field space-y-1.5">
       <Label>{label}</Label>
-      <Popover onOpenChange={setOpen} open={open}>
-        <PopoverTrigger
-          className={cn(
-            "flex min-h-10 w-full items-center justify-between gap-2 rounded-lg border border-input bg-background px-3 py-2 text-left text-sm shadow-xs transition-colors",
-            "hover:bg-muted/30 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-            isDisabled && "cursor-not-allowed opacity-50",
-          )}
-          disabled={isDisabled}
-          type="button"
+      <div className="w-full min-w-0" ref={anchorRef}>
+        <Popover
+          onOpenChange={(nextOpen) => {
+            setOpen(nextOpen);
+            if (!nextOpen) {
+              setQuery("");
+            }
+          }}
+          open={open}
         >
-          <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
-            {value.length === 0 ? (
-              <span className="text-muted-foreground">{placeholder}</span>
-            ) : (
-              value.map((item) => {
-                const option = optionByValue.get(item);
-                return (
-                  <Badge className="gap-1 pr-1" key={item} variant="secondary">
-                    {option?.label ?? item}
-                    <span
-                      aria-label={`Remove ${option?.label ?? item}`}
-                      aria-hidden={isDisabled}
-                      className={cn(
-                        "rounded-sm p-0.5 hover:bg-muted",
-                        isDisabled && "pointer-events-none",
-                      )}
-                      onClick={(event) => {
-                        if (isDisabled) {
-                          return;
-                        }
-                        removeOption(item, event);
-                      }}
-                      onKeyDown={(event) => {
-                        if (isDisabled) {
-                          return;
-                        }
-                        if (event.key === "Enter" || event.key === " ") {
-                          removeOption(item, event);
-                        }
-                      }}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      role="button"
-                      tabIndex={isDisabled ? -1 : 0}
-                    >
-                      <X className="size-3" />
-                    </span>
-                  </Badge>
-                );
-              })
+          <PopoverTrigger
+            className={cn(
+              "flex min-h-10 w-full items-center justify-between gap-2 rounded-lg border border-input bg-background px-3 py-2 text-left text-sm shadow-xs transition-colors",
+              "hover:bg-muted/30 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+              isDisabled && "cursor-not-allowed opacity-50",
             )}
-          </div>
-          <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-[min(100vw-2rem,28rem)] gap-0 p-0">
-          <div className="border-b border-border p-2">
-            <Input
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search options..."
-              value={query}
-            />
-          </div>
-          <ScrollArea className="max-h-60">
-            <div className="p-1">
+            disabled={isDisabled}
+            type="button"
+          >
+            <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+              {value.length === 0 ? (
+                <span className="text-muted-foreground">{placeholder}</span>
+              ) : (
+                value.map((item) => {
+                  const option = optionByValue.get(item);
+                  return (
+                    <Badge className="gap-1 pr-1" key={item} variant="secondary">
+                      {option?.label ?? item}
+                      <span
+                        aria-label={`Remove ${option?.label ?? item}`}
+                        aria-hidden={isDisabled}
+                        className={cn(
+                          "rounded-sm p-0.5 hover:bg-muted",
+                          isDisabled && "pointer-events-none",
+                        )}
+                        onClick={(event) => {
+                          if (isDisabled) {
+                            return;
+                          }
+                          removeOption(item, event);
+                        }}
+                        onKeyDown={(event) => {
+                          if (isDisabled) {
+                            return;
+                          }
+                          if (event.key === "Enter" || event.key === " ") {
+                            removeOption(item, event);
+                          }
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        role="button"
+                        tabIndex={isDisabled ? -1 : 0}
+                      >
+                        <X className="size-3" />
+                      </span>
+                    </Badge>
+                  );
+                })
+              )}
+            </div>
+            <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="multi-select-popover max-h-[min(20rem,calc(100vh-8rem))] w-auto gap-0 overflow-hidden p-0"
+            collisionPadding={12}
+            side="bottom"
+            sideOffset={6}
+            style={anchorWidth ? { width: anchorWidth } : undefined}
+          >
+            <div className="console-search-field shrink-0 border-b border-border p-2">
+              <Input
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search options..."
+                value={query}
+              />
+            </div>
+            <div className="multi-select-options min-h-0 flex-1 overflow-y-auto p-1">
               {filteredOptions.length === 0 ? (
                 <p className="px-3 py-6 text-center text-sm text-muted-foreground">{emptyMessage}</p>
               ) : (
@@ -164,16 +194,16 @@ export function MultiSelectField({
                 })
               )}
             </div>
-          </ScrollArea>
-          {value.length > 0 ? (
-            <div className="border-t border-border p-2">
-              <Button className="w-full" onClick={() => onChange([])} size="sm" type="button" variant="ghost">
-                Clear selection
-              </Button>
-            </div>
-          ) : null}
-        </PopoverContent>
-      </Popover>
+            {value.length > 0 ? (
+              <div className="shrink-0 border-t border-border bg-popover p-2">
+                <Button className="w-full" onClick={() => onChange([])} size="sm" type="button" variant="ghost">
+                  Clear selection
+                </Button>
+              </div>
+            ) : null}
+          </PopoverContent>
+        </Popover>
+      </div>
       {helper ? <p className="text-[13px] leading-relaxed text-muted-foreground">{helper}</p> : null}
     </div>
   );

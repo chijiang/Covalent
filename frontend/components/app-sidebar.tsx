@@ -54,15 +54,28 @@ export function AppSidebar() {
 
   return (
     <Sidebar className="border-r-0" collapsible="icon" variant="inset">
-      <SidebarHeader className="border-b border-sidebar-border/70 px-3 py-3">
+      <SidebarHeader className="border-b border-sidebar-border/70 px-3 py-3 group-data-[collapsible=icon]:px-2">
         <Link
-          className="flex min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-[15px] font-semibold tracking-tight text-sidebar-foreground transition-opacity hover:opacity-80 group-data-[collapsible=icon]:justify-center"
+          aria-label="Covalent home"
+          className="flex min-w-0 items-center rounded-md py-0.5 transition-opacity hover:opacity-80 group-data-[collapsible=icon]:justify-center"
           href="/"
         >
-          <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-foreground text-[11px] font-bold text-background">
-            AF
-          </span>
-          <span className="truncate group-data-[collapsible=icon]:hidden">Covalent</span>
+          <img
+            alt="Covalent"
+            className="h-10 w-full max-w-full object-contain object-left group-data-[collapsible=icon]:hidden"
+            decoding="async"
+            height={188}
+            src="/logos/covalent-logo-horizontal-1024.png"
+            width={1024}
+          />
+          <img
+            alt="Covalent"
+            className="hidden size-10 shrink-0 object-contain group-data-[collapsible=icon]:block"
+            decoding="async"
+            height={512}
+            src="/logos/covalent-mark-512.png"
+            width={512}
+          />
         </Link>
       </SidebarHeader>
       <SidebarContent>

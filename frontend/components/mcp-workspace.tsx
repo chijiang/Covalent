@@ -694,7 +694,7 @@ export function McpWorkspace() {
                 />
 
                 <div className="console-toolbar mcp-toolbar">
-                  <Label className="search-field grow-block">
+                  <Label className="search-field console-search-field grow-block">
                     <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search MCP services" value={searchQuery} />
                   </Label>
                   <FilterToggleGroup
@@ -756,18 +756,7 @@ export function McpWorkspace() {
 
               <ConsolePanel className="skill-detail-panel mcp-detail-panel" id="mcp-detail-panel">
                 {selectedServer ? (
-                  <div
-                    className="mcp-detail-scroll stack-gap-sm"
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      minHeight: 0,
-                      height: "100%",
-                      overflow: "auto",
-                      gap: 6,
-                      paddingRight: 4,
-                    }}
-                  >
+                  <div className="mcp-detail-scroll stack-gap-sm">
                     <div className="skill-detail-header">
                       <div className="stack-gap-xs grow-block">
                         <div className="skill-detail-title-row">
@@ -821,10 +810,10 @@ export function McpWorkspace() {
                         <div className="form-field">
                           <Label htmlFor="mcp-service-transport">Transport</Label>
                           <Select value={form.transport} onValueChange={(value) => setForm((current) => ({ ...current, transport: value as McpServerConfig["transport"] }))}>
-                            <SelectTrigger id="mcp-service-transport" className="w-full">
+                            <SelectTrigger className="console-select-trigger w-full" id="mcp-service-transport">
                               <SelectValue />
                             </SelectTrigger>
-                            <SelectContent>
+                            <SelectContent align="start" alignItemWithTrigger>
                               <SelectItem value="streamable_http">streamable_http</SelectItem>
                               <SelectItem value="sse">sse</SelectItem>
                               <SelectItem value="stdio">stdio</SelectItem>

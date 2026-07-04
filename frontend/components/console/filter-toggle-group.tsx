@@ -1,4 +1,4 @@
-import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type FilterToggleGroupProps<T extends string> = {
   value: T;
@@ -8,17 +8,16 @@ type FilterToggleGroupProps<T extends string> = {
 
 export function FilterToggleGroup<T extends string>({ value, onChange, options }: FilterToggleGroupProps<T>) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
+    <div className="console-filter-group">
       {options.map(([optionValue, label]) => (
-        <Button
+        <button
+          className={cn("console-filter-chip", value === optionValue && "is-active")}
           key={optionValue}
           onClick={() => onChange(optionValue)}
-          size="xs"
           type="button"
-          variant={value === optionValue ? "default" : "outline"}
         >
           {label}
-        </Button>
+        </button>
       ))}
     </div>
   );
