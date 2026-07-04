@@ -8,6 +8,15 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Covalent",
   description: "Control plane for agents, MCP services, and skills.",
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/logos/covalent-mark-32.png", type: "image/png", sizes: "32x32" },
+      { url: "/logos/covalent-mark-16.png", type: "image/png", sizes: "16x16" },
+    ],
+    shortcut: "/favicon.ico",
+    apple: "/logos/covalent-mark-256.png",
+  },
 };
 
 export default function RootLayout({

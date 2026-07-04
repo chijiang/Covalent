@@ -1301,58 +1301,57 @@ export function ChatWorkspace() {
   const [titleDraft, setTitleDraft] = useState("");
   const [pendingDrafts, setPendingDrafts] = useState<Record<string, PendingQuestionDraft>>({});
   const [tracePanelWidth, setTracePanelWidth] = useState(DEFAULT_TRACE_PANEL_WIDTH);
-  const [isTracePanelOpen, setIsTracePanelOpen] = useState(() => {
-    if (typeof window === "undefined") {
-      return true;
-    }
-    return window.localStorage.getItem(TRACE_PANEL_VISIBLE_STORAGE_KEY) !== "0";
-  });
-  const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(() => {
-    if (typeof window === "undefined") {
-      return true;
-    }
-    return window.localStorage.getItem(HISTORY_PANEL_VISIBLE_STORAGE_KEY) !== "0";
-  });
+  const [isTracePanelOpen, setIsTracePanelOpen] = useState(true);
+  const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(true);
   const [isTraceResizing, setIsTraceResizing] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatSplitRef = useRef<HTMLDivElement | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
+  const skipLayoutPersistRef = useRef(true);
 
   useEffect(() => {
     threadsRef.current = threads;
   }, [threads]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
+    const traceStored = window.localStorage.getItem(TRACE_PANEL_VISIBLE_STORAGE_KEY);
+    if (traceStored === "0") {
+      setIsTracePanelOpen(false);
     }
-    const stored = window.localStorage.getItem(TRACE_PANEL_STORAGE_KEY);
-    if (!stored) {
-      return;
+
+    const historyStored = window.localStorage.getItem(HISTORY_PANEL_VISIBLE_STORAGE_KEY);
+    if (historyStored === "0") {
+      setIsHistoryPanelOpen(false);
     }
-    const parsed = Number(stored);
-    if (Number.isFinite(parsed)) {
-      setTracePanelWidth(parsed);
+
+    const storedWidth = window.localStorage.getItem(TRACE_PANEL_STORAGE_KEY);
+    if (storedWidth) {
+      const parsed = Number(storedWidth);
+      if (Number.isFinite(parsed)) {
+        setTracePanelWidth(parsed);
+      }
     }
+
+    skipLayoutPersistRef.current = false;
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
+    if (skipLayoutPersistRef.current) {
       return;
     }
     window.localStorage.setItem(TRACE_PANEL_VISIBLE_STORAGE_KEY, isTracePanelOpen ? "1" : "0");
   }, [isTracePanelOpen]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
+    if (skipLayoutPersistRef.current) {
       return;
     }
     window.localStorage.setItem(HISTORY_PANEL_VISIBLE_STORAGE_KEY, isHistoryPanelOpen ? "1" : "0");
   }, [isHistoryPanelOpen]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
+    if (skipLayoutPersistRef.current) {
       return;
     }
     window.localStorage.setItem(TRACE_PANEL_STORAGE_KEY, `${tracePanelWidth}`);
