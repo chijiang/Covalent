@@ -12,7 +12,7 @@ import uvicorn
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Agent Framework entrypoint")
+    parser = argparse.ArgumentParser(description="Covalent entrypoint")
     subparsers = parser.add_subparsers(dest="command")
 
     serve_parser = subparsers.add_parser("serve", help="Run the FastAPI server")

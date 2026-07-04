@@ -1,9 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import Select, { type FormatOptionLabelMeta, type MultiValue, type StylesConfig } from "react-select";
 
-import { ManagementRail } from "@/components/management-rail";
+import { FormSection } from "@/components/console/form-section";
+import { MultiSelectField, type MultiSelectOption } from "@/components/console/multi-select-field";
+import { ConsoleAlert } from "@/components/console/console-alert";
+import { ConsolePanel } from "@/components/console/console-panel";
+import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
+import { InventoryListItem } from "@/components/console/inventory-list-item";
+import { PanelHeader } from "@/components/console/panel-header";
+import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
 import { exportManagementConfig, fetchProviderModels, getAgentLocalTools, getAgents, getConfig, getSkills, importManagementConfig, inspectMcpServer, saveConfig, sortAgentsForPicker } from "@/lib/client-api";
@@ -14,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select as ShadcnSelect, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 type AgentFormState = {
   name: string;
@@ -29,12 +36,6 @@ type AgentFormState = {
   capabilities: string[];
   providerName: string;
   model: string;
-};
-
-type MultiSelectOption = {
-  value: string;
-  label: string;
-  hint?: string;
 };
 
 const DEFAULT_AGENT_DESCRIPTION = "General-purpose ReAct agent";
@@ -234,225 +235,6 @@ function agentStatusTone(isActive: boolean): "enabled" | "disabled" {
 
 function routingCountLabel(count: number, noun: string): string {
   return `${count} ${noun}`;
-}
-
-const ROUTING_SELECT_STYLES: StylesConfig<MultiSelectOption, true> = {
-  container: (base) => ({
-    ...base,
-    width: "100%",
-  }),
-  control: (base, state) => ({
-    ...base,
-    minHeight: 40,
-    borderRadius: 8,
-    borderColor: state.isFocused ? "rgba(217, 45, 32, 0.42)" : "var(--border-soft)",
-    backgroundColor: "var(--surface-primary)",
-    boxShadow: state.isFocused ? "0 0 0 3px rgba(217, 45, 32, 0.12)" : "0 1px 0 rgba(17, 24, 39, 0.02)",
-    paddingInline: 2,
-    transition: "border-color 120ms ease, box-shadow 120ms ease",
-    ":hover": {
-      borderColor: "#c6cdd6",
-    },
-  }),
-  valueContainer: (base) => ({
-    ...base,
-    gap: 6,
-    padding: "4px 8px",
-  }),
-  placeholder: (base) => ({
-    ...base,
-    color: "var(--fg-muted)",
-    fontSize: 13,
-  }),
-  input: (base) => ({
-    ...base,
-    color: "var(--fg-primary)",
-    fontSize: 13,
-    margin: 0,
-    padding: 0,
-  }),
-  multiValue: (base) => ({
-    ...base,
-    alignItems: "center",
-    borderRadius: 8,
-    border: "1px solid var(--border-soft)",
-    backgroundColor: "var(--surface-tertiary)",
-    margin: 0,
-  }),
-  multiValueLabel: (base) => ({
-    ...base,
-    color: "var(--fg-primary)",
-    fontSize: 12,
-    fontWeight: 650,
-    letterSpacing: 0,
-    padding: "3px 8px",
-  }),
-  multiValueRemove: (base) => ({
-    ...base,
-    borderRadius: 8,
-    color: "var(--fg-muted)",
-    paddingInline: 6,
-    ":hover": {
-      backgroundColor: "var(--surface-accent-soft)",
-      color: "#991b1b",
-    },
-  }),
-  clearIndicator: (base) => ({
-    ...base,
-    color: "var(--fg-muted)",
-    padding: 8,
-    ":hover": {
-      color: "#991b1b",
-      backgroundColor: "var(--surface-secondary)",
-    },
-  }),
-  dropdownIndicator: (base, state) => ({
-    ...base,
-    color: state.isFocused ? "var(--fg-primary)" : "var(--fg-muted)",
-    padding: 8,
-    ":hover": {
-      color: "var(--fg-primary)",
-      backgroundColor: "var(--surface-secondary)",
-    },
-  }),
-  indicatorSeparator: (base) => ({
-    ...base,
-    alignSelf: "stretch",
-    marginBlock: 8,
-    backgroundColor: "var(--border-soft)",
-  }),
-  menuPortal: (base) => ({
-    ...base,
-    zIndex: 80,
-  }),
-  menu: (base) => ({
-    ...base,
-    overflow: "hidden",
-    borderRadius: 12,
-    border: "1px solid var(--border-soft)",
-    boxShadow: "0 16px 34px rgba(17, 24, 39, 0.14)",
-  }),
-  menuList: (base) => ({
-    ...base,
-    maxHeight: 260,
-    padding: 8,
-  }),
-  option: (base, state) => ({
-    ...base,
-    borderRadius: 8,
-    padding: "9px 10px",
-    backgroundColor: state.isSelected ? "var(--surface-accent-soft)" : state.isFocused ? "var(--surface-tertiary)" : "transparent",
-    color: "var(--fg-primary)",
-    cursor: "pointer",
-  }),
-  noOptionsMessage: (base) => ({
-    ...base,
-    color: "var(--fg-muted)",
-    fontSize: 12,
-  }),
-};
-
-function renderRoutingOption(option: MultiSelectOption, meta: FormatOptionLabelMeta<MultiSelectOption>) {
-  if (meta.context === "value") {
-    return option.label;
-  }
-
-  return (
-    <div
-      style={{
-        display: "grid",
-        gap: 2,
-      }}
-    >
-      <strong
-        style={{
-          color: "var(--fg-primary)",
-          fontSize: 13,
-          lineHeight: 1.35,
-        }}
-      >
-        {option.label}
-      </strong>
-      {option.hint ? (
-        <span
-          style={{
-            color: "var(--fg-muted)",
-            fontSize: 11,
-            lineHeight: 1.4,
-          }}
-        >
-          {option.hint}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function MultiSelectField({
-  label,
-  helper,
-  options,
-  value,
-  onChange,
-  placeholder = "Choose one or more",
-  noOptionsMessage = "No matching options",
-  isDisabled = false,
-}: {
-  label: string;
-  helper?: string;
-  options: MultiSelectOption[];
-  value: string[];
-  onChange: (nextValue: string[]) => void;
-  placeholder?: string;
-  noOptionsMessage?: string | ((inputValue: string) => string);
-  isDisabled?: boolean;
-}) {
-  const [menuPortalTarget, setMenuPortalTarget] = useState<HTMLElement | null>(null);
-  const optionByValue = useMemo(() => new Map(options.map((option) => [option.value, option])), [options]);
-  const selectedOptions = useMemo<MultiSelectOption[]>(
-    () => value.map((item) => optionByValue.get(item) ?? { value: item, label: item }),
-    [optionByValue, value],
-  );
-
-  useEffect(() => {
-    setMenuPortalTarget(document.body);
-  }, []);
-
-  function handleChange(nextValue: MultiValue<MultiSelectOption>) {
-    onChange(dedupeStrings(nextValue.map((item) => item.value)));
-  }
-
-  const instanceId = `agent-routing-${label.toLowerCase().replace(/\s+/g, "-")}`;
-
-  return (
-    <div className="form-field">
-      <Label>{label}</Label>
-      <Select<MultiSelectOption, true>
-        classNamePrefix="routing-select"
-        closeMenuOnSelect={false}
-        filterOption={(candidate, inputValue) => {
-          const haystack = `${candidate.data.label} ${candidate.data.hint || ""}`.toLowerCase();
-          return haystack.includes(inputValue.trim().toLowerCase());
-        }}
-        formatOptionLabel={renderRoutingOption}
-        hideSelectedOptions={false}
-        inputId={instanceId}
-        instanceId={instanceId}
-        isDisabled={isDisabled}
-        isClearable={value.length > 0}
-        isMulti
-        menuPlacement="auto"
-        menuPortalTarget={menuPortalTarget ?? undefined}
-        noOptionsMessage={({ inputValue }) => (typeof noOptionsMessage === "function" ? noOptionsMessage(inputValue) : noOptionsMessage)}
-        onChange={handleChange}
-        options={options}
-        placeholder={placeholder}
-        styles={ROUTING_SELECT_STYLES}
-        value={selectedOptions}
-      />
-      {helper ? <small className="entity-meta">{helper}</small> : null}
-    </div>
-  );
 }
 
 export function AgentsWorkspace() {
@@ -1020,8 +802,7 @@ export function AgentsWorkspace() {
   }
 
   return (
-    <main className="workspace-shell console-page-shell service-console-shell agent-settings-shell skill-settings-shell">
-      <section className="page-section stack-gap-md agent-settings-page skill-settings-page">
+    <section className="page-section console-page-shell agent-settings-page skill-settings-shell flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
         <input
           accept=".yaml,.yml,.json"
           hidden
@@ -1033,77 +814,63 @@ export function AgentsWorkspace() {
           ref={importInputRef}
           type="file"
         />
-        <div className="page-heading-row">
-          <div className="stack-gap-xs">
-            <h1 className="page-title is-console-title">Agent settings</h1>
-            <p className="page-subtitle">Create, review, and maintain agents with the same dense list-and-detail workflow used across the service console.</p>
-          </div>
-          <div className="page-action-row">
-            <Button onClick={appendStarterAgent} type="button">
-              Add agent
-            </Button>
-            <Button variant="outline" disabled={busyAction === "export"} onClick={() => void handleExport()} type="button">
-              {busyAction === "export" ? "Exporting" : "Export YAML"}
-            </Button>
-            <Button
-              variant="outline"
-              disabled={busyAction === "import-file"}
-              onClick={promptImportFile}
-              type="button"
-            >
-              {busyAction === "import-file" ? "Importing" : "Import file"}
-            </Button>
-          </div>
-        </div>
+        <PageHeaderActions>
+          <Button onClick={appendStarterAgent} type="button">
+            Add agent
+          </Button>
+          <Button variant="outline" disabled={busyAction === "export"} onClick={() => void handleExport()} type="button">
+            {busyAction === "export" ? "Exporting" : "Export YAML"}
+          </Button>
+          <Button variant="outline" disabled={busyAction === "import-file"} onClick={promptImportFile} type="button">
+            {busyAction === "import-file" ? "Importing" : "Import file"}
+          </Button>
+        </PageHeaderActions>
 
-        {message ? <p className="inline-feedback">{message}</p> : null}
-        {error ? <p className="inline-error">{error}</p> : null}
+        {message ? <ConsoleAlert variant="info">{message}</ConsoleAlert> : null}
+        {error ? <ConsoleAlert variant="error">{error}</ConsoleAlert> : null}
 
-        <section className="management-layout service-console-layout agent-settings-layout skill-settings-layout">
-          <ManagementRail />
-
-          <div className="management-main agent-settings-main skill-settings-main">
-            <section
-              className={isInventoryResizing ? "agent-settings-grid skill-management-grid skill-settings-grid console-split-layout is-resizing" : "agent-settings-grid skill-management-grid skill-settings-grid console-split-layout"}
-              ref={inventorySplitRef}
-              style={inventoryPanelStyle}
-            >
-              <section className="panel-surface skill-inventory-panel agent-inventory-panel stack-gap-sm">
-                <div className="panel-title-row align-start-row">
-                  <div className="stack-gap-2xs grow-block">
-                    <h2 className="panel-title">Configured agents</h2>
-                    <p className="entity-meta">
-                      {loading ? "Loading agent inventory..." : `${filteredAgents.length} shown · ${displayAgents.length} total · ${activeCount} active · ${draftCount} draft`}
-                    </p>
-                  </div>
-                  <Badge>{activeCount} active</Badge>
-                </div>
+        <section
+          className={
+            isInventoryResizing
+              ? "agent-settings-grid skill-management-grid skill-settings-grid console-split-layout is-resizing min-h-0 flex-1"
+              : "agent-settings-grid skill-management-grid skill-settings-grid console-split-layout min-h-0 flex-1"
+          }
+          ref={inventorySplitRef}
+          style={inventoryPanelStyle}
+        >
+              <ConsolePanel className="skill-inventory-panel agent-inventory-panel">
+                <PanelHeader
+                  badge={<Badge>{activeCount} active</Badge>}
+                  meta={
+                    loading
+                      ? "Loading agent inventory..."
+                      : `${filteredAgents.length} shown · ${displayAgents.length} total · ${activeCount} active · ${draftCount} draft`
+                  }
+                  title="Configured agents"
+                />
 
                 <div className="console-toolbar skill-toolbar">
                   <div className="search-field grow-block">
-                    <Label htmlFor="agent-search" className="sr-only">Search agents</Label>
+                    <Label className="sr-only" htmlFor="agent-search">
+                      Search agents
+                    </Label>
                     <Input id="agent-search" onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search agents" value={searchQuery} />
                   </div>
-                  <div className="filter-chip-row">
-                    {([
-                      ["all", "All"],
-                      ["active", "Active"],
-                      ["draft", "Draft"],
-                    ] as const).map(([value, label]) => (
-                      <Button
-                        variant={statusFilter === value ? "default" : "ghost"}
-                        size="sm"
-                        key={value}
-                        onClick={() => setStatusFilter(value)}
-                        type="button"
-                      >
-                        {label}
-                      </Button>
-                    ))}
-                  </div>
+                  <FilterToggleGroup
+                    onChange={setStatusFilter}
+                    options={
+                      [
+                        ["all", "All"],
+                        ["active", "Active"],
+                        ["draft", "Draft"],
+                      ] as const
+                    }
+                    value={statusFilter}
+                  />
                 </div>
 
-                <div className="skill-list agent-list">
+                <ScrollArea className="skill-list agent-list min-h-0 flex-1">
+                  <div className="flex flex-col gap-2 pr-2">
                   {loading ? <p className="empty-copy padded-empty">Loading agents...</p> : null}
                   {!loading && filteredAgents.length === 0 ? <p className="empty-copy padded-empty">No agents match the current filter.</p> : null}
                   {!loading
@@ -1113,28 +880,27 @@ export function AgentsWorkspace() {
                         const effectiveModel = runtime?.provider.model || agent.provider.model || "No model";
 
                         return (
-                          <button
-                            className={agent.name === selectedName ? "skill-list-item is-active" : "skill-list-item"}
+                          <InventoryListItem
+                            active={agent.name === selectedName}
+                            description={agent.description || "No description provided."}
                             key={agent.name}
+                            meta={
+                              <>
+                                <Badge variant="outline">{effectiveModel}</Badge>
+                                <Badge variant="outline">{routingCountLabel(agent.skills.length, "skills")}</Badge>
+                                <Badge variant="outline">{routingCountLabel(agent.local_tools?.length || 0, "local tools")}</Badge>
+                              </>
+                            }
                             onClick={() => setSelectedName(agent.name)}
-                            type="button"
-                          >
-                            <div className="skill-list-title-row">
-                              <strong>{agent.name}</strong>
-                              <Badge variant={isActive ? "default" : "secondary"}>{agentStatusLabel(isActive)}</Badge>
-                            </div>
-                            <p className="skill-list-description">{agent.description || "No description provided."}</p>
-                            <div className="skill-list-meta">
-                              <Badge variant="outline">{effectiveModel}</Badge>
-                              <Badge variant="outline">{routingCountLabel(agent.skills.length, "skills")}</Badge>
-                              <Badge variant="outline">{routingCountLabel(agent.local_tools?.length || 0, "local tools")}</Badge>
-                            </div>
-                          </button>
+                            title={agent.name}
+                            titleBadge={<Badge variant={isActive ? "default" : "secondary"}>{agentStatusLabel(isActive)}</Badge>}
+                          />
                         );
                       })
                     : null}
-                </div>
-              </section>
+                  </div>
+                </ScrollArea>
+              </ConsolePanel>
 
               <div
                 aria-controls="agent-detail-panel"
@@ -1153,7 +919,7 @@ export function AgentsWorkspace() {
                 <span className="console-panel-resizer-grip" />
               </div>
 
-              <section className="panel-surface skill-detail-panel agent-detail-panel" id="agent-detail-panel">
+              <ConsolePanel className="skill-detail-panel agent-detail-panel" id="agent-detail-panel">
                 {selectedAgent ? (
                   <div
                     className="agent-detail-scroll stack-gap-sm"
@@ -1230,14 +996,13 @@ export function AgentsWorkspace() {
                       </div>
                     </div>
 
-                    {formDirty ? <p className="inline-feedback">You have unsaved edits in this agent definition.</p> : null}
+                    {formDirty ? <ConsoleAlert variant="info">You have unsaved edits in this agent definition.</ConsoleAlert> : null}
 
                     <div className="mcp-form-grid">
-                      <section className="form-section stack-gap-sm">
-                        <div className="panel-title-row">
-                          <h3 className="editor-section-title">Basics</h3>
-                          <Badge variant={Boolean(selectedRuntime) ? "default" : "secondary"}>{agentStatusLabel(Boolean(selectedRuntime))}</Badge>
-                        </div>
+                      <FormSection
+                        action={<Badge variant={Boolean(selectedRuntime) ? "default" : "secondary"}>{agentStatusLabel(Boolean(selectedRuntime))}</Badge>}
+                        title="Basics"
+                      >
                         <div className="form-field">
                           <Label htmlFor="agent-name">Name</Label>
                           <Input id="agent-name" onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} value={form.name} />
@@ -1319,14 +1084,13 @@ export function AgentsWorkspace() {
                               ))}
                             </SelectContent>
                           </ShadcnSelect>
-                          <small className="entity-meta">Controls the model reasoning setting for this agent. Defaults to `none`.</small>
+                          <small className="text-[13px] text-muted-foreground">Controls the model reasoning setting for this agent. Defaults to `none`.</small>
                         </div>
-                      </section>
+                      </FormSection>
 
                     </div>
 
-                    <section className="form-section stack-gap-sm">
-                      <h3 className="editor-section-title">Prompts</h3>
+                    <FormSection title="Prompts">
                       <div className="form-field">
                         <Label htmlFor="agent-system-prompt">System prompt</Label>
                         <Textarea id="agent-system-prompt" onChange={(event) => setForm((current) => ({ ...current, systemPrompt: event.target.value }))} rows={8} value={form.systemPrompt} />
@@ -1335,12 +1099,11 @@ export function AgentsWorkspace() {
                       <div className="form-field">
                         <Label htmlFor="agent-reasoning-prompt">Reasoning prompt</Label>
                         <Textarea id="agent-reasoning-prompt" onChange={(event) => setForm((current) => ({ ...current, reasoningPrompt: event.target.value }))} rows={5} value={form.reasoningPrompt} />
-                        <small className="entity-meta">Defines the agent's built-in working method, such as when to reason explicitly or use tools. This is not a skill.</small>
+                        <small className="text-[13px] text-muted-foreground">Defines the agent's built-in working method, such as when to reason explicitly or use tools. This is not a skill.</small>
                       </div>
-                    </section>
+                    </FormSection>
 
-                    <section className="form-section stack-gap-sm">
-                      <h3 className="editor-section-title">Routing</h3>
+                    <FormSection title="Routing">
                       <div className="form-grid two-up">
                         <MultiSelectField
                           helper="Attach reusable skill packages that add domain-specific instructions, files, or executable tools."
@@ -1386,7 +1149,7 @@ export function AgentsWorkspace() {
                           value={form.capabilities}
                         />
                       </div>
-                    </section>
+                    </FormSection>
                   </div>
                 ) : (
                   <div className="skill-detail-empty">
@@ -1394,11 +1157,8 @@ export function AgentsWorkspace() {
                     <p className="entity-meta">Choose an agent from the inventory or add a new one to start editing.</p>
                   </div>
                 )}
-              </section>
-            </section>
-          </div>
+              </ConsolePanel>
         </section>
-      </section>
-    </main>
+    </section>
   );
 }
