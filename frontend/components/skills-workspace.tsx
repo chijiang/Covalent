@@ -7,7 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { ManagementRail } from "@/components/management-rail";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { ConsoleAlert } from "@/components/console/console-alert";
+import { ConsolePanel } from "@/components/console/console-panel";
+import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
+import { InventoryListItem } from "@/components/console/inventory-list-item";
+import { PanelHeader } from "@/components/console/panel-header";
+import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import {
   disableSkill,
@@ -192,14 +198,6 @@ export function SkillsWorkspace() {
       setLoading(false);
     }
   }
-
-  useEffect(() => {
-    document.body.classList.add("skill-settings-body");
-
-    return () => {
-      document.body.classList.remove("skill-settings-body");
-    };
-  }, []);
 
   useEffect(() => {
     void refresh();
@@ -512,8 +510,7 @@ export function SkillsWorkspace() {
   });
 
   return (
-    <main className="workspace-shell console-page-shell service-console-shell skill-settings-shell">
-      <section className="page-section stack-gap-md skill-settings-page">
+    <section className="page-section console-page-shell skill-settings-page skill-settings-shell flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
         <input
           accept=".yaml,.yml,.json"
           hidden
@@ -525,98 +522,86 @@ export function SkillsWorkspace() {
           ref={importInputRef}
           type="file"
         />
-        <div className="page-heading-row">
-          <div className="stack-gap-xs">
-            <h1 className="page-title is-console-title">Skill settings</h1>
-            <p className="page-subtitle">Install, inspect, and govern which skills agents can actually see and use.</p>
-          </div>
-          <div className="page-action-row">
-            <Button variant="outline" disabled={busyAction === "export"} onClick={() => void handleExport()} type="button">
-              {busyAction === "export" ? "Exporting" : "Export YAML"}
-            </Button>
-            <Button variant="outline" disabled={busyAction === "import-file"} onClick={promptImportFile} type="button">
-              {busyAction === "import-file" ? "Importing" : "Import file"}
-            </Button>
-            <Button onClick={openCreateSkillModal} type="button">
-              Add skill
-            </Button>
-          </div>
-        </div>
+        <PageHeaderActions>
+          <Button variant="outline" disabled={busyAction === "export"} onClick={() => void handleExport()} type="button">
+            {busyAction === "export" ? "Exporting" : "Export YAML"}
+          </Button>
+          <Button variant="outline" disabled={busyAction === "import-file"} onClick={promptImportFile} type="button">
+            {busyAction === "import-file" ? "Importing" : "Import file"}
+          </Button>
+          <Button onClick={openCreateSkillModal} type="button">
+            Add skill
+          </Button>
+        </PageHeaderActions>
 
-        {message ? <p className="inline-feedback">{message}</p> : null}
-        {error ? <p className="inline-error">{error}</p> : null}
+        {message ? <ConsoleAlert variant="info">{message}</ConsoleAlert> : null}
+        {error ? <ConsoleAlert variant="error">{error}</ConsoleAlert> : null}
 
-        <section className="management-layout service-console-layout skill-settings-layout">
-          <ManagementRail />
-
-          <div className="management-main skill-settings-main">
-            <section
-              className={isInventoryResizing ? "skill-management-grid skill-settings-grid console-split-layout is-resizing" : "skill-management-grid skill-settings-grid console-split-layout"}
-              ref={inventorySplitRef}
-              style={inventoryPanelStyle}
-            >
-              <section className="panel-surface skill-inventory-panel stack-gap-sm">
-                <div className="panel-title-row align-start-row">
-                  <div className="stack-gap-2xs grow-block">
-                    <h2 className="panel-title">Installed skills</h2>
-                    <p className="entity-meta">
-                      {loading ? "Loading skill inventory..." : `${filteredSkills.length} shown · ${skills.length} total · ${enabledCount} enabled · ${gitCount} git`}
-                    </p>
-                  </div>
-                  <Badge>{enabledCount} active</Badge>
-                </div>
+        <section
+          className={
+            isInventoryResizing
+              ? "skill-management-grid skill-settings-grid console-split-layout is-resizing min-h-0 flex-1"
+              : "skill-management-grid skill-settings-grid console-split-layout min-h-0 flex-1"
+          }
+          ref={inventorySplitRef}
+          style={inventoryPanelStyle}
+        >
+              <ConsolePanel className="skill-inventory-panel">
+                <PanelHeader
+                  badge={<Badge>{enabledCount} active</Badge>}
+                  meta={
+                    loading
+                      ? "Loading skill inventory..."
+                      : `${filteredSkills.length} shown · ${skills.length} total · ${enabledCount} enabled · ${gitCount} git`
+                  }
+                  title="Installed skills"
+                />
 
                 <div className="console-toolbar skill-toolbar">
                   <Label className="search-field grow-block">
                     <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search skills, tools, or files" value={searchQuery} />
                   </Label>
-                  <div className="filter-chip-row">
-                    {([
-                      ["all", "All"],
-                      ["local", "Local"],
-                      ["git", "Git"],
-                    ] as const).map(([value, label]) => (
-                      <Button
-                        variant={sourceFilter === value ? "default" : "ghost"}
-                        size="sm"
-                        key={value}
-                        onClick={() => setSourceFilter(value)}
-                        type="button"
-                      >
-                        {label}
-                      </Button>
-                    ))}
-                  </div>
+                  <FilterToggleGroup
+                    onChange={setSourceFilter}
+                    options={
+                      [
+                        ["all", "All"],
+                        ["local", "Local"],
+                        ["git", "Git"],
+                      ] as const
+                    }
+                    value={sourceFilter}
+                  />
                 </div>
 
-                <div className="skill-list">
+                <ScrollArea className="skill-list min-h-0 flex-1">
+                  <div className="flex flex-col gap-2 pr-2">
                   {loading ? <p className="empty-copy padded-empty">Loading skills...</p> : null}
                   {!loading && filteredSkills.length === 0 ? <p className="empty-copy padded-empty">No skills match the current filter.</p> : null}
                   {!loading
                     ? filteredSkills.map((skill) => (
-                        <button
-                          className={skill.name === selectedSkillName ? "skill-list-item is-active" : "skill-list-item"}
+                        <InventoryListItem
+                          active={skill.name === selectedSkillName}
+                          description={skill.description || "No description provided."}
                           key={skill.name}
+                          meta={
+                            <>
+                              <Badge variant="outline">{skillSourceLabel(skill)}</Badge>
+                              <Badge variant="outline">{skill.runtime_type || "static"}</Badge>
+                              <Badge variant="outline">{skill.tools.length} tools</Badge>
+                            </>
+                          }
                           onClick={() => setSelectedSkillName(skill.name)}
-                          type="button"
-                        >
-                          <div className="skill-list-title-row">
-                            <strong>{skill.name}</strong>
-                            <Badge variant={skill.enabled ? "default" : "secondary"}>
-                              {skillStatusLabel(skill.enabled)}
-                            </Badge>
-                          </div>
-                          <p className="skill-list-description">{skill.description || "No description provided."}</p>
-                          <div className="skill-list-meta">
-                            <Badge variant="outline">{skillSourceLabel(skill)}</Badge>
-                            <Badge variant="outline">{skill.runtime_type || "static"}</Badge>
-                            <Badge variant="outline">{skill.tools.length} tools</Badge>
-                          </div>
-                        </button>
+                          title={skill.name}
+                          titleBadge={
+                            <Badge variant={skill.enabled ? "default" : "secondary"}>{skillStatusLabel(skill.enabled)}</Badge>
+                          }
+                        />
                       ))
                     : null}
-                </div>
-              </section>
+                  </div>
+                </ScrollArea>
+              </ConsolePanel>
 
               <div
                 aria-controls="skill-detail-panel"
@@ -635,7 +620,7 @@ export function SkillsWorkspace() {
                 <span className="console-panel-resizer-grip" />
               </div>
 
-              <section className="panel-surface skill-detail-panel" id="skill-detail-panel">
+              <ConsolePanel className="skill-detail-panel" id="skill-detail-panel">
                 {selectedSkill ? (
                   <div className="skill-detail-scroll stack-gap-sm">
                     <div className="skill-detail-header">
@@ -746,9 +731,7 @@ export function SkillsWorkspace() {
                     <p className="entity-meta">Choose a skill from the inventory or add a new one to start managing it.</p>
                   </div>
                 )}
-              </section>
-            </section>
-          </div>
+              </ConsolePanel>
         </section>
 
         <Dialog open={modalMode === "new"} onOpenChange={(open) => { if (!open) closeCreateSkillModal(); }}>
@@ -781,7 +764,6 @@ export function SkillsWorkspace() {
             </div>
           </DialogContent>
         </Dialog>
-      </section>
-    </main>
+    </section>
   );
 }

@@ -2,7 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { ManagementRail } from "@/components/management-rail";
+import { FormSection } from "@/components/console/form-section";
+import { ConsoleAlert } from "@/components/console/console-alert";
+import { ConsolePanel } from "@/components/console/console-panel";
+import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
+import { InventoryListItem } from "@/components/console/inventory-list-item";
+import { PanelHeader } from "@/components/console/panel-header";
+import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { fetchProviderModels, getConfig, saveConfig } from "@/lib/client-api";
 import type { ProviderEntry } from "@/lib/types";
@@ -17,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 type ProviderFormState = {
   name: string;
@@ -318,67 +325,55 @@ export function ProviderWorkspace() {
   }
 
   return (
-    <main className="workspace-shell console-page-shell service-console-shell provider-settings-shell skill-settings-shell">
-      <section className="page-section stack-gap-md provider-settings-page skill-settings-page">
-        <div className="page-heading-row">
-          <div className="stack-gap-xs">
-            <h1 className="page-title is-console-title">Provider settings</h1>
-            <p className="page-subtitle">Register LLM endpoints, choose the default routing target, and inspect each provider&apos;s saved model catalog.</p>
-          </div>
-          <div className="page-action-row">
-            <Button disabled={loading || !!busyAction} onClick={addProvider} type="button">
-              {busyAction === "add" ? "Adding" : "Add provider"}
-            </Button>
-          </div>
-        </div>
+    <section className="page-section console-page-shell provider-settings-page skill-settings-shell flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+        <PageHeaderActions>
+          <Button disabled={loading || !!busyAction} onClick={addProvider} type="button">
+            {busyAction === "add" ? "Adding" : "Add provider"}
+          </Button>
+        </PageHeaderActions>
 
-        {message ? <p className="inline-feedback">{message}</p> : null}
-        {error ? <p className="inline-error">{error}</p> : null}
+        {message ? <ConsoleAlert variant="info">{message}</ConsoleAlert> : null}
+        {error ? <ConsoleAlert variant="error">{error}</ConsoleAlert> : null}
 
-        <section className="management-layout service-console-layout provider-settings-layout skill-settings-layout">
-          <ManagementRail />
-
-          <div className="management-main provider-settings-main skill-settings-main">
-            <section
-              className={isInventoryResizing ? "provider-settings-grid console-split-layout is-resizing" : "provider-settings-grid console-split-layout"}
-              ref={inventorySplitRef}
-              style={inventoryPanelStyle}
-            >
-                <section className="panel-surface skill-inventory-panel stack-gap-sm">
-                  <div className="panel-title-row align-start-row">
-                    <div className="stack-gap-2xs grow-block">
-                      <h2 className="panel-title">Configured providers</h2>
-                      <p className="entity-meta">
-                        {loading ? "Loading provider inventory..." : `${filteredProviders.length} shown · ${providers.length} total · ${defaultCount} default · ${keyedCount} with key`}
-                      </p>
-                    </div>
-                    <Badge>{readyCount} ready</Badge>
-                  </div>
+        <section
+          className={
+            isInventoryResizing
+              ? "provider-settings-grid console-split-layout is-resizing min-h-0 flex-1"
+              : "provider-settings-grid console-split-layout min-h-0 flex-1"
+          }
+          ref={inventorySplitRef}
+          style={inventoryPanelStyle}
+        >
+                <ConsolePanel className="skill-inventory-panel">
+                  <PanelHeader
+                    badge={<Badge>{readyCount} ready</Badge>}
+                    meta={
+                      loading
+                        ? "Loading provider inventory..."
+                        : `${filteredProviders.length} shown · ${providers.length} total · ${defaultCount} default · ${keyedCount} with key`
+                    }
+                    title="Configured providers"
+                  />
 
                   <div className="console-toolbar skill-toolbar">
                     <label className="search-field grow-block">
                       <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search providers or endpoints" value={searchQuery} />
                     </label>
-                    <div className="filter-chip-row">
-                      {([
-                        ["all", "All"],
-                        ["default", "Default"],
-                        ["missing_key", "Missing key"],
-                      ] as const).map(([value, label]) => (
-                        <Button
-                          variant={inventoryFilter === value ? "default" : "outline"}
-                          size="xs"
-                          key={value}
-                          onClick={() => setInventoryFilter(value)}
-                          type="button"
-                        >
-                          {label}
-                        </Button>
-                      ))}
-                    </div>
+                    <FilterToggleGroup
+                      onChange={setInventoryFilter}
+                      options={
+                        [
+                          ["all", "All"],
+                          ["default", "Default"],
+                          ["missing_key", "Missing key"],
+                        ] as const
+                      }
+                      value={inventoryFilter}
+                    />
                   </div>
 
-                  <div className="skill-list">
+                  <ScrollArea className="skill-list min-h-0 flex-1">
+                    <div className="flex flex-col gap-2 pr-2">
                     {loading ? <p className="empty-copy padded-empty">Loading providers...</p> : null}
                     {!loading && filteredProviders.length === 0 ? (
                       <p className="empty-copy padded-empty">
@@ -387,34 +382,34 @@ export function ProviderWorkspace() {
                     ) : null}
                     {!loading
                       ? filteredProviders.map((provider) => (
-                          <button
-                            className={provider.name === selectedName ? "skill-list-item is-active" : "skill-list-item"}
+                          <InventoryListItem
+                            active={provider.name === selectedName}
                             key={provider.name}
+                            meta={
+                              <>
+                                <Badge variant="outline">{provider.provider_type}</Badge>
+                                {(provider.default_model || "").trim() ? <Badge variant="outline">{provider.default_model}</Badge> : null}
+                                <Badge variant="outline">{providerKeyLabel(Boolean(provider.has_api_key))}</Badge>
+                              </>
+                            }
                             onClick={() => {
                               setIsCreatingProvider(false);
                               setSelectedName(provider.name);
                             }}
-                            type="button"
-                          >
-                            <div className="skill-list-title-row">
-                              <strong>{provider.name}</strong>
-                              {(provider.default_model || "").trim() ? (
+                            title={provider.name}
+                            titleBadge={
+                              (provider.default_model || "").trim() ? (
                                 <Badge>Default</Badge>
                               ) : (
                                 <Badge variant="outline">Secondary</Badge>
-                              )}
-                            </div>
-                            <p className="skill-list-description">{provider.base_url || "No base URL configured."}</p>
-                            <div className="skill-list-meta">
-                              <Badge variant="outline">{provider.provider_type}</Badge>
-                              {(provider.default_model || "").trim() ? <Badge variant="outline">{provider.default_model}</Badge> : null}
-                              <Badge variant="outline">{providerKeyLabel(Boolean(provider.has_api_key))}</Badge>
-                            </div>
-                          </button>
+                              )
+                            }
+                          />
                         ))
                       : null}
-                  </div>
-                </section>
+                    </div>
+                  </ScrollArea>
+                </ConsolePanel>
 
                 <div
                   aria-controls="provider-detail-panel"
@@ -433,7 +428,7 @@ export function ProviderWorkspace() {
                   <span className="console-panel-resizer-grip" />
                 </div>
 
-                <section className="panel-surface skill-detail-panel provider-detail-panel" id="provider-detail-panel">
+                <ConsolePanel className="skill-detail-panel provider-detail-panel" id="provider-detail-panel">
                   {selectedProvider || isCreatingProvider ? (
                     <div className="provider-detail-scroll stack-gap-sm">
                       <div className="skill-detail-header">
@@ -445,11 +440,6 @@ export function ProviderWorkspace() {
                             </Badge>
                           </div>
                           <p className="entity-meta skill-detail-description">{form.base_url || "No base URL configured."}</p>
-                          <p className="skill-inline-copy">
-                            {isCreatingProvider
-                              ? "Create the provider in the shared config store first, then load its model list into the default-model dropdown."
-                              : "Provider edits are saved into the shared config store. Save credential changes before loading models so the backend can query the provider with the persisted key."}
-                          </p>
                         </div>
 
                         <div className="page-action-row skill-detail-actions">
@@ -503,11 +493,12 @@ export function ProviderWorkspace() {
                         </div>
                       </div>
 
-                      {formDirty ? <p className="inline-feedback">Unsaved edits are only local to this panel until you save the provider.</p> : null}
+                      {formDirty ? (
+                        <ConsoleAlert variant="info">Unsaved edits are only local to this panel until you save the provider.</ConsoleAlert>
+                      ) : null}
 
                       <div className="mcp-form-grid two-up">
-                        <section className="form-section stack-gap-sm">
-                          <h3 className="editor-section-title">Basics</h3>
+                        <FormSection title="Basics">
                           <Label className="form-field">
                             <span>Name</span>
                             <Input
@@ -531,10 +522,9 @@ export function ProviderWorkspace() {
                               </SelectContent>
                             </Select>
                           </Label>
-                        </section>
+                        </FormSection>
 
-                        <section className="form-section stack-gap-sm">
-                          <h3 className="editor-section-title">Connection</h3>
+                        <FormSection title="Connection">
                           <Label className="form-field">
                             <span>Base URL</span>
                             <Input
@@ -597,7 +587,7 @@ export function ProviderWorkspace() {
                                   : "Save a valid endpoint and API key, then use Load models to populate this dropdown with the provider catalog."}
                             </small>
                           </Label>
-                        </section>
+                        </FormSection>
                         </div>
                     </div>
                   ) : (
@@ -615,11 +605,8 @@ export function ProviderWorkspace() {
                       ) : null}
                     </div>
                   )}
-                </section>
-              </section>
-          </div>
+                </ConsolePanel>
         </section>
-      </section>
-    </main>
+    </section>
   );
 }

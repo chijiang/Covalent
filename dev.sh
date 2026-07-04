@@ -16,7 +16,7 @@ BACKEND_HOST=${AGENT_FRAMEWORK_BACKEND_HOST:-0.0.0.0}
 FRONTEND_PORT=${AGENT_FRAMEWORK_FRONTEND_PORT:-3100}
 
 echo "================================"
-echo "Agent Framework Development Server"
+echo "Covalent Development Server"
 echo "================================"
 echo "Backend:  http://$BACKEND_HOST:$BACKEND_PORT"
 echo "Frontend: http://localhost:$FRONTEND_PORT"

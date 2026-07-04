@@ -2,7 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { ManagementRail } from "@/components/management-rail";
+import { FormSection } from "@/components/console/form-section";
+import { ConsoleAlert } from "@/components/console/console-alert";
+import { ConsolePanel } from "@/components/console/console-panel";
+import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
+import { InventoryListItem } from "@/components/console/inventory-list-item";
+import { PanelHeader } from "@/components/console/panel-header";
+import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { callMcpTool, exportManagementConfig, getConfig, importManagementConfig, inspectMcpServer, saveConfig } from "@/lib/client-api";
 import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
@@ -14,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 type EnvFormEntry = {
   id: string;
@@ -267,14 +274,6 @@ export function McpWorkspace() {
       setLoading(false);
     }
   }
-
-  useEffect(() => {
-    document.body.classList.add("mcp-services-body");
-
-    return () => {
-      document.body.classList.remove("mcp-services-body");
-    };
-  }, []);
 
   useEffect(() => {
     void refresh();
@@ -647,18 +646,7 @@ export function McpWorkspace() {
   });
 
   return (
-    <main className="workspace-shell console-page-shell service-console-shell mcp-services-shell">
-      <section
-        className="page-section stack-gap-md mcp-services-page"
-        style={{
-          display: "flex",
-          flex: "1 1 auto",
-          flexDirection: "column",
-          minHeight: 0,
-          height: "100%",
-          gap: 16,
-        }}
-      >
+    <section className="page-section console-page-shell mcp-services-page mcp-services-shell flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
         <input
           accept=".yaml,.yml,.json"
           hidden
@@ -670,101 +658,84 @@ export function McpWorkspace() {
           ref={importInputRef}
           type="file"
         />
-        <div className="page-heading-row">
-          <div className="stack-gap-xs">
-            <h1 className="page-title is-console-title">MCP services</h1>
-            <p className="page-subtitle">Register, inspect, and maintain MCP servers with the same list-and-detail workflow used in skill settings.</p>
-          </div>
-          <div className="page-action-row">
-            <Button onClick={openImportModal} type="button">
-              Add service
-            </Button>
-            <Button variant="outline" disabled={busyAction === "export"} onClick={() => void handleExport()} type="button">
-              {busyAction === "export" ? "Exporting" : "Export YAML"}
-            </Button>
-            <Button variant="outline" disabled={busyAction === "import-file"} onClick={promptImportFile} type="button">
-              {busyAction === "import-file" ? "Importing" : "Import file"}
-            </Button>
-          </div>
-        </div>
+        <PageHeaderActions>
+          <Button onClick={openImportModal} type="button">
+            Add service
+          </Button>
+          <Button variant="outline" disabled={busyAction === "export"} onClick={() => void handleExport()} type="button">
+            {busyAction === "export" ? "Exporting" : "Export YAML"}
+          </Button>
+          <Button variant="outline" disabled={busyAction === "import-file"} onClick={promptImportFile} type="button">
+            {busyAction === "import-file" ? "Importing" : "Import file"}
+          </Button>
+        </PageHeaderActions>
 
-        {message ? <p className="inline-feedback">{message}</p> : null}
-        {error ? <p className="inline-error">{error}</p> : null}
+        {message ? <ConsoleAlert variant="info">{message}</ConsoleAlert> : null}
+        {error ? <ConsoleAlert variant="error">{error}</ConsoleAlert> : null}
 
-        <section className="management-layout service-console-layout mcp-services-layout">
-          <ManagementRail />
-
-          <div className="management-main mcp-services-main">
-            <section
-              className={isInventoryResizing ? "mcp-services-grid console-split-layout is-resizing" : "mcp-services-grid console-split-layout"}
-              ref={inventorySplitRef}
-              style={inventoryPanelStyle}
-            >
-              <section className="panel-surface mcp-inventory-panel stack-gap-sm">
-                <div className="panel-title-row align-start-row">
-                  <div className="stack-gap-2xs grow-block">
-                    <h2 className="panel-title">Registered services</h2>
-                    <p className="entity-meta">
-                      {loading ? "Loading MCP inventory..." : `${filteredServers.length} shown · ${draftServers.length} total · ${remoteCount} remote · ${authCount} auth`}
-                    </p>
-                  </div>
-                  <Badge>{inspectedCount} tested</Badge>
-                </div>
+        <section
+          className={
+            isInventoryResizing
+              ? "mcp-services-grid console-split-layout is-resizing min-h-0 flex-1"
+              : "mcp-services-grid console-split-layout min-h-0 flex-1"
+          }
+          ref={inventorySplitRef}
+          style={inventoryPanelStyle}
+        >
+              <ConsolePanel className="mcp-inventory-panel">
+                <PanelHeader
+                  badge={<Badge>{inspectedCount} tested</Badge>}
+                  meta={
+                    loading
+                      ? "Loading MCP inventory..."
+                      : `${filteredServers.length} shown · ${draftServers.length} total · ${remoteCount} remote · ${authCount} auth`
+                  }
+                  title="Registered services"
+                />
 
                 <div className="console-toolbar mcp-toolbar">
                   <Label className="search-field grow-block">
                     <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search MCP services" value={searchQuery} />
                   </Label>
-                  <div className="filter-chip-row">
-                    {([
-                      ["all", "All"],
-                      ["remote", "Remote"],
-                      ["stdio", "stdio"],
-                      ["auth", "Auth"],
-                    ] as const).map(([value, label]) => (
-                      <Button
-                        variant={statusFilter === value ? "default" : "ghost"}
-                        size="sm"
-                        key={value}
-                        onClick={() => setStatusFilter(value)}
-                        type="button"
-                      >
-                        {label}
-                      </Button>
-                    ))}
-                  </div>
+                  <FilterToggleGroup
+                    onChange={setStatusFilter}
+                    options={
+                      [
+                        ["all", "All"],
+                        ["remote", "Remote"],
+                        ["stdio", "stdio"],
+                        ["auth", "Auth"],
+                      ] as const
+                    }
+                    value={statusFilter}
+                  />
                 </div>
 
-                <div className="mcp-list">
+                <ScrollArea className="mcp-list min-h-0 flex-1">
+                  <div className="flex flex-col gap-2 pr-2">
                   {loading ? <p className="empty-copy padded-empty">Loading MCP services...</p> : null}
                   {!loading && filteredServers.length === 0 ? <p className="empty-copy padded-empty">No services match the current filter.</p> : null}
                   {!loading
-                    ? filteredServers.map((server) => {
-                        const inspectedTools = inspectionByServer[server.name]?.tools.length || 0;
-                        return (
-                      <button
-                        className={server.name === selectedName ? "skill-list-item is-active" : "skill-list-item"}
-                        key={server.name}
-                        onClick={() => setSelectedName(server.name)}
-                        type="button"
-                        title={targetValue(server)}
-                      >
-                        <div className="skill-list-title-row">
-                          <strong>{server.name}</strong>
-                          <Badge variant="outline">{transportLabel(server.transport)}</Badge>
-                        </div>
-                        <p className="skill-list-description">{targetValue(server)}</p>
-                        <div className="skill-list-meta">
-                          <Badge variant="outline">{accessLabel(server)}</Badge>
-                          <Badge variant="outline">{server.transport === "stdio" ? `${server.args?.length || 0} args` : "Remote"}</Badge>
-                          {/* <Badge variant="outline">{inspectedTools ? `${inspectedTools} tools` : "Not tested"}</Badge> */}
-                        </div>
-                      </button>
-                    );
-                      })
+                    ? filteredServers.map((server) => (
+                        <InventoryListItem
+                          active={server.name === selectedName}
+                          description={targetValue(server)}
+                          key={server.name}
+                          meta={
+                            <>
+                              <Badge variant="outline">{accessLabel(server)}</Badge>
+                              <Badge variant="outline">{server.transport === "stdio" ? `${server.args?.length || 0} args` : "Remote"}</Badge>
+                            </>
+                          }
+                          onClick={() => setSelectedName(server.name)}
+                          title={server.name}
+                          titleBadge={<Badge variant="outline">{transportLabel(server.transport)}</Badge>}
+                        />
+                      ))
                     : null}
-                </div>
-              </section>
+                  </div>
+                </ScrollArea>
+              </ConsolePanel>
 
               <div
                 aria-controls="mcp-detail-panel"
@@ -783,7 +754,7 @@ export function McpWorkspace() {
                 <span className="console-panel-resizer-grip" />
               </div>
 
-              <section className="panel-surface skill-detail-panel mcp-detail-panel" id="mcp-detail-panel">
+              <ConsolePanel className="skill-detail-panel mcp-detail-panel" id="mcp-detail-panel">
                 {selectedServer ? (
                   <div
                     className="mcp-detail-scroll stack-gap-sm"
@@ -842,8 +813,7 @@ export function McpWorkspace() {
                     </div>
 
                     <div className="mcp-form-grid two-up">
-                      <section className="form-section stack-gap-sm">
-                        <h3 className="editor-section-title">Basics</h3>
+                      <FormSection title="Basics">
                         <div className="form-field">
                           <Label htmlFor="mcp-service-name">Name</Label>
                           <Input id="mcp-service-name" onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} value={form.name} />
@@ -861,11 +831,10 @@ export function McpWorkspace() {
                             </SelectContent>
                           </Select>
                         </div>
-                      </section>
+                      </FormSection>
 
-                      <section className="form-section stack-gap-sm">
-                        <h3 className="editor-section-title">Connection target</h3>
-                        <p className="skill-inline-copy">
+                      <FormSection title="Connection target">
+                        <p className="text-[13px] text-muted-foreground">
                           Remote transports use Endpoint. stdio uses Command plus optional Arguments.
                         </p>
                         <div className="form-field">
@@ -898,12 +867,11 @@ export function McpWorkspace() {
                             value={form.argsText}
                           />
                         </div>
-                      </section>
+                      </FormSection>
                     </div>
 
-                    <section className="form-section stack-gap-sm">
-                      <h3 className="editor-section-title">Environment</h3>
-                      <p className="skill-inline-copy">
+                    <FormSection title="Environment">
+                      <p className="text-[13px] text-muted-foreground">
                         Edit auth and runtime variables as key/value pairs. Values are saved as strings, so JSON payloads should stay stringified when a server expects them.
                       </p>
                       <div className="panel-title-row align-start-row">
@@ -954,7 +922,7 @@ export function McpWorkspace() {
                           ))}
                         </div>
                       )}
-                    </section>
+                    </FormSection>
 
                     <section className="detail-block skill-source-shell stack-gap-sm" style={{ minHeight: 320, flex: "0 0 auto" }}>
                       <div className="panel-title-row align-start-row">
@@ -1028,9 +996,7 @@ export function McpWorkspace() {
                     <p className="entity-meta">Choose a service from the inventory or add a new MCP server to start editing.</p>
                   </div>
                 )}
-              </section>
-            </section>
-          </div>
+              </ConsolePanel>
         </section>
 
         <Dialog open={isImportModalOpen} onOpenChange={(open) => { if (!open) closeImportModal(); }}>
@@ -1041,7 +1007,7 @@ export function McpWorkspace() {
             </DialogHeader>
 
             <div className="stack-gap-md">
-              {error ? <p className="inline-error">{error}</p> : null}
+              {error ? <ConsoleAlert variant="error">{error}</ConsoleAlert> : null}
 
               <div className="form-field">
                 <Label htmlFor="import-service-json">Service JSON</Label>
@@ -1081,7 +1047,6 @@ export function McpWorkspace() {
             </div>
           </DialogContent>
         </Dialog>
-      </section>
-    </main>
+    </section>
   );
 }

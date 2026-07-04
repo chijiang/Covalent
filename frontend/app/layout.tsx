@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-import { SiteHeader } from "@/components/site-header";
+import { AppShell } from "@/components/app-shell";
+import { Providers } from "@/components/providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Agent Framework",
-  description: "Accenture-inspired control plane for agents, MCP services, and skills.",
+  title: "Covalent",
+  description: "Control plane for agents, MCP services, and skills.",
 };
 
 export default function RootLayout({
@@ -17,10 +18,9 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
-        <div className="app-shell">
-          <SiteHeader />
-          {children}
-        </div>
+        <Providers>
+          <AppShell>{children}</AppShell>
+        </Providers>
       </body>
     </html>
   );

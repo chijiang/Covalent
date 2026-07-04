@@ -17,7 +17,7 @@ class AppSettings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "Agent Framework"
+    app_name: str = "Covalent"
     database_url: str | None = None
     default_provider: str = "openai_compatible"
     default_model: str = "gpt-4o-mini"

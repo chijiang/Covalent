@@ -278,7 +278,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Agent Framework", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="Covalent", version="0.3.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

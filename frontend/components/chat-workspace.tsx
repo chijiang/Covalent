@@ -102,6 +102,8 @@ type HistorySection = {
 };
 
 const TRACE_PANEL_STORAGE_KEY = "agent-framework.chat-trace-width";
+const TRACE_PANEL_VISIBLE_STORAGE_KEY = "agent-framework.chat-trace-visible";
+const HISTORY_PANEL_VISIBLE_STORAGE_KEY = "agent-framework.chat-history-visible";
 const DEFAULT_TRACE_PANEL_WIDTH = 360;
 const MIN_TRACE_PANEL_WIDTH = 280;
 const MAX_TRACE_PANEL_WIDTH = 640;
@@ -1299,6 +1301,18 @@ export function ChatWorkspace() {
   const [titleDraft, setTitleDraft] = useState("");
   const [pendingDrafts, setPendingDrafts] = useState<Record<string, PendingQuestionDraft>>({});
   const [tracePanelWidth, setTracePanelWidth] = useState(DEFAULT_TRACE_PANEL_WIDTH);
+  const [isTracePanelOpen, setIsTracePanelOpen] = useState(() => {
+    if (typeof window === "undefined") {
+      return true;
+    }
+    return window.localStorage.getItem(TRACE_PANEL_VISIBLE_STORAGE_KEY) !== "0";
+  });
+  const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(() => {
+    if (typeof window === "undefined") {
+      return true;
+    }
+    return window.localStorage.getItem(HISTORY_PANEL_VISIBLE_STORAGE_KEY) !== "0";
+  });
   const [isTraceResizing, setIsTraceResizing] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1322,6 +1336,20 @@ export function ChatWorkspace() {
       setTracePanelWidth(parsed);
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(TRACE_PANEL_VISIBLE_STORAGE_KEY, isTracePanelOpen ? "1" : "0");
+  }, [isTracePanelOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(HISTORY_PANEL_VISIBLE_STORAGE_KEY, isHistoryPanelOpen ? "1" : "0");
+  }, [isHistoryPanelOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1563,7 +1591,7 @@ export function ChatWorkspace() {
   }, [activePendingQuestion]);
 
   function handleTraceResizeStart(event: React.MouseEvent<HTMLDivElement>) {
-    if (event.button !== 0 || window.matchMedia("(max-width: 980px)").matches) {
+    if (!isTracePanelOpen || event.button !== 0 || window.matchMedia("(max-width: 980px)").matches) {
       return;
     }
 
@@ -1603,7 +1631,7 @@ export function ChatWorkspace() {
   }
 
   function handleTraceResizeKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (window.matchMedia("(max-width: 980px)").matches) {
+    if (!isTracePanelOpen || window.matchMedia("(max-width: 980px)").matches) {
       return;
     }
 
@@ -2017,7 +2045,7 @@ export function ChatWorkspace() {
   }
 
   return (
-    <main className="workspace-shell chat-page-shell">
+    <div className="workspace-shell chat-page-shell flex min-h-0 flex-1 flex-col overflow-hidden">
       {error ? <p className="inline-error chat-page-alert">{error}</p> : null}
       {activeThread?.contextTruncated && !error ? (
         <p className="inline-warning chat-page-alert">
@@ -2027,44 +2055,66 @@ export function ChatWorkspace() {
         </p>
       ) : null}
 
-      <section className="chat-layout-grid">
-        <aside className="panel-surface chat-history-panel">
-          <div className="chat-sidebar-header">
-            <h1 className="chat-sidebar-title">Chats</h1>
-            <Button variant="outline" className="chat-new-button" onClick={handleNewChat} type="button">
-              New conversation
-            </Button>
-          </div>
+      <section className={isHistoryPanelOpen ? "chat-layout-grid" : "chat-layout-grid is-history-collapsed"}>
+        {isHistoryPanelOpen ? (
+          <aside className="panel-surface chat-history-panel">
+            <div className="chat-sidebar-header">
+              <h2 className="chat-sidebar-title">Sessions</h2>
+              <div className="chat-sidebar-header-actions">
+                <Button className="chat-new-button" onClick={handleNewChat} type="button" variant="outline">
+                  New
+                </Button>
+                <Button
+                  className="chat-history-hide-button"
+                  onClick={() => setIsHistoryPanelOpen(false)}
+                  type="button"
+                  variant="outline"
+                >
+                  Hide
+                </Button>
+              </div>
+            </div>
 
-          <label className="search-field chat-search-field">
-            <Input onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Search" value={historyQuery} />
-          </label>
+            <label className="search-field chat-search-field">
+              <Input onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Search" value={historyQuery} />
+            </label>
 
-          <div className="history-stack">
-            {historySections.map((section) => (
-              <section className="history-section" key={section.label}>
-                <p className="history-section-label">{section.label}</p>
-                <div className="history-section-list">
-                  {section.items.map((thread) => (
-                    <button
-                      className={thread.id === activeThread?.id ? "history-card is-active" : "history-card"}
-                      key={thread.id}
-                      onClick={() => {
-                        setActiveThreadId(thread.id);
-                        setSelectedAgent((current) => pickAvailableAgentName(agents, thread.agentName, current));
-                      }}
-                      type="button"
-                    >
-                      <strong>{thread.title}</strong>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        </aside>
+            <div className="history-stack">
+              {historySections.map((section) => (
+                <section className="history-section" key={section.label}>
+                  <p className="history-section-label">{section.label}</p>
+                  <div className="history-section-list">
+                    {section.items.map((thread) => (
+                      <button
+                        className={thread.id === activeThread?.id ? "history-card is-active" : "history-card"}
+                        key={thread.id}
+                        onClick={() => {
+                          setActiveThreadId(thread.id);
+                          setSelectedAgent((current) => pickAvailableAgentName(agents, thread.agentName, current));
+                        }}
+                        type="button"
+                      >
+                        <strong>{thread.title}</strong>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </aside>
+        ) : null}
 
-        <div className={isTraceResizing ? "chat-split-layout is-resizing" : "chat-split-layout"} ref={chatSplitRef} style={chatSplitStyle}>
+        <div
+          className={
+            isTraceResizing
+              ? "chat-split-layout is-resizing"
+              : isTracePanelOpen
+                ? "chat-split-layout"
+                : "chat-split-layout is-trace-collapsed"
+          }
+          ref={chatSplitRef}
+          style={chatSplitStyle}
+        >
           <section className="panel-surface chat-conversation-panel">
           <div className="chat-main-header stack-gap-sm">
             <div className="chat-main-title-row">
@@ -2107,6 +2157,21 @@ export function ChatWorkspace() {
                   </>
                 ) : (
                   <>
+                    {!isHistoryPanelOpen ? (
+                      <>
+                        <Button variant="outline" onClick={() => setIsHistoryPanelOpen(true)} type="button">
+                          Show sessions
+                        </Button>
+                        <Button variant="outline" onClick={handleNewChat} type="button">
+                          New chat
+                        </Button>
+                      </>
+                    ) : null}
+                    {!isTracePanelOpen ? (
+                      <Button variant="outline" onClick={() => setIsTracePanelOpen(true)} type="button">
+                        Show trace
+                      </Button>
+                    ) : null}
                     <Button variant="outline" onClick={() => setIsRenamingTitle(true)} type="button">
                       Rename
                     </Button>
@@ -2412,63 +2477,72 @@ export function ChatWorkspace() {
           </div>
           </section>
 
-          <div
-            aria-controls="chat-trace-panel"
-            aria-label="Resize agent trace panel"
-            aria-orientation="vertical"
-            aria-valuemax={MAX_TRACE_PANEL_WIDTH}
-            aria-valuemin={MIN_TRACE_PANEL_WIDTH}
-            aria-valuenow={tracePanelWidth}
-            className="chat-trace-resizer"
-            onKeyDown={handleTraceResizeKeyDown}
-            onMouseDown={handleTraceResizeStart}
-            role="separator"
-            tabIndex={0}
-            title="Drag to resize the trace panel"
-          >
-            <span className="chat-trace-resizer-grip" />
-          </div>
-
-          <aside className="panel-surface chat-trace-panel stack-gap-sm" id="chat-trace-panel">
-            <div className="panel-title-row align-start-row">
-              <div className="stack-gap-2xs grow-block">
-                <h2 className="panel-title is-trace-title">Agent trace</h2>
-                <div className="trace-filter-row">
-                  <Badge className="trace-pill is-accent">{displayedTraceEntries.length} events</Badge>
-                  <Badge variant="outline" className="trace-pill">local only</Badge>
-                  <Badge variant="outline" className="trace-pill">All</Badge>
-                </div>
-              </div>
-              <Button variant="outline" className="trace-hide-button" type="button">
-                Hide
-              </Button>
+          {isTracePanelOpen ? (
+            <div
+              aria-controls="chat-trace-panel"
+              aria-label="Resize agent trace panel"
+              aria-orientation="vertical"
+              aria-valuemax={MAX_TRACE_PANEL_WIDTH}
+              aria-valuemin={MIN_TRACE_PANEL_WIDTH}
+              aria-valuenow={tracePanelWidth}
+              className="chat-trace-resizer"
+              onKeyDown={handleTraceResizeKeyDown}
+              onMouseDown={handleTraceResizeStart}
+              role="separator"
+              tabIndex={0}
+              title="Drag to resize the trace panel"
+            >
+              <span className="chat-trace-resizer-grip" />
             </div>
+          ) : null}
 
-            <div className="trace-feed is-console-feed">
-              {displayedTraceEntries.map((item) => (
-                <article className="trace-entry compact-trace-entry" key={item.id}>
-                  <div className="trace-entry-head">
-                    <Badge className="trace-pill is-accent">{item.label}</Badge>
-                    <span className="trace-time">{item.displayTime}</span>
+          {isTracePanelOpen ? (
+            <aside className="panel-surface chat-trace-panel stack-gap-sm" id="chat-trace-panel">
+              <div className="panel-title-row align-start-row">
+                <div className="stack-gap-2xs grow-block">
+                  <h2 className="panel-title is-trace-title">Agent trace</h2>
+                  <div className="trace-filter-row">
+                    <Badge variant="outline" className="trace-pill is-accent">{displayedTraceEntries.length} events</Badge>
+                    <Badge variant="outline" className="trace-pill">local only</Badge>
+                    <Badge variant="outline" className="trace-pill">All</Badge>
                   </div>
-                  <strong>{formatActivityTitle(item.title)}</strong>
-                  {getTraceSummary(item) ? <p className="trace-summary-copy">{getTraceSummary(item)}</p> : null}
-                  {getTraceBadges(item).length ? (
-                    <div className="trace-badge-row">
-                      {getTraceBadges(item).map((badge) => (
-                        <span className="trace-inline-badge" key={`${item.id}-${badge}`}>
-                          {badge}
-                        </span>
-                      ))}
+                </div>
+                <Button
+                  className="trace-hide-button"
+                  onClick={() => setIsTracePanelOpen(false)}
+                  type="button"
+                  variant="outline"
+                >
+                  Hide
+                </Button>
+              </div>
+
+              <div className="trace-feed is-console-feed">
+                {displayedTraceEntries.map((item) => (
+                  <article className="trace-entry compact-trace-entry" key={item.id}>
+                    <div className="trace-entry-head">
+                      <Badge variant="outline" className="trace-pill is-accent">{item.label}</Badge>
+                      <span className="trace-time">{item.displayTime}</span>
                     </div>
-                  ) : null}
-                  <pre className="trace-note">{formatTracePayload(item.payload)}</pre>
-                </article>
-              ))}
-            </div>
-          </aside>
+                    <strong>{formatActivityTitle(item.title)}</strong>
+                    {getTraceSummary(item) ? <p className="trace-summary-copy">{getTraceSummary(item)}</p> : null}
+                    {getTraceBadges(item).length ? (
+                      <div className="trace-badge-row">
+                        {getTraceBadges(item).map((badge) => (
+                          <span className="trace-inline-badge" key={`${item.id}-${badge}`}>
+                            {badge}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    <pre className="trace-note">{formatTracePayload(item.payload)}</pre>
+                  </article>
+                ))}
+              </div>
+            </aside>
+          ) : null}
         </div>
       </section>
-    </main>
+    </div>
   );
 }
