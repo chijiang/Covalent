@@ -10,6 +10,8 @@ import {
   Sparkles,
 } from "lucide-react";
 
+import { ChatSidebarSessions } from "@/components/chat-sidebar-sessions";
+import { useChatSessions } from "@/components/chat-sessions-provider";
 import {
   Sidebar,
   SidebarContent,
@@ -51,6 +53,8 @@ function navButtonClass(active: boolean) {
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const { chatHref } = useChatSessions();
+  const isChatPage = pathname === "/";
 
   return (
     <Sidebar className="border-r-0" collapsible="icon" variant="inset">
@@ -58,7 +62,7 @@ export function AppSidebar() {
         <Link
           aria-label="Covalent home"
           className="flex min-w-0 items-center rounded-md py-0.5 transition-opacity hover:opacity-80 group-data-[collapsible=icon]:justify-center"
-          href="/"
+          href={chatHref}
         >
           <img
             alt="Covalent"
@@ -78,12 +82,12 @@ export function AppSidebar() {
           />
         </Link>
       </SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup>
+      <SidebarContent className="gap-0 overflow-hidden">
+        <SidebarGroup className="min-h-0 flex-1">
           <SidebarGroupLabel className="text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-label)] group-data-[collapsible=icon]:hidden">
             Workspace
           </SidebarGroupLabel>
-          <SidebarGroupContent>
+          <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
             <SidebarMenu>
               {WORKSPACE_ITEMS.map((item) => {
                 const active = isNavActive(pathname, item.href, item.exact);
@@ -93,7 +97,7 @@ export function AppSidebar() {
                     <SidebarMenuButton
                       className={navButtonClass(active)}
                       isActive={active}
-                      render={<Link href={item.href} />}
+                      render={<Link href={chatHref} />}
                       tooltip={item.label}
                     >
                       <Icon />
@@ -103,6 +107,7 @@ export function AppSidebar() {
                 );
               })}
             </SidebarMenu>
+            {isChatPage ? <ChatSidebarSessions /> : null}
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup>
