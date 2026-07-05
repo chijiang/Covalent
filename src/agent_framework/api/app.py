@@ -2848,7 +2848,7 @@ async def _resolve_default_provider(
 def _format_api_key_masked(key: str) -> str:
     if len(key) <= 8:
         return "•" * len(key)
-    return f"{key[:5]}{'•' * (len(key) - 8)}{key[-3:]}"
+    return f"{key[:5]}...{key[-3:]}"
 
 
 def _mask_provider_api_key(item: dict[str, object]) -> dict[str, object]:
