@@ -1,11 +1,12 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useEffect } from "react";
+import { Suspense, useEffect } from "react";
 import { usePathname } from "next/navigation";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppTopBar } from "@/components/app-top-bar";
+import { ChatSessionsProvider } from "@/components/chat-sessions-provider";
 import { PageShellProvider } from "@/components/page-shell-context";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
@@ -24,26 +25,30 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [isChatPage, isConsolePage]);
 
   return (
-    <SidebarProvider defaultOpen>
-      <PageShellProvider>
-        <div className="app-shell">
-          <AppSidebar />
-          <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            <AppTopBar />
-            <div
-              className={
-                isChatPage
-                  ? "app-content app-content-chat flex min-h-0 flex-1 flex-col overflow-hidden"
-                  : isConsolePage
-                    ? "app-content app-content-console flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 md:px-5 md:pb-5"
-                    : "app-content flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 md:px-5 md:pb-5"
-              }
-            >
-              {children}
+    <Suspense fallback={null}>
+      <ChatSessionsProvider>
+        <SidebarProvider defaultOpen>
+          <PageShellProvider>
+            <div className="app-shell">
+              <AppSidebar />
+              <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                <AppTopBar />
+                <div
+                  className={
+                    isChatPage
+                      ? "app-content app-content-chat flex min-h-0 flex-1 flex-col overflow-hidden"
+                      : isConsolePage
+                        ? "app-content app-content-console flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 md:px-5 md:pb-5"
+                        : "app-content flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 md:px-5 md:pb-5"
+                  }
+                >
+                  {children}
+                </div>
+              </SidebarInset>
             </div>
-          </SidebarInset>
-        </div>
-      </PageShellProvider>
-    </SidebarProvider>
+          </PageShellProvider>
+        </SidebarProvider>
+      </ChatSessionsProvider>
+    </Suspense>
   );
 }

@@ -23,8 +23,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   ArrowUp,
   Loader2,
-  PanelLeft,
-  PanelLeftClose,
   PanelRight,
   PanelRightClose,
   Pencil,
@@ -33,17 +31,18 @@ import {
   Upload,
 } from "lucide-react";
 
+import { useChatSessions } from "@/components/chat-sessions-provider";
+
 import {
-  deleteChatSession,
   getAgents,
   getChatSession,
   getHealth,
-  listChatSessions,
   renameChatSession,
   sortAgentsForPicker,
   streamAgent,
   uploadChatAttachments,
 } from "@/lib/client-api";
+import { uid, type ChatThread } from "@/lib/chat-thread-model";
 import type {
   AgentDetail,
   AgentInputPart,
@@ -90,32 +89,8 @@ type PendingQuestionDraft = {
   freeform: string;
 };
 
-type ChatThread = {
-  id: string;
-  title: string;
-  titleSource: "auto" | "manual";
-  sessionId: string;
-  agentName: string;
-  messages: Message[];
-  activity: ActivityItem[];
-  createdAt: number;
-  updatedAt: number;
-  previewText: string;
-  isLoaded: boolean;
-  isPersisted: boolean;
-  pendingQuestion: PendingQuestionRequest | null;
-  contextTruncated: boolean;
-  compactionMethod: string | null;
-};
-
-type HistorySection = {
-  label: string;
-  items: ChatThread[];
-};
-
 const TRACE_PANEL_STORAGE_KEY = "agent-framework.chat-trace-width";
 const TRACE_PANEL_VISIBLE_STORAGE_KEY = "agent-framework.chat-trace-visible";
-const HISTORY_PANEL_VISIBLE_STORAGE_KEY = "agent-framework.chat-history-visible";
 const DEFAULT_TRACE_PANEL_WIDTH = 360;
 const MIN_TRACE_PANEL_WIDTH = 280;
 const MAX_TRACE_PANEL_WIDTH = 640;
@@ -134,10 +109,6 @@ function getMaxTracePanelWidth(containerWidth: number): number {
 function clampTracePanelWidth(value: number, containerWidth: number): number {
   const maxWidth = getMaxTracePanelWidth(containerWidth);
   return Math.min(maxWidth, Math.max(MIN_TRACE_PANEL_WIDTH, Math.round(value)));
-}
-
-function uid(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function buildAttachmentId(file: Pick<File, "name" | "size" | "lastModified">, deliveryMode?: AttachmentDeliveryMode): string {
@@ -658,27 +629,6 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function createThread(agentName = ""): ChatThread {
-  const sessionId = uid("session");
-  return {
-    id: sessionId,
-    title: "New conversation",
-    titleSource: "auto",
-    sessionId,
-    agentName,
-    messages: [],
-    activity: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    previewText: "",
-    isLoaded: true,
-    isPersisted: false,
-    pendingQuestion: null,
-    contextTruncated: false,
-    compactionMethod: null,
-  };
-}
-
 function pickAvailableAgentName(agents: AgentDetail[], ...candidates: Array<string | null | undefined>): string {
   for (const candidate of candidates) {
     const normalized = candidate?.trim();
@@ -904,26 +854,6 @@ function normalizeAttachment(raw: Record<string, unknown>): ComposerAttachment {
   };
 }
 
-function threadFromSummary(summary: ChatSessionSummary): ChatThread {
-  return {
-    id: summary.id,
-    title: summary.title,
-    titleSource: summary.title_source,
-    sessionId: summary.id,
-    agentName: summary.agent_name || "",
-    messages: [],
-    activity: [],
-    createdAt: toTimestamp(summary.created_at),
-    updatedAt: toTimestamp(summary.updated_at),
-    previewText: summary.preview_text,
-    isLoaded: false,
-    isPersisted: true,
-    pendingQuestion: null,
-    contextTruncated: false,
-    compactionMethod: null,
-  };
-}
-
 function threadFromSession(session: ChatSession): ChatThread {
   return {
     id: session.id,
@@ -946,21 +876,6 @@ function threadFromSession(session: ChatSession): ChatThread {
     pendingQuestion: getPendingQuestionFromActivity(session.activity.map((item) => ({ id: item.id, title: item.title, payload: item.payload }))),
     contextTruncated: false,
     compactionMethod: null,
-  };
-}
-
-function mergeSummaryIntoThread(thread: ChatThread, summary: ChatSessionSummary): ChatThread {
-  return {
-    ...thread,
-    id: summary.id,
-    title: summary.title,
-    titleSource: summary.title_source,
-    sessionId: summary.id,
-    agentName: summary.agent_name || thread.agentName,
-    createdAt: toTimestamp(summary.created_at),
-    updatedAt: toTimestamp(summary.updated_at),
-    previewText: summary.preview_text || thread.previewText,
-    isPersisted: true,
   };
 }
 
@@ -1245,25 +1160,6 @@ function getTraceBadges(item: ActivityItem): string[] {
   return [];
 }
 
-function historyLabel(timestamp: number): string {
-  const now = new Date();
-  const target = new Date(timestamp);
-  const midnightNow = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const midnightTarget = new Date(target.getFullYear(), target.getMonth(), target.getDate()).getTime();
-  const diffDays = Math.floor((midnightNow - midnightTarget) / 86400000);
-
-  if (diffDays <= 0) {
-    return "Today";
-  }
-  if (diffDays === 1) {
-    return "Yesterday";
-  }
-  if (diffDays < 7) {
-    return "Last 7 days";
-  }
-  return "Earlier";
-}
-
 function isTraceStreamEvent(event: string): boolean {
   const baseEvent = getBaseEventTitle(event);
   return [
@@ -1280,28 +1176,22 @@ function isTraceStreamEvent(event: string): boolean {
   ].includes(baseEvent);
 }
 
-function isReusableDraftThread(thread: ChatThread): boolean {
-  return !thread.isPersisted && thread.messages.length === 0 && thread.titleSource !== "manual";
-}
-
-function getTopQueuedThread(items: ChatThread[]): ChatThread | null {
-  return items.reduce<ChatThread | null>((latest, thread) => {
-    if (!latest || thread.updatedAt > latest.updatedAt) {
-      return thread;
-    }
-    return latest;
-  }, null);
-}
-
 export function ChatWorkspace() {
+  const {
+    threads,
+    activeThreadId,
+    activeThread,
+    handleDeleteThread,
+    updateThread,
+    upsertThread,
+    applySessionSummary,
+  } = useChatSessions();
+
   const [, setHealth] = useState<HealthResponse | null>(null);
   const [agents, setAgents] = useState<AgentDetail[]>([]);
   const [selectedAgent, setSelectedAgent] = useState("");
   const [input, setInput] = useState("");
   const [draftAttachments, setDraftAttachments] = useState<ComposerAttachment[]>([]);
-  const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState("");
-  const [historyQuery, setHistoryQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
@@ -1314,27 +1204,16 @@ export function ChatWorkspace() {
   const [pendingDrafts, setPendingDrafts] = useState<Record<string, PendingQuestionDraft>>({});
   const [tracePanelWidth, setTracePanelWidth] = useState(DEFAULT_TRACE_PANEL_WIDTH);
   const [isTracePanelOpen, setIsTracePanelOpen] = useState(true);
-  const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(true);
   const [isTraceResizing, setIsTraceResizing] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatSplitRef = useRef<HTMLDivElement | null>(null);
-  const threadsRef = useRef<ChatThread[]>([]);
   const skipLayoutPersistRef = useRef(true);
-
-  useEffect(() => {
-    threadsRef.current = threads;
-  }, [threads]);
 
   useEffect(() => {
     const traceStored = window.localStorage.getItem(TRACE_PANEL_VISIBLE_STORAGE_KEY);
     if (traceStored === "0") {
       setIsTracePanelOpen(false);
-    }
-
-    const historyStored = window.localStorage.getItem(HISTORY_PANEL_VISIBLE_STORAGE_KEY);
-    if (historyStored === "0") {
-      setIsHistoryPanelOpen(false);
     }
 
     const storedWidth = window.localStorage.getItem(TRACE_PANEL_STORAGE_KEY);
@@ -1354,13 +1233,6 @@ export function ChatWorkspace() {
     }
     window.localStorage.setItem(TRACE_PANEL_VISIBLE_STORAGE_KEY, isTracePanelOpen ? "1" : "0");
   }, [isTracePanelOpen]);
-
-  useEffect(() => {
-    if (skipLayoutPersistRef.current) {
-      return;
-    }
-    window.localStorage.setItem(HISTORY_PANEL_VISIBLE_STORAGE_KEY, isHistoryPanelOpen ? "1" : "0");
-  }, [isHistoryPanelOpen]);
 
   useEffect(() => {
     if (skipLayoutPersistRef.current) {
@@ -1399,19 +1271,14 @@ export function ChatWorkspace() {
       setLoading(true);
       setError(null);
       try {
-        const [healthResult, agentResult, sessionResult] = await Promise.all([getHealth(), getAgents(), listChatSessions()]);
+        const [healthResult, agentResult] = await Promise.all([getHealth(), getAgents()]);
         if (cancelled) {
           return;
         }
         const sortedAgents = sortAgentsForPicker(agentResult);
-        const initialThreads = sessionResult.length
-          ? sessionResult.map((session) => threadFromSummary(session))
-          : [createThread(sortedAgents[0]?.name || "")];
         setHealth(healthResult);
         setAgents(sortedAgents);
-        setSelectedAgent((current) => pickAvailableAgentName(sortedAgents, current, initialThreads[0]?.agentName, sortedAgents[0]?.name));
-        setThreads(initialThreads);
-        setActiveThreadId((current) => current || initialThreads[0]?.id || "");
+        setSelectedAgent((current) => pickAvailableAgentName(sortedAgents, current, sortedAgents[0]?.name));
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load agents.");
@@ -1428,24 +1295,6 @@ export function ChatWorkspace() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (!loading && threads.length === 0) {
-      const nextThread = createThread(selectedAgent);
-      setThreads([nextThread]);
-      setActiveThreadId(nextThread.id);
-      return;
-    }
-
-    if (!activeThreadId || !threads.some((thread) => thread.id === activeThreadId)) {
-      setActiveThreadId(threads[0]?.id || "");
-    }
-  }, [activeThreadId, loading, selectedAgent, threads]);
-
-  const activeThread = useMemo(
-    () => threads.find((thread) => thread.id === activeThreadId) ?? threads[0] ?? null,
-    [activeThreadId, threads],
-  );
 
   useEffect(() => {
     const nextSelectedAgent = pickAvailableAgentName(agents, selectedAgent, activeThread?.agentName, threads[0]?.agentName);
@@ -1473,7 +1322,7 @@ export function ChatWorkspace() {
           return;
         }
         const hydratedThread = threadFromSession(session);
-        setThreads((current) => current.map((thread) => (thread.id === activeThread.id ? hydratedThread : thread)));
+        upsertThread(hydratedThread);
         setSelectedAgent((current) => pickAvailableAgentName(agents, current, hydratedThread.agentName));
       } catch (loadError) {
         if (!cancelled) {
@@ -1486,10 +1335,12 @@ export function ChatWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, [activeThread, agents]);
+  }, [activeThread, agents, upsertThread]);
 
   useEffect(() => {
+    setInput("");
     setDraftAttachments([]);
+    setError(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -1533,26 +1384,6 @@ export function ChatWorkspace() {
 
   const attachmentDrafts = draftAttachments;
 
-  const visibleThreads = useMemo(() => {
-    const query = historyQuery.trim().toLowerCase();
-    const sorted = [...threads].sort((left, right) => right.updatedAt - left.updatedAt);
-    if (!query) {
-      return sorted;
-    }
-    return sorted.filter((thread) => `${thread.title} ${thread.agentName} ${thread.sessionId} ${thread.previewText}`.toLowerCase().includes(query));
-  }, [historyQuery, threads]);
-
-  const historySections = useMemo<HistorySection[]>(() => {
-    const grouped = new Map<string, ChatThread[]>();
-    for (const thread of visibleThreads) {
-      const label = historyLabel(thread.updatedAt);
-      grouped.set(label, [...(grouped.get(label) || []), thread]);
-    }
-    return ["Today", "Yesterday", "Last 7 days", "Earlier"]
-      .map((label) => ({ label, items: grouped.get(label) || [] }))
-      .filter((section) => section.items.length > 0);
-  }, [visibleThreads]);
-
   const traceEntries = useMemo(() => {
     const items = activeThread?.activity || [];
     return items.map((item, index) => {
@@ -1590,7 +1421,7 @@ export function ChatWorkspace() {
     });
   }, [activeThread]);
 
-  const conversationMessages = activeThread?.messages || [];
+  const conversationMessages = (activeThread?.messages || []) as Message[];
   const displayedTraceEntries = traceEntries;
   const activePendingQuestion = activeThread?.pendingQuestion || null;
   const chatSplitStyle = {
@@ -1672,53 +1503,6 @@ export function ChatWorkspace() {
     setTracePanelWidth(clampTracePanelWidth(nextWidth, splitLayout.clientWidth));
   }
 
-  function updateThread(threadId: string, updater: (thread: ChatThread) => ChatThread) {
-    setThreads((current) => current.map((thread) => (thread.id === threadId ? updater(thread) : thread)));
-  }
-
-  function upsertThread(nextThread: ChatThread) {
-    setThreads((current) => {
-      const existingIndex = current.findIndex((thread) => thread.id === nextThread.id || thread.sessionId === nextThread.sessionId);
-      if (existingIndex === -1) {
-        return [nextThread, ...current];
-      }
-      return current.map((thread, index) => (index === existingIndex ? { ...thread, ...nextThread } : thread));
-    });
-  }
-
-  function applySessionSummary(summary: ChatSessionSummary, fallbackThreadId?: string) {
-    setThreads((current) => {
-      const threadId = fallbackThreadId || summary.id;
-      const existing = current.find((thread) => thread.id === threadId || thread.sessionId === summary.id);
-      const merged = mergeSummaryIntoThread(existing || createThread(summary.agent_name || selectedAgent), summary);
-      if (!existing) {
-        return [merged, ...current];
-      }
-      return current.map((thread) => (thread.id === existing.id ? merged : thread));
-    });
-  }
-
-  function handleNewChat() {
-    const topQueuedThread = getTopQueuedThread(threadsRef.current);
-    if (topQueuedThread && isReusableDraftThread(topQueuedThread)) {
-      setActiveThreadId(topQueuedThread.id);
-      setInput("");
-      setDraftAttachments([]);
-      setError(null);
-      return;
-    }
-    const nextThread = createThread(selectedAgent);
-    setThreads((current) => {
-      const nextThreads = [nextThread, ...current];
-      threadsRef.current = nextThreads;
-      return nextThreads;
-    });
-    setActiveThreadId(nextThread.id);
-    setInput("");
-    setDraftAttachments([]);
-    setError(null);
-  }
-
   async function queueComposerFiles(incomingFiles: File[]) {
     if (incomingFiles.length === 0 || !activeThread) {
       return;
@@ -1793,23 +1577,14 @@ export function ChatWorkspace() {
     }
   }
 
-  async function handleDeleteThread(threadId: string) {
-    const target = threads.find((thread) => thread.id === threadId);
-    if (!target) {
+  async function handleDeleteActiveThread() {
+    if (!activeThread) {
       return;
     }
 
     setError(null);
     try {
-      if (target.isPersisted) {
-        await deleteChatSession(target.sessionId);
-      }
-      const remaining = threads.filter((thread) => thread.id !== threadId);
-      const nextThreads = remaining.length ? remaining : [createThread(selectedAgent)];
-      setThreads(nextThreads);
-      if (activeThreadId === threadId) {
-        setActiveThreadId(nextThreads[0]?.id || "");
-      }
+      await handleDeleteThread(activeThread.id, selectedAgent);
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "Failed to delete conversation.");
     }
@@ -1892,9 +1667,6 @@ export function ChatWorkspace() {
           if (event === "session") {
             const sessionSummary = payload as ChatSessionSummary;
             applySessionSummary(sessionSummary, threadId);
-            if (activeThreadId === threadId && sessionSummary.id !== threadId) {
-              setActiveThreadId(sessionSummary.id);
-            }
             return;
           }
 
@@ -1957,7 +1729,7 @@ export function ChatWorkspace() {
               messages: publishedDownloads.length
                 ? thread.messages.map((message) =>
                     message.id === assistantId
-                      ? { ...message, attachments: mergeAttachments(message.attachments || [], publishedDownloads) }
+                      ? { ...message, attachments: mergeAttachments((message.attachments || []) as ComposerAttachment[], publishedDownloads) }
                       : message,
                   )
                 : thread.messages,
@@ -2066,48 +1838,7 @@ export function ChatWorkspace() {
         </p>
       ) : null}
 
-      <section className={isHistoryPanelOpen ? "chat-layout-grid" : "chat-layout-grid is-history-collapsed"}>
-        {isHistoryPanelOpen ? (
-          <aside className="panel-surface chat-history-panel">
-            <div className="chat-sidebar-header">
-              <h2 className="chat-sidebar-title">Sessions</h2>
-              <div className="chat-sidebar-header-actions">
-                <Button className="chat-new-button" onClick={handleNewChat} type="button" variant="outline">
-                  <Plus className="size-3.5" />
-                  New chat
-                </Button>
-              </div>
-            </div>
-
-            <label className="search-field chat-search-field">
-              <Input onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Search" value={historyQuery} />
-            </label>
-
-            <div className="history-stack">
-              {historySections.map((section) => (
-                <section className="history-section" key={section.label}>
-                  <p className="history-section-label">{section.label}</p>
-                  <div className="history-section-list">
-                    {section.items.map((thread) => (
-                      <button
-                        className={thread.id === activeThread?.id ? "history-card is-active" : "history-card"}
-                        key={thread.id}
-                        onClick={() => {
-                          setActiveThreadId(thread.id);
-                          setSelectedAgent((current) => pickAvailableAgentName(agents, thread.agentName, current));
-                        }}
-                        type="button"
-                      >
-                        <strong>{thread.title}</strong>
-                      </button>
-                    ))}
-                  </div>
-                </section>
-              ))}
-            </div>
-          </aside>
-        ) : null}
-
+      <section className="chat-layout-grid is-history-collapsed">
         <div
           className={
             isTraceResizing
@@ -2162,12 +1893,6 @@ export function ChatWorkspace() {
                 ) : (
                   <>
                     <div className="chat-title-action-group">
-                      {!isHistoryPanelOpen ? (
-                        <Button variant="outline" onClick={handleNewChat} type="button">
-                          <Plus className="size-3.5" />
-                          New chat
-                        </Button>
-                      ) : null}
                       <Button
                         className="chat-icon-button"
                         variant="ghost"
@@ -2184,7 +1909,7 @@ export function ChatWorkspace() {
                         variant="ghost"
                         size="icon"
                         disabled={!activeThread}
-                        onClick={() => void handleDeleteThread(activeThread?.id || "")}
+                        onClick={() => void handleDeleteActiveThread()}
                         type="button"
                         aria-label="Delete conversation"
                         title="Delete conversation"
@@ -2193,17 +1918,6 @@ export function ChatWorkspace() {
                       </Button>
                     </div>
                     <div className="chat-title-action-group">
-                      <Button
-                        className="chat-icon-button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setIsHistoryPanelOpen((open) => !open)}
-                        type="button"
-                        aria-label={isHistoryPanelOpen ? "Hide sessions panel" : "Show sessions panel"}
-                        title={isHistoryPanelOpen ? "Hide sessions panel" : "Show sessions panel"}
-                      >
-                        {isHistoryPanelOpen ? <PanelLeftClose className="size-4" /> : <PanelLeft className="size-4" />}
-                      </Button>
                       <Button
                         className="chat-icon-button"
                         variant="ghost"
