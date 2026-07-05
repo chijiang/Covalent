@@ -635,6 +635,8 @@ class ReactAgentRuntime(AgentRuntime):
         )
 
     async def _load_session_messages(self, agent: AgentSpec, context: RunContext | None) -> list[Message]:
+        if context is not None and context.memory_mode == "none":
+            return []
         if not self.session_store or not context or not context.session_id:
             return []
         messages = await self.session_store.load_messages(context.session_id)
@@ -648,6 +650,8 @@ class ReactAgentRuntime(AgentRuntime):
         messages: list[Message],
         context: RunContext | None,
     ) -> None:
+        if context is not None and context.memory_mode == "none":
+            return
         if not self.session_store or not context or not context.session_id:
             return
         messages = self._recent_message_window(messages, self.session_history_limit)

@@ -6,6 +6,7 @@ import {
   Bot,
   Cable,
   Cpu,
+  KeyRound,
   MessageSquare,
   Sparkles,
 } from "lucide-react";
@@ -33,6 +34,7 @@ const WORKSPACE_ITEMS = [
 const CONSOLE_ITEMS = [
   { href: "/service-console/provider-settings", label: "Provider settings", icon: Cpu },
   { href: "/service-console/agent-settings", label: "Agent settings", icon: Bot },
+  { href: "/service-console/api-tokens", label: "API tokens", icon: KeyRound },
   { href: "/service-console/mcp-services", label: "MCP services", icon: Cable },
   { href: "/service-console/skill-settings", label: "Skill settings", icon: Sparkles },
 ] as const;
