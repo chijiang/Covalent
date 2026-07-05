@@ -39,6 +39,75 @@ class AgentRunResponse(BaseModel):
     session_id: str | None = None
 
 
+class PublicAgentInvokeMemory(BaseModel):
+    mode: Literal["none", "session"] = "none"
+    session_id: str | None = None
+
+
+class PublicAgentInvokeTrace(BaseModel):
+    level: Literal["none", "steps", "debug"] = "steps"
+
+
+class PublicAgentInvokeRequest(BaseModel):
+    agent: str = Field(min_length=1, max_length=255)
+    input: PromptContent
+    stream: bool = False
+    memory: PublicAgentInvokeMemory = Field(default_factory=PublicAgentInvokeMemory)
+    trace: PublicAgentInvokeTrace = Field(default_factory=PublicAgentInvokeTrace)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("input")
+    @classmethod
+    def validate_input(cls, value: PromptContent) -> PromptContent:
+        return AgentRunRequest(input=value).input
+
+
+class PublicAgentInvokeResponse(BaseModel):
+    id: str
+    agent: str
+    memory_mode: Literal["none", "session"]
+    session_id: str | None = None
+    output_text: str
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    usage: dict[str, int] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class ApiTokenCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    user_id: str | None = None
+    user_email: str = "admin@local"
+    user_display_name: str = "Local Admin"
+    workspace_id: str | None = None
+    workspace_name: str = "Default workspace"
+    workspace_slug: str = "default"
+    scopes: list[str] = Field(default_factory=lambda: ["agent:invoke"])
+    policy: dict[str, Any] = Field(default_factory=dict)
+    expires_at: datetime | None = None
+
+
+class ApiTokenSummaryResponse(BaseModel):
+    id: str
+    name: str
+    user_id: str
+    user_email: str
+    workspace_id: str
+    workspace_name: str
+    token_prefix: str
+    scopes: list[str]
+    policy: dict[str, Any] = Field(default_factory=dict)
+    expires_at: datetime | None = None
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApiTokenCreateResponse(ApiTokenSummaryResponse):
+    token: str
+
+
 class ProviderSummaryResponse(BaseModel):
     model: str
     timeout_seconds: float

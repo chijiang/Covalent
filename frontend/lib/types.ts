@@ -267,3 +267,42 @@ export type ManagementImportResponse = {
   summary: string;
   warnings: string[];
 };
+
+export type ApiTokenPolicy = {
+  allowed_agents?: string[];
+  allowed_memory_modes?: Array<"none" | "session">;
+  max_trace_level?: "none" | "steps" | "debug";
+  [key: string]: unknown;
+};
+
+export type ApiTokenSummary = {
+  id: string;
+  name: string;
+  user_id: string;
+  user_email: string;
+  workspace_id: string;
+  workspace_name: string;
+  token_prefix: string;
+  scopes: string[];
+  policy: ApiTokenPolicy;
+  expires_at?: string | null;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApiTokenCreateRequest = {
+  name: string;
+  user_email?: string;
+  user_display_name?: string;
+  workspace_name?: string;
+  workspace_slug?: string;
+  scopes?: string[];
+  policy?: ApiTokenPolicy;
+  expires_at?: string | null;
+};
+
+export type ApiTokenCreateResponse = ApiTokenSummary & {
+  token: string;
+};

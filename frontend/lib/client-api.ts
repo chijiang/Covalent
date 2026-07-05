@@ -2,6 +2,9 @@ import type {
   AgentDetail,
   AgentRunRequest,
   AgentSummary,
+  ApiTokenCreateRequest,
+  ApiTokenCreateResponse,
+  ApiTokenSummary,
   AttachmentDeliveryMode,
   AttachmentUploadResponse,
   ChatSession,
@@ -148,6 +151,23 @@ export function importManagementConfig(kind: ManagementKind, file: File): Promis
   return apiFetchJson<ManagementImportResponse>(`management/${kind}/import`, {
     method: "POST",
     body: formData,
+  });
+}
+
+export function listApiTokens(): Promise<ApiTokenSummary[]> {
+  return apiFetchJson<ApiTokenSummary[]>("api-tokens", { method: "GET" });
+}
+
+export function createApiToken(request: ApiTokenCreateRequest): Promise<ApiTokenCreateResponse> {
+  return apiFetchJson<ApiTokenCreateResponse>("api-tokens", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function revokeApiToken(tokenId: string): Promise<ApiTokenSummary> {
+  return apiFetchJson<ApiTokenSummary>(`api-tokens/${encodeURIComponent(tokenId)}`, {
+    method: "DELETE",
   });
 }
 

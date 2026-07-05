@@ -10,12 +10,13 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
 import zipfile
 
 import anyio
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
@@ -24,6 +25,9 @@ import yaml
 from agent_framework.api.schemas import (
     AgentRunRequest,
     AgentRunResponse,
+    ApiTokenCreateRequest,
+    ApiTokenCreateResponse,
+    ApiTokenSummaryResponse,
     LocalToolSummaryResponse,
     AgentSummaryResponse,
     AttachmentUploadResponse,
@@ -45,6 +49,8 @@ from agent_framework.api.schemas import (
     McpToolCallResponse,
     McpToolSummaryResponse,
     ProviderSummaryResponse,
+    PublicAgentInvokeRequest,
+    PublicAgentInvokeResponse,
     SkillInstallRequest,
     SkillInstallResponse,
     SkillManagementItemResponse,
@@ -53,14 +59,32 @@ from agent_framework.api.schemas import (
     SkillPreviewResponse,
     SkillSummaryResponse,
 )
+from agent_framework.api.auth import (
+    ApiPrincipal,
+    authenticate_api_token,
+    generate_api_token,
+    hash_api_token,
+    require_agent_allowed,
+    require_memory_mode_allowed,
+    require_scope,
+    require_trace_level_allowed,
+)
 from agent_framework.core.attachment_processing import process_attachment_bytes
 from agent_framework.core.agent import AgentSpec
 from agent_framework.core.workspace_tools import register_workspace_tools
 from agent_framework.core.types import Capability, GenerationRequest, Message, ResumedToolResult, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
 from agent_framework.infra.config_store import ConfigKind, ConfigStore, PersistedAgentConfig, PersistedSkillSourceConfig
-from sqlalchemy import text
+from sqlalchemy import select, text
 
-from agent_framework.infra.db import DatabaseManager
+from agent_framework.infra.db import (
+    AgentRunLogRow,
+    ApiTokenRow,
+    ChatSessionRow,
+    DatabaseManager,
+    UserRow,
+    WorkspaceMemberRow,
+    WorkspaceRow,
+)
 from agent_framework.infra.migrations import run_database_migrations
 from agent_framework.infra.memory import (
     ChatActivityItem,
@@ -311,6 +335,195 @@ def create_app() -> FastAPI:
             checks["skill_processes"] = pool_summaries if pool_summaries else "none_active"
 
         return checks
+
+    @app.get("/api-tokens")
+    async def list_api_tokens() -> list[ApiTokenSummaryResponse]:
+        db_manager: DatabaseManager = app.state.db_manager
+        return await _list_api_token_summaries(db_manager)
+
+    @app.post("/api-tokens")
+    async def create_api_token(request: ApiTokenCreateRequest) -> ApiTokenCreateResponse:
+        settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
+        return await _create_api_token(db_manager, settings, request)
+
+    @app.delete("/api-tokens/{token_id}")
+    async def revoke_api_token(token_id: str) -> ApiTokenSummaryResponse:
+        db_manager: DatabaseManager = app.state.db_manager
+        return await _revoke_api_token(db_manager, token_id)
+
+    @app.post("/v1/agent/invoke", response_model=None)
+    async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvokeRequest) -> PublicAgentInvokeResponse | StreamingResponse:
+        settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
+        registry: FrameworkRegistry = app.state.registry
+        runtime: ReactAgentRuntime = app.state.runtime
+
+        principal = await authenticate_api_token(
+            request,
+            settings=settings,
+            session_factory=db_manager.session_factory,
+        )
+        memory_mode = invoke_request.memory.mode
+        trace_level = invoke_request.trace.level
+        require_scope(principal, "agent:invoke")
+        require_agent_allowed(principal, invoke_request.agent)
+        require_memory_mode_allowed(principal, memory_mode)
+        require_trace_level_allowed(principal, trace_level)
+
+        try:
+            agent = registry.get_agent(invoke_request.agent)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown agent: {invoke_request.agent}") from exc
+
+        run_id = _new_chat_item_id("run")
+        created_at = datetime.now(UTC)
+        session_id = await _resolve_public_invoke_session_id(
+            db_manager,
+            principal,
+            memory_mode=memory_mode,
+            requested_session_id=invoke_request.memory.session_id,
+            run_id=run_id,
+        )
+        context = RunContext(
+            agent_name=agent.name,
+            session_id=session_id or run_id,
+            metadata={
+                **(invoke_request.metadata or {}),
+                "memory_mode": memory_mode,
+                "run_id": run_id,
+                "principal": {
+                    "user_id": principal.user_id,
+                    "workspace_id": principal.workspace_id,
+                    "token_id": principal.token_id,
+                },
+            },
+        )
+
+        if invoke_request.stream:
+            async def event_stream():
+                started = perf_counter()
+                final_payload: dict[str, Any] | None = None
+                error_payload: dict[str, Any] = {}
+                status = "completed"
+                yield _encode_public_sse(
+                    "run.created",
+                    {
+                        "run_id": run_id,
+                        "agent": agent.name,
+                        "memory_mode": memory_mode,
+                        "session_id": session_id,
+                        "created_at": created_at.isoformat(),
+                    },
+                )
+                try:
+                    async for event in runtime.stream_events(agent, invoke_request.input, context):
+                        event_name = str(event.get("event") or "")
+                        payload = event.get("payload")
+                        if event_name == "final" and isinstance(payload, dict):
+                            final_payload = payload
+                        for public_event in _public_stream_events(event_name, payload, trace_level=trace_level):
+                            yield public_event
+                except ModelProviderError as exc:
+                    status = "failed"
+                    status_code = 502 if exc.status_code is None else min(max(exc.status_code, 400), 599)
+                    error_payload = {"code": "model_error", "status_code": status_code, "message": exc.detail}
+                    yield _encode_public_sse("run.failed", {"run_id": run_id, "error": error_payload})
+                except Exception as exc:
+                    logger.exception("Public agent invoke stream failed", extra={"agent_name": agent.name, "run_id": run_id})
+                    status = "failed"
+                    error_payload = {"code": "internal_error", "message": str(exc) or "Agent run failed unexpectedly."}
+                    yield _encode_public_sse("run.failed", {"run_id": run_id, "error": error_payload})
+                finally:
+                    latency_ms = int((perf_counter() - started) * 1000)
+                    if final_payload is not None:
+                        yield _encode_public_sse(
+                            "run.completed",
+                            _public_run_completed_payload(
+                                run_id=run_id,
+                                agent_name=agent.name,
+                                memory_mode=memory_mode,
+                                session_id=session_id,
+                                final_payload=final_payload,
+                            ),
+                        )
+                    await _record_public_agent_run(
+                        db_manager,
+                        principal=principal,
+                        run_id=run_id,
+                        agent_name=agent.name,
+                        memory_mode=memory_mode,
+                        session_id=session_id,
+                        status=status,
+                        latency_ms=latency_ms,
+                        provider=agent.provider.provider,
+                        model=agent.provider.model,
+                        usage=_usage_payload(final_payload),
+                        error=error_payload,
+                        metadata=invoke_request.metadata,
+                    )
+
+            return StreamingResponse(
+                event_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache, no-transform",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        started = perf_counter()
+        try:
+            result = await runtime.run(agent, invoke_request.input, context)
+        except ModelProviderError as exc:
+            latency_ms = int((perf_counter() - started) * 1000)
+            status_code = 502 if exc.status_code is None else min(max(exc.status_code, 400), 599)
+            await _record_public_agent_run(
+                db_manager,
+                principal=principal,
+                run_id=run_id,
+                agent_name=agent.name,
+                memory_mode=memory_mode,
+                session_id=session_id,
+                status="failed",
+                latency_ms=latency_ms,
+                provider=agent.provider.provider,
+                model=agent.provider.model,
+                usage={},
+                error={"code": "model_error", "status_code": status_code, "message": exc.detail},
+                metadata=invoke_request.metadata,
+            )
+            raise HTTPException(status_code=status_code, detail=exc.detail) from exc
+
+        latency_ms = int((perf_counter() - started) * 1000)
+        usage = result.usage.model_dump(mode="json") if result.usage is not None else {}
+        await _record_public_agent_run(
+            db_manager,
+            principal=principal,
+            run_id=run_id,
+            agent_name=agent.name,
+            memory_mode=memory_mode,
+            session_id=session_id,
+            status="completed",
+            latency_ms=latency_ms,
+            provider=agent.provider.provider,
+            model=agent.provider.model,
+            usage=usage,
+            error={},
+            metadata=invoke_request.metadata,
+        )
+        return PublicAgentInvokeResponse(
+            id=run_id,
+            agent=agent.name,
+            memory_mode=memory_mode,
+            session_id=session_id,
+            output_text=result.output_text,
+            tool_calls=[tool_call.model_dump(mode="json") for tool_call in result.tool_calls],
+            metadata={"provider": agent.provider.provider, "model": agent.provider.model},
+            usage=usage,
+            created_at=created_at,
+        )
 
     @app.get("/providers/{provider_name}/models")
     async def list_provider_models(provider_name: str) -> list[str]:
@@ -1177,6 +1390,360 @@ def to_chat_session_response(record: ChatSessionRecord) -> ChatSessionResponse:
         messages=[ChatSessionMessageResponse(**message.model_dump()) for message in record.messages],
         activity=[ChatSessionActivityResponse(**item.model_dump()) for item in record.activity],
     )
+
+
+def _normalize_token_scopes(scopes: list[str]) -> list[str]:
+    normalized = _dedupe_strings([scope.strip() for scope in scopes if isinstance(scope, str)])
+    return normalized or ["agent:invoke"]
+
+
+def _normalize_token_policy(policy: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(policy or {})
+    if "allowed_agents" in normalized and isinstance(normalized["allowed_agents"], list):
+        normalized["allowed_agents"] = _dedupe_strings([str(value) for value in normalized["allowed_agents"]])
+    if "allowed_memory_modes" in normalized and isinstance(normalized["allowed_memory_modes"], list):
+        allowed_modes = [str(value) for value in normalized["allowed_memory_modes"] if str(value) in {"none", "session"}]
+        normalized["allowed_memory_modes"] = _dedupe_strings(allowed_modes)
+    if str(normalized.get("max_trace_level") or "") not in {"none", "steps", "debug"}:
+        normalized.pop("max_trace_level", None)
+    return normalized
+
+
+async def _ensure_token_owner_workspace(
+    session: AsyncSession,
+    request: ApiTokenCreateRequest,
+) -> tuple[UserRow, WorkspaceRow]:
+    user_id = (request.user_id or "").strip()
+    user: UserRow | None = await session.get(UserRow, user_id) if user_id else None
+    if user is None:
+        user = await session.scalar(select(UserRow).where(UserRow.email == request.user_email.strip()))
+    if user is None:
+        user = UserRow(
+            id=user_id or _new_chat_item_id("user"),
+            email=request.user_email.strip() or "admin@local",
+            display_name=request.user_display_name.strip() or "Local Admin",
+            role="admin",
+            status="active",
+        )
+        session.add(user)
+    else:
+        if request.user_display_name.strip() and not user.display_name.strip():
+            user.display_name = request.user_display_name.strip()
+        if user.status != "active":
+            user.status = "active"
+
+    workspace_id = (request.workspace_id or "").strip()
+    workspace: WorkspaceRow | None = await session.get(WorkspaceRow, workspace_id) if workspace_id else None
+    workspace_slug = _safe_storage_component(request.workspace_slug, "default")
+    if workspace is None:
+        workspace = await session.scalar(select(WorkspaceRow).where(WorkspaceRow.slug == workspace_slug))
+    if workspace is None:
+        workspace = WorkspaceRow(
+            id=workspace_id or _new_chat_item_id("workspace"),
+            name=request.workspace_name.strip() or "Default workspace",
+            slug=workspace_slug,
+        )
+        session.add(workspace)
+
+    member = await session.get(WorkspaceMemberRow, (workspace.id, user.id))
+    if member is None:
+        session.add(WorkspaceMemberRow(workspace_id=workspace.id, user_id=user.id, role="admin"))
+
+    return user, workspace
+
+
+def _api_token_summary_response(
+    token: ApiTokenRow,
+    user: UserRow,
+    workspace: WorkspaceRow,
+) -> ApiTokenSummaryResponse:
+    return ApiTokenSummaryResponse(
+        id=token.id,
+        name=token.name,
+        user_id=token.user_id,
+        user_email=user.email,
+        workspace_id=token.workspace_id,
+        workspace_name=workspace.name,
+        token_prefix=token.token_prefix,
+        scopes=list(token.scopes or []),
+        policy=dict(token.policy_json or {}),
+        expires_at=token.expires_at,
+        last_used_at=token.last_used_at,
+        revoked_at=token.revoked_at,
+        created_at=token.created_at,
+        updated_at=token.updated_at,
+    )
+
+
+async def _list_api_token_summaries(db_manager: DatabaseManager) -> list[ApiTokenSummaryResponse]:
+    async with db_manager.session_factory() as session:
+        rows = (
+            await session.execute(
+                select(ApiTokenRow, UserRow, WorkspaceRow)
+                .join(UserRow, ApiTokenRow.user_id == UserRow.id)
+                .join(WorkspaceRow, ApiTokenRow.workspace_id == WorkspaceRow.id)
+                .order_by(ApiTokenRow.created_at.desc())
+            )
+        ).all()
+        return [_api_token_summary_response(token, user, workspace) for token, user, workspace in rows]
+
+
+async def _create_api_token(
+    db_manager: DatabaseManager,
+    settings: AppSettings,
+    request: ApiTokenCreateRequest,
+) -> ApiTokenCreateResponse:
+    token, token_prefix = generate_api_token()
+    token_hash = hash_api_token(token, settings.api_token_hash_pepper)
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            user, workspace = await _ensure_token_owner_workspace(session, request)
+            row = ApiTokenRow(
+                id=_new_chat_item_id("token"),
+                user_id=user.id,
+                workspace_id=workspace.id,
+                name=request.name.strip(),
+                token_prefix=token_prefix,
+                token_hash=token_hash,
+                scopes=_normalize_token_scopes(request.scopes),
+                policy_json=_normalize_token_policy(request.policy),
+                expires_at=request.expires_at,
+            )
+            session.add(row)
+        async with session.begin():
+            saved = await session.get(ApiTokenRow, row.id)
+            if saved is None:
+                raise HTTPException(status_code=500, detail="API token was not saved")
+            user = await session.get(UserRow, saved.user_id)
+            workspace = await session.get(WorkspaceRow, saved.workspace_id)
+            if user is None or workspace is None:
+                raise HTTPException(status_code=500, detail="API token owner was not saved")
+            summary = _api_token_summary_response(saved, user, workspace)
+    return ApiTokenCreateResponse(**summary.model_dump(), token=token)
+
+
+async def _revoke_api_token(db_manager: DatabaseManager, token_id: str) -> ApiTokenSummaryResponse:
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            row = await session.get(ApiTokenRow, token_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+            if row.revoked_at is None:
+                row.revoked_at = datetime.now(UTC)
+        async with session.begin():
+            saved = await session.get(ApiTokenRow, token_id)
+            if saved is None:
+                raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+            user = await session.get(UserRow, saved.user_id)
+            workspace = await session.get(WorkspaceRow, saved.workspace_id)
+            if user is None or workspace is None:
+                raise HTTPException(status_code=500, detail="API token owner is missing")
+            return _api_token_summary_response(saved, user, workspace)
+
+
+async def _resolve_public_invoke_session_id(
+    db_manager: DatabaseManager,
+    principal: ApiPrincipal,
+    *,
+    memory_mode: Literal["none", "session"],
+    requested_session_id: str | None,
+    run_id: str,
+) -> str | None:
+    if memory_mode == "none":
+        if requested_session_id:
+            raise HTTPException(status_code=400, detail="session_id is only allowed when memory.mode is 'session'")
+        return None
+
+    session_id = (requested_session_id or "").strip() or _new_chat_item_id("session")
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            row = await session.get(ChatSessionRow, session_id)
+            if row is None:
+                session.add(
+                    ChatSessionRow(
+                        id=session_id,
+                        owner_user_id=principal.user_id,
+                        workspace_id=principal.workspace_id,
+                        created_by_token_id=principal.token_id,
+                    )
+                )
+                return session_id
+
+            if row.owner_user_id != principal.user_id or row.workspace_id != principal.workspace_id:
+                raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
+            if row.created_by_token_id is None:
+                row.created_by_token_id = principal.token_id
+            return session_id
+
+
+def _encode_public_sse(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _usage_payload(final_payload: dict[str, Any] | None) -> dict[str, int]:
+    if not isinstance(final_payload, dict):
+        return {}
+    usage = final_payload.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+    return {
+        key: int(value)
+        for key, value in usage.items()
+        if key in {"prompt_tokens", "completion_tokens", "total_tokens"} and isinstance(value, int | float)
+    }
+
+
+def _public_run_completed_payload(
+    *,
+    run_id: str,
+    agent_name: str,
+    memory_mode: Literal["none", "session"],
+    session_id: str | None,
+    final_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "agent": agent_name,
+        "memory_mode": memory_mode,
+        "session_id": session_id,
+        "output_text": str(final_payload.get("output_text") or ""),
+        "usage": _usage_payload(final_payload),
+    }
+
+
+def _public_stream_events(
+    event_name: str,
+    payload: Any,
+    *,
+    trace_level: Literal["none", "steps", "debug"],
+) -> list[str]:
+    if event_name == "assistant":
+        text = _payload_text(payload)
+        return [_encode_public_sse("message.delta", {"text": text})] if text else []
+
+    if trace_level == "none":
+        return []
+
+    if event_name in {"thought", "iteration", "context_window", "model_call"}:
+        return [_encode_public_sse("trace.step", _public_trace_step_payload(event_name, payload))]
+
+    if event_name.endswith("tool_calls"):
+        return [
+            _encode_public_sse("tool.call.started", item)
+            for item in _public_tool_call_payloads(payload, redact_arguments=trace_level != "debug")
+        ]
+
+    if event_name.endswith("tool_results"):
+        return [
+            _encode_public_sse("tool.call.completed", item)
+            for item in _public_tool_result_payloads(payload, redact_results=trace_level != "debug")
+        ]
+
+    return []
+
+
+def _public_trace_step_payload(event_name: str, payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"kind": event_name, "summary": str(payload)}
+    summary = payload.get("summary") or payload.get("phase") or payload.get("status") or event_name
+    result: dict[str, Any] = {
+        "kind": str(payload.get("kind") or event_name),
+        "summary": str(summary),
+    }
+    for key in ("iteration", "stage", "phase", "status", "elapsed_ms"):
+        if key in payload:
+            result[key] = payload[key]
+    return result
+
+
+def _public_tool_call_payloads(payload: Any, *, redact_arguments: bool) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    tool_calls = payload.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return []
+    results: list[dict[str, Any]] = []
+    for item in tool_calls:
+        if not isinstance(item, dict):
+            continue
+        result = {
+            "id": item.get("id"),
+            "name": item.get("name"),
+        }
+        result["arguments"] = "[redacted]" if redact_arguments else item.get("arguments", {})
+        results.append(result)
+    return results
+
+
+def _public_tool_result_payloads(payload: Any, *, redact_results: bool) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    tool_results = payload.get("results")
+    if not isinstance(tool_results, list):
+        return []
+    results: list[dict[str, Any]] = []
+    for item in tool_results:
+        if not isinstance(item, dict):
+            continue
+        result = {
+            "id": item.get("tool_call_id"),
+            "name": item.get("name"),
+            "status": "error" if item.get("is_error") else "ok",
+        }
+        result["summary"] = "[redacted]" if redact_results else _summarize_public_tool_result(item.get("content"))
+        results.append(result)
+    return results
+
+
+def _summarize_public_tool_result(content: Any, *, max_chars: int = 600) -> str:
+    if isinstance(content, str):
+        text = content
+    elif content is None:
+        text = ""
+    else:
+        text = json.dumps(content, ensure_ascii=False, default=str)
+    text = " ".join(text.split())
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3].rstrip()}..."
+
+
+async def _record_public_agent_run(
+    db_manager: DatabaseManager,
+    *,
+    principal: ApiPrincipal,
+    run_id: str,
+    agent_name: str,
+    memory_mode: Literal["none", "session"],
+    session_id: str | None,
+    status: str,
+    latency_ms: int,
+    provider: str,
+    model: str,
+    usage: dict[str, Any],
+    error: dict[str, Any],
+    metadata: dict[str, Any],
+) -> None:
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            session.add(
+                AgentRunLogRow(
+                    id=run_id,
+                    user_id=principal.user_id,
+                    token_id=principal.token_id,
+                    workspace_id=principal.workspace_id,
+                    agent_name=agent_name,
+                    memory_mode=memory_mode,
+                    session_id=session_id,
+                    status=status,
+                    latency_ms=latency_ms,
+                    provider=provider,
+                    model=model,
+                    usage_json=dict(usage or {}),
+                    error_json=dict(error or {}),
+                    metadata_json=dict(metadata or {}),
+                )
+            )
 
 
 def _new_chat_item_id(prefix: str) -> str:

@@ -109,3 +109,8 @@ class RunContext(BaseModel):
     agent_name: str
     session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def memory_mode(self) -> Literal["session", "none"]:
+        raw = self.metadata.get("memory_mode")
+        return "none" if raw == "none" else "session"

@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, TypeVar
 
 import anyio
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -176,10 +176,101 @@ class ProviderRow(TimestampMixin, Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
+class UserRow(TimestampMixin, Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    auth_subject: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class WorkspaceRow(TimestampMixin, Base):
+    __tablename__ = "workspaces"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class WorkspaceMemberRow(TimestampMixin, Base):
+    __tablename__ = "workspace_members"
+
+    workspace_id: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
+
+
+class ApiTokenRow(TimestampMixin, Base):
+    __tablename__ = "api_tokens"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    workspace_id: Mapped[str] = mapped_column(String(255), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    token_prefix: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    policy_json: Mapped[dict[str, Any]] = mapped_column("policy", JSONB, nullable=False, default=dict)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AgentAccessGrantRow(TimestampMixin, Base):
+    __tablename__ = "agent_access_grants"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "agent_name", "subject_type", "subject_id", name="uq_agent_access_grant_subject"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(String(255), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(255), ForeignKey("agents.name", ondelete="CASCADE"), nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    permissions: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+
+
+class AgentRunLogRow(Base):
+    __tablename__ = "agent_run_logs"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    token_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("api_tokens.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True)
+    agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    memory_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    usage_json: Mapped[dict[str, Any]] = mapped_column("usage", JSONB, nullable=False, default=dict)
+    error_json: Mapped[dict[str, Any]] = mapped_column("error", JSONB, nullable=False, default=dict)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class ChatSessionRow(TimestampMixin, Base):
     __tablename__ = "chat_sessions"
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    owner_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True)
+    created_by_token_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("api_tokens.id", ondelete="SET NULL"), nullable=True)
     title: Mapped[str] = mapped_column(Text, nullable=False, default="New conversation")
     title_source: Mapped[str] = mapped_column(String(16), nullable=False, default="auto")
     agent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

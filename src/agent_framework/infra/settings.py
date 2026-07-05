@@ -35,6 +35,7 @@ class AppSettings(BaseSettings):
     mcp_timeout_seconds: float = 500.0
     mcp_servers_json: str | None = None
     max_upload_bytes: int = 100 * 1024 * 1024  # 100 MB
+    api_token_hash_pepper: str = "dev-token-pepper-change-me"
     agents_json: str | None = None
     skill_sources_json: str | None = None
     agent_system_prompt: str = (
