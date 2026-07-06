@@ -2118,6 +2118,67 @@ textarea {
   justify-content: flex-end;
 }
 
+.ask-user-prompt-summary {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(16, 16, 16, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.chat-bubble.outbound .ask-user-prompt-summary {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.ask-user-prompt-summary-header {
+  display: grid;
+  gap: 4px;
+}
+
+.ask-user-prompt-summary-title {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.ask-user-prompt-summary-list {
+  display: grid;
+  gap: 8px;
+}
+
+.ask-user-prompt-summary-card {
+  display: grid;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(16, 16, 16, 0.06);
+}
+
+.ask-user-prompt-summary-card:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.ask-user-prompt-summary-card p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg-secondary);
+}
+
+.ask-user-prompt-option-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ask-user-prompt-option-list li + li {
+  margin-top: 2px;
+}
+
 .composer-inline {
   display: flex;
   align-items: stretch;
