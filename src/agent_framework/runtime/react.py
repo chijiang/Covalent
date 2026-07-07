@@ -1234,6 +1234,17 @@ class ReactAgentRuntime(AgentRuntime):
             messages.append(assistant_message)
             generation_messages.append(assistant_message.model_copy(deep=True))
 
+            reasoning_content = (assistant_message.reasoning_content or "").strip()
+            if reasoning_content:
+                reasoning_summary = self._normalize_summary_text(reasoning_content)
+                yield self._thought_event(
+                    iteration=iteration,
+                    stage="react",
+                    kind="model_reasoning",
+                    summary=f"Model reasoning: {self._truncate_text(reasoning_summary, 240)}",
+                    reasoning_content=reasoning_content,
+                )
+
             if response.output_text:
                 yield {"event": "assistant", "payload": {"text": response.output_text, "iteration": iteration}}
 
