@@ -913,8 +913,8 @@ export function McpWorkspace() {
                       )}
                     </FormSection>
 
-                    <section className="detail-block skill-source-shell stack-gap-sm" style={{ minHeight: 320, flex: "0 0 auto" }}>
-                      <div className="panel-title-row align-start-row">
+                    <section className="detail-block mcp-discovered-tools-shell">
+                      <div className="panel-title-row align-start-row mcp-discovered-tools-head">
                         <div className="stack-gap-2xs grow-block">
                           <h3 className="panel-title">Discovered tools</h3>
                           <p className="entity-meta">Run Test connection after edits to inspect the tool surface exposed by this MCP server.</p>
@@ -926,27 +926,35 @@ export function McpWorkspace() {
                       {inspection && inspection.tools.length === 0 ? <p className="empty-copy padded-empty">Connection succeeded, but no tools were reported.</p> : null}
 
                       {inspection && inspection.tools.length > 0 ? (
-                        <div className="skill-source-workbench" style={{ minHeight: 280, height: "clamp(280px, 38vh, 420px)" }}>
-                          <aside className="skill-file-list">
-                            {inspection.tools.map((tool) => (
-                              <button
-                                className={tool.name === selectedTool?.name ? "skill-file-item is-active" : "skill-file-item"}
-                                key={tool.name}
-                                onClick={() => setSelectedToolName(tool.name)}
-                                type="button"
-                              >
-                                {tool.name}
-                              </button>
-                            ))}
+                        <div className="mcp-tool-browser">
+                          <aside className="mcp-tool-list" aria-label="Discovered MCP tools">
+                            <ScrollArea className="mcp-tool-list-scroll">
+                              <div className="mcp-tool-list-inner">
+                                {inspection.tools.map((tool) => (
+                                  <button
+                                    className={tool.name === selectedTool?.name ? "mcp-tool-item is-active" : "mcp-tool-item"}
+                                    key={tool.name}
+                                    onClick={() => setSelectedToolName(tool.name)}
+                                    title={tool.description || tool.name}
+                                    type="button"
+                                  >
+                                    <strong>{tool.name}</strong>
+                                    {tool.description ? <span>{tool.description}</span> : null}
+                                  </button>
+                                ))}
+                              </div>
+                            </ScrollArea>
                           </aside>
 
-                          <section className="skill-file-preview">
+                          <section className="mcp-tool-schema-preview">
                             <div className="skill-file-preview-head">
                               <strong>{selectedTool?.name || "Tool preview"}</strong>
                               <span>input schema</span>
                             </div>
                             {selectedTool?.description ? <p className="mcp-tool-description">{selectedTool.description}</p> : null}
-                            <pre className="code-preview skill-source-preview">{selectedTool ? `${JSON.stringify(selectedTool.input_schema, null, 2)}\n` : ""}</pre>
+                            <ScrollArea className="mcp-tool-schema-scroll">
+                              <pre className="code-preview skill-source-preview">{selectedTool ? `${JSON.stringify(selectedTool.input_schema, null, 2)}\n` : ""}</pre>
+                            </ScrollArea>
                           </section>
                         </div>
                       ) : null}
