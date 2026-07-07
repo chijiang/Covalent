@@ -41,3 +41,7 @@ tmp
 
 # local skills
 skills/uploaded
+
+# agent workspace
+.agent_framework/session-workspaces/
+.agent_framework/downloads/

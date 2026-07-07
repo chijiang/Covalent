@@ -139,9 +139,15 @@ DELEGATE_TOOL_PREFIX = "agent__"
 WORKSPACE_AGENT_TOOLS = (
     "list_workspace_files",
     "read_workspace_file",
+    "search_workspace_files",
+    "edit_workspace_file",
     "write_workspace_file",
     "create_workspace_directory",
+    "copy_workspace_entry",
+    "move_workspace_entry",
     "delete_workspace_entry",
+    "zip_workspace_entries",
+    "unzip_workspace_archive",
     "publish_downloadable_file",
 )
 BUILTIN_AGENT_TOOLS = ("get_current_time", "ask_user", *WORKSPACE_AGENT_TOOLS)
