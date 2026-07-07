@@ -746,6 +746,11 @@ def create_app() -> FastAPI:
             transcript_messages.append(user_transcript)
             assistant_message_id = _new_chat_item_id("assistant")
             runtime_metadata = dict(request.metadata or {})
+            runtime_metadata["defer_session_persist"] = True
+            if existing is not None:
+                runtime_metadata["preloaded_memory_messages"] = [
+                    message.model_dump(mode="json") for message in existing.memory_messages
+                ]
             if resume_tool_result is not None:
                 runtime_metadata["resume_tool_result"] = resume_tool_result.model_dump(mode="json")
                 activity.append(
@@ -760,11 +765,12 @@ def create_app() -> FastAPI:
                     )
                 )
 
+            run_context = RunContext(agent_name=agent_name, session_id=session_id, metadata=runtime_metadata)
             try:
                 async for event in runtime.stream_events(
                     agent,
                     request.input,
-                    RunContext(agent_name=agent_name, session_id=session_id, metadata=runtime_metadata),
+                    run_context,
                 ):
                     event_name = event["event"]
                     payload = event["payload"]
@@ -797,7 +803,11 @@ def create_app() -> FastAPI:
                 activity.append(ChatActivityItem(id=_new_chat_item_id(SSE_EVENT_ERROR), title=SSE_EVENT_ERROR, payload=payload))
                 yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
             finally:
-                memory_messages = await session_store.load_messages(session_id)
+                raw_memory_messages = run_context.metadata.get("persisted_memory_messages")
+                if isinstance(raw_memory_messages, list):
+                    memory_messages = [Message.model_validate(item) for item in raw_memory_messages]
+                else:
+                    memory_messages = [message.model_copy(deep=True) for message in existing.memory_messages] if existing else []
                 now = datetime.now(UTC)
                 title_source = existing.title_source if existing else "auto"
                 title = existing.title if existing else "New conversation"

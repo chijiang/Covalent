@@ -361,135 +361,6 @@ function isWaitingForAnswerContent(content: string): boolean {
   return normalized === "Waiting for your answer…" || normalized === "Waiting for your answer...";
 }
 
-type SplitReasoningContent = {
-  reasoning: string;
-  answer: string;
-};
-
-const REASONING_LABEL_PATTERN =
-  /^(?:reasoning|reasoning path|reasoning process|thought process|analysis|analysis process|detailed reasoning|detailed breakdown\s*\/\s*reasoning|thinking|思考|推理|推理路径|分析|分析过程|诊断路径)$/i;
-
-const ANSWER_LABEL_PATTERN = /^(?:final answer|answer|response|result|output|最终答案|答案|回复|结果|输出)$/i;
-
-function stripMarkdownHeadingLabel(value: string): string {
-  return value
-    .replace(/^\s{0,3}#{1,6}\s*/, "")
-    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s*)/, "")
-    .replace(/^\s*\*\*/, "")
-    .replace(/\*\*\s*$/, "")
-    .replace(/^\s*/, "")
-    .replace(/\s*[:：]\s*$/, "")
-    .trim();
-}
-
-function splitLabeledLine(value: string, labels: RegExp): string | null {
-  const cleaned = value
-    .replace(/^\s{0,3}#{1,6}\s*/, "")
-    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s*)/, "")
-    .replace(/^\s*\*\*/, "")
-    .trim();
-  const match = cleaned.match(labels);
-  return match ? cleaned.slice(match[0].length).replace(/^\*\*/, "").trim() : null;
-}
-
-function splitReasoningContent(content: string): SplitReasoningContent | null {
-  const normalized = content.trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const thinkMatch = normalized.match(/^<think(?:ing)?>([\s\S]*?)<\/think(?:ing)>\s*([\s\S]*)$/i);
-  if (thinkMatch?.[1] && thinkMatch[2]?.trim()) {
-    return {
-      reasoning: thinkMatch[1].trim(),
-      answer: thinkMatch[2].trim(),
-    };
-  }
-
-  const lines = normalized.split(/\r?\n/);
-  let reasoningStart = -1;
-  let answerStart = -1;
-  let inlineReasoning = "";
-  let inlineAnswer = "";
-  const sectionHeadingPattern = /^(?:#{1,6}\s*)?(?:\*\*)?\s*[^:\n：]{1,80}(?:\*\*)?\s*[:：]?\s*$/;
-  const reasoningInlinePattern = /^(?:reasoning|reasoning path|reasoning process|thought process|analysis|analysis process|detailed reasoning|detailed breakdown\s*\/\s*reasoning|thinking|思考|推理|推理路径|分析|分析过程|诊断路径)(?:\*\*)?\s*[:：]\s*/i;
-  const answerInlinePattern = /^(?:final answer|answer|response|result|output|最终答案|答案|回复|结果|输出)(?:\*\*)?\s*[:：]\s*/i;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const label = stripMarkdownHeadingLabel(lines[index]);
-    if (reasoningStart === -1 && REASONING_LABEL_PATTERN.test(label)) {
-      reasoningStart = index;
-      continue;
-    }
-    if (reasoningStart === -1) {
-      const inline = splitLabeledLine(lines[index], reasoningInlinePattern);
-      if (inline !== null) {
-        reasoningStart = index;
-        inlineReasoning = inline;
-        continue;
-      }
-    }
-    if (reasoningStart !== -1 && ANSWER_LABEL_PATTERN.test(label)) {
-      answerStart = index;
-      break;
-    }
-    if (reasoningStart !== -1) {
-      const inline = splitLabeledLine(lines[index], answerInlinePattern);
-      if (inline !== null) {
-        answerStart = index;
-        inlineAnswer = inline;
-        break;
-      }
-    }
-    if (
-      reasoningStart !== -1 &&
-      index > reasoningStart &&
-      sectionHeadingPattern.test(lines[index]) &&
-      !REASONING_LABEL_PATTERN.test(label)
-    ) {
-      const reasoning = [inlineReasoning, lines.slice(reasoningStart + 1, index).join("\n")]
-        .filter(Boolean)
-        .join("\n")
-        .trim();
-      const answer = [lines.slice(0, reasoningStart).join("\n"), lines.slice(index).join("\n")]
-        .filter(Boolean)
-        .join("\n\n")
-        .trim();
-      if (reasoning && answer) {
-        return { reasoning, answer };
-      }
-    }
-  }
-
-  if (reasoningStart !== -1 && answerStart === -1 && reasoningStart > 0) {
-    const reasoning = [inlineReasoning, lines.slice(reasoningStart + 1).join("\n")]
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-    const answer = lines.slice(0, reasoningStart).join("\n").trim();
-    if (reasoning && answer) {
-      return { reasoning, answer };
-    }
-  }
-
-  if (reasoningStart === -1 || answerStart === -1) {
-    return null;
-  }
-
-  const reasoning = [inlineReasoning, lines.slice(reasoningStart + 1, answerStart).join("\n")]
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-  const answer = [inlineAnswer, lines.slice(answerStart + 1).join("\n")]
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-  if (!reasoning || !answer) {
-    return null;
-  }
-  return { reasoning, answer };
-}
-
 function ChatMarkdownContent({ content, tone }: { content: string; tone: ChatCodeBlockTone }) {
   return (
     <div className="chat-markdown">
@@ -508,34 +379,6 @@ function ChatMarkdownContent({ content, tone }: { content: string; tone: ChatCod
       >
         {content}
       </ReactMarkdown>
-    </div>
-  );
-}
-
-function CollapsibleReasoningMessage({ content, tone }: { content: string; tone: ChatCodeBlockTone }) {
-  const [expanded, setExpanded] = useState(false);
-  const splitContent = useMemo(() => splitReasoningContent(content), [content]);
-
-  if (!splitContent) {
-    return <ChatMarkdownContent content={content} tone={tone} />;
-  }
-
-  return (
-    <div className="chat-reasoning-message">
-      <button
-        aria-expanded={expanded}
-        className="chat-reasoning-toggle"
-        onClick={() => setExpanded((current) => !current)}
-        type="button"
-      >
-        {expanded ? "Hide reasoning" : "Show reasoning"}
-      </button>
-      {expanded ? (
-        <div className="chat-reasoning-panel">
-          <ChatMarkdownContent content={splitContent.reasoning} tone={tone} />
-        </div>
-      ) : null}
-      <ChatMarkdownContent content={splitContent.answer} tone={tone} />
     </div>
   );
 }
@@ -607,11 +450,7 @@ function ChatMessageBubble({ message, sending }: { message: Message; sending: bo
             )}
           </div>
         ) : null}
-        {message.role === "assistant" ? (
-          <CollapsibleReasoningMessage content={markdownContent} tone={tone} />
-        ) : (
-          <ChatMarkdownContent content={markdownContent} tone={tone} />
-        )}
+        <ChatMarkdownContent content={markdownContent} tone={tone} />
       </div>
     </article>
   );
@@ -1187,6 +1026,7 @@ function formatTime(value: number): string {
   return new Intl.DateTimeFormat("en-US", {
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
     hour12: false,
   }).format(value);
 }
@@ -1405,13 +1245,13 @@ function TraceStepEntry({ item, summary }: { item: EnrichedTraceEntry; summary: 
         <span className={cn("trace-step-actor shrink-0", `is-${item.actor}`)}>{item.actorLabel}</span>
         <span className="trace-step-event w-[52px] shrink-0 truncate">{item.label}</span>
         <span className="trace-step-summary min-w-0 flex-1 truncate">{summary || item.eventTitle}</span>
-        <span className="trace-step-time w-9 shrink-0 text-right">{item.displayTime}</span>
+        <span className="trace-step-time w-14 shrink-0 text-right">{item.displayTime}</span>
         <button
           className="trace-step-payload-toggle w-14 shrink-0 truncate text-right"
           onClick={() => setExpanded((current) => !current)}
           type="button"
         >
-          {expanded ? "hide" : `payload${isLongPayload ? ` ${payloadText.length.toLocaleString()}` : ""}`}
+          {expanded ? "hide" : "payload"}
         </button>
       </div>
       {expanded ? <pre className="trace-step-payload">{displayPayload}</pre> : null}

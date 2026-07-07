@@ -36,6 +36,7 @@ type AgentFormState = {
   capabilities: string[];
   providerName: string;
   model: string;
+  maxIterations: string;
 };
 
 const DEFAULT_AGENT_DESCRIPTION = "General-purpose ReAct agent";
@@ -50,6 +51,9 @@ const MAX_AGENT_LIST_PANEL_WIDTH = 520;
 const MIN_AGENT_DETAIL_PANEL_WIDTH = 720;
 const REASONING_LEVEL_OPTIONS = ["none", "low", "medium", "high", "max"] as const;
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS = 500;
+const DEFAULT_MAX_REACT_ITERATIONS = 8;
+const MIN_MAX_REACT_ITERATIONS = 1;
+const MAX_MAX_REACT_ITERATIONS = 100;
 
 const FALLBACK_LOCAL_TOOLS = ["get_current_time"];
 const FALLBACK_LOCAL_TOOL_SUMMARIES: LocalToolSummary[] = FALLBACK_LOCAL_TOOLS.map((name) => ({
@@ -212,7 +216,16 @@ function toAgentForm(
     capabilities: agent?.capabilities || [],
     providerName,
     model: agent?.provider?.model || "",
+    maxIterations: String(agent?.max_iterations || DEFAULT_MAX_REACT_ITERATIONS),
   };
+}
+
+function normalizeMaxReactIterations(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_MAX_REACT_ITERATIONS;
+  }
+  return Math.min(Math.max(parsed, MIN_MAX_REACT_ITERATIONS), MAX_MAX_REACT_ITERATIONS);
 }
 
 function downloadTextFile(filename: string, content: string, contentType = "text/plain;charset=utf-8") {
@@ -729,6 +742,7 @@ export function AgentsWorkspace() {
       mcp_servers: dedupeStrings(form.mcpServers),
       mcp_tools: dedupeMcpToolReferences(form.mcpToolKeys),
       capabilities: dedupeStrings(form.capabilities),
+      max_iterations: normalizeMaxReactIterations(form.maxIterations),
     };
     const nextAgents = draftAgents.map((agent) => (agent.name === selectedAgent.name ? nextAgent : agent));
     const nextRaw = `${JSON.stringify(nextAgents, null, 2)}\n`;
@@ -1074,6 +1088,26 @@ export function AgentsWorkspace() {
                             </SelectContent>
                           </ShadcnSelect>
                           <small className="text-[13px] text-muted-foreground">Controls the model reasoning setting for this agent. Defaults to `none`.</small>
+                        </div>
+                        <div className="form-field">
+                          <Label htmlFor="agent-max-iterations">Max ReAct iterations</Label>
+                          <Input
+                            id="agent-max-iterations"
+                            inputMode="numeric"
+                            max={MAX_MAX_REACT_ITERATIONS}
+                            min={MIN_MAX_REACT_ITERATIONS}
+                            onBlur={() =>
+                              setForm((current) => ({
+                                ...current,
+                                maxIterations: String(normalizeMaxReactIterations(current.maxIterations)),
+                              }))
+                            }
+                            onChange={(event) => setForm((current) => ({ ...current, maxIterations: event.target.value }))}
+                            placeholder={String(DEFAULT_MAX_REACT_ITERATIONS)}
+                            type="number"
+                            value={form.maxIterations}
+                          />
+                          <small className="entity-meta">Maximum tool-use loop count before the agent is told to stop calling tools and answer from gathered context.</small>
                         </div>
                       </FormSection>
 

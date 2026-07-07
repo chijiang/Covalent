@@ -164,22 +164,6 @@ class ReactAgentRuntime(AgentRuntime):
         context: RunContext | None = None,
         event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> list[ToolResult]:
-        if event_sink is not None:
-            results: list[ToolResult] = []
-            for tool_call in tool_calls:
-                if self._is_delegate_tool_name(agent, tool_call.name):
-                    result = await self._execute_delegate_tool_call(
-                        agent,
-                        tool_call,
-                        context,
-                        parent_iteration=iteration,
-                        event_sink=event_sink,
-                    )
-                else:
-                    result = await self.registry.execute_tool_call(agent, tool_call, context)
-                results.append(result)
-            return results
-
         async def _run_single(tc: ToolCall) -> ToolResult:
             if self._is_delegate_tool_name(agent, tc.name):
                 return await self._execute_delegate_tool_call(
@@ -187,6 +171,7 @@ class ReactAgentRuntime(AgentRuntime):
                     tc,
                     context,
                     parent_iteration=iteration,
+                    event_sink=event_sink,
                 )
             return await self.registry.execute_tool_call(agent, tc, context)
 
@@ -639,6 +624,15 @@ class ReactAgentRuntime(AgentRuntime):
             return []
         if not self.session_store or not context or not context.session_id:
             return []
+        raw_preloaded = context.metadata.get("preloaded_memory_messages")
+        if isinstance(raw_preloaded, list):
+            try:
+                messages = [Message.model_validate(item) for item in raw_preloaded]
+            except Exception:
+                messages = []
+            recent_messages = self._recent_message_window(messages, self.session_history_limit)
+            sanitized_messages, _ = self._sanitize_tool_message_sequence(recent_messages)
+            return sanitized_messages
         messages = await self.session_store.load_messages(context.session_id)
         recent_messages = self._recent_message_window(messages, self.session_history_limit)
         sanitized_messages, _ = self._sanitize_tool_message_sequence(recent_messages)
@@ -656,6 +650,9 @@ class ReactAgentRuntime(AgentRuntime):
             return
         messages = self._recent_message_window(messages, self.session_history_limit)
         messages, _ = self._sanitize_tool_message_sequence(messages)
+        if context.metadata.get("defer_session_persist") is True:
+            context.metadata["persisted_memory_messages"] = [message.model_dump(mode="json") for message in messages]
+            return
         await self.session_store.save_messages(context.session_id, messages)
 
     @staticmethod

@@ -1746,48 +1746,6 @@ textarea {
   word-break: break-word;
 }
 
-.chat-reasoning-message {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-
-.chat-reasoning-toggle {
-  width: fit-content;
-  min-height: 24px;
-  margin: 0;
-  padding: 0 9px;
-  border: 1px solid rgba(16, 16, 16, 0.1);
-  border-radius: var(--radius-full);
-  background: rgba(255, 255, 255, 0.7);
-  color: var(--fg-muted);
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.chat-reasoning-toggle:hover,
-.chat-reasoning-toggle:focus-visible {
-  border-color: rgba(16, 16, 16, 0.18);
-  background: #ffffff;
-  color: var(--fg-primary);
-}
-
-.chat-reasoning-toggle:focus-visible {
-  outline: 2px solid color-mix(in oklab, var(--surface-accent-strong), transparent 50%);
-  outline-offset: 2px;
-}
-
-.chat-reasoning-panel {
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid rgba(16, 16, 16, 0.08);
-  border-radius: 12px;
-  background: rgba(16, 16, 16, 0.035);
-  color: var(--fg-secondary);
-}
-
 .chat-markdown > :first-child {
   margin-top: 0;
 }
@@ -1980,25 +1938,6 @@ textarea {
 .chat-bubble.outbound .chat-code-block-copy:hover {
   border-color: rgba(255, 255, 255, 0.32);
   background: rgba(255, 255, 255, 0.18);
-}
-
-.chat-bubble.outbound .chat-reasoning-toggle {
-  border-color: rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.14);
-  color: rgba(255, 255, 255, 0.78);
-}
-
-.chat-bubble.outbound .chat-reasoning-toggle:hover,
-.chat-bubble.outbound .chat-reasoning-toggle:focus-visible {
-  border-color: rgba(255, 255, 255, 0.34);
-  background: rgba(255, 255, 255, 0.2);
-  color: var(--fg-inverse);
-}
-
-.chat-bubble.outbound .chat-reasoning-panel {
-  border-color: rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.84);
 }
 
 .chat-bubble.outbound .chat-markdown th,
@@ -2337,6 +2276,7 @@ textarea {
 /* Gemini-style composer */
 .composer-gemini {
   display: block;
+  padding: 3px 5px;
 }
 
 .composer-gemini-input-area {
@@ -2357,8 +2297,8 @@ textarea {
   display: flex;
   align-items: center;
   gap: 0;
-  padding: 6px 8px 6px 4px;
-  min-height: 48px;
+  padding: 4px 8px 4px 4px;
+  min-height: 42px;
 }
 
 /* Multiline: row just holds textarea */
@@ -2367,15 +2307,15 @@ textarea {
 }
 
 .composer-gemini-textarea {
-  min-height: 24px;
+  min-height: 20px !important;
   max-height: 200px;
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
-  padding: 10px 8px !important;
+  padding: 6px 8px !important;
   resize: none;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.4;
   overflow-y: auto;
   box-shadow: none !important;
   field-sizing: content;
@@ -4550,7 +4490,7 @@ textarea::placeholder {
 }
 
 .chat-page-shell .chat-trace-panel .trace-step-time {
-  flex: 0 0 34px;
+  flex: 0 0 52px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
