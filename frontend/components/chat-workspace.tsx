@@ -1060,29 +1060,52 @@ function formatTracePayload(payload: unknown): string {
   return typeof payload === "string" ? payload : `${JSON.stringify(payload, null, 2)}\n`;
 }
 
-function buildSyntheticMessageTraceEntries(messages: Message[], options: { includeAssistantFinal: boolean }): ActivityItem[] {
-  return messages
-    .filter((message) => {
-      if (message.role === "user") {
-        return true;
-      }
-      return options.includeAssistantFinal && message.content.trim().length > 0 && !message.askUserPrompt;
-    })
+function buildSyntheticMessageTraceEntries(
+  messages: Message[],
+  activityItems: ActivityItem[] = [],
+): ActivityItem[] {
+  const syntheticItems: ActivityItem[] = messages
+    .filter((message) => message.role === "user")
     .map((message) => ({
       id: `${message.id}-trace`,
-      title: message.role === "user" ? "user_message" : "final",
-      payload:
-        message.role === "user"
-          ? {
-              text: message.content,
-              attachment_count: message.attachments?.length || 0,
-              source: message.askUserPrompt ? "ask_user_response" : "chat_query",
-            }
-          : {
-              output_text: message.content,
-              source: "conversation_message",
-            },
+      title: "user_message",
+      payload: {
+        text: message.content,
+        attachment_count: message.attachments?.length || 0,
+        source: message.askUserPrompt ? "ask_user_response" : "chat_query",
+      },
     }));
+
+  const hasRuntimeFinal = activityItems.some((item) => getBaseEventTitle(item.title) === "final");
+  if (hasRuntimeFinal) {
+    return syntheticItems;
+  }
+
+  const latestAssistantMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.content.trim().length > 0 && !message.askUserPrompt);
+  if (!latestAssistantMessage) {
+    return syntheticItems;
+  }
+
+  const latestActivityTimestamp = activityItems.reduce(
+    (latest, item) => Math.max(latest, getTimestampFromId(item.id, 0)),
+    0,
+  );
+  const assistantTimestamp = getTimestampFromId(latestAssistantMessage.id, 0);
+  const finalTimestamp = Math.max(latestActivityTimestamp + 1, assistantTimestamp);
+
+  return [
+    ...syntheticItems,
+    {
+      id: `final-${finalTimestamp}-synthetic`,
+      title: "final",
+      payload: {
+        output_text: latestAssistantMessage.content,
+        source: "conversation_message",
+      },
+    },
+  ];
 }
 
 function isAskUserToolResult(payload: Record<string, unknown> | null): boolean {
@@ -1730,7 +1753,7 @@ export function ChatWorkspace() {
 
   const traceEntries = useMemo(() => {
     const activityItems = activeThread?.activity || [];
-    const syntheticItems = buildSyntheticMessageTraceEntries(conversationMessages, { includeAssistantFinal: !sending });
+    const syntheticItems = buildSyntheticMessageTraceEntries(conversationMessages, activityItems);
     const items = [...activityItems, ...syntheticItems].sort(
       (left, right) =>
         getTimestampFromId(left.id, activeThread?.updatedAt || Date.now()) -
@@ -2002,6 +2025,7 @@ export function ChatWorkspace() {
               ...thread,
               updatedAt: Date.now(),
               pendingQuestion: null,
+              activity: [...thread.activity, { id: uid(event), title: event, payload }],
               messages: thread.messages.map((message) =>
                 message.id === assistantId ? { ...message, content: text || message.content } : message,
               ),
