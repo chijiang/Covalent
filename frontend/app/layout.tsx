@@ -6,16 +6,16 @@ import { Providers } from "@/components/providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Covalent",
+  title: "Agent Framework",
   description: "Control plane for agents, MCP services, and skills.",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "any" },
-      { url: "/logos/covalent-mark-32.png", type: "image/png", sizes: "32x32" },
-      { url: "/logos/covalent-mark-16.png", type: "image/png", sizes: "16x16" },
+      { url: "/logos/Accenture-Logo.png", type: "image/png", sizes: "32x32" },
+      { url: "/logos/Accenture-Logo.png", type: "image/png", sizes: "16x16" },
     ],
     shortcut: "/favicon.ico",
-    apple: "/logos/covalent-mark-256.png",
+    apple: "/logos/Accenture-Logo.png",
   },
 };
 

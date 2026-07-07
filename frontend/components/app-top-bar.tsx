@@ -41,7 +41,7 @@ function resolvePageMeta(pathname: string) {
   }
 
   return {
-    title: "Covalent",
+    title: "Agent Framework",
     subtitle: "Control plane for agents, MCP services, and skills.",
   };
 }

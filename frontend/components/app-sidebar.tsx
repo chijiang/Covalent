@@ -62,24 +62,24 @@ export function AppSidebar() {
     <Sidebar className="border-r-0" collapsible="icon" variant="inset">
       <SidebarHeader className="border-b border-sidebar-border/70 px-3 py-3 group-data-[collapsible=icon]:px-2">
         <Link
-          aria-label="Covalent home"
+          aria-label="Agent Framework home"
           className="flex min-w-0 items-center rounded-md py-0.5 transition-opacity hover:opacity-80 group-data-[collapsible=icon]:justify-center"
           href={chatHref}
         >
           <img
-            alt="Covalent"
+            alt="Agent Framework"
             className="h-10 w-full max-w-full object-contain object-left group-data-[collapsible=icon]:hidden"
             decoding="async"
             height={188}
-            src="/logos/covalent-logo-horizontal-1024.png"
+            src="/logos/Accenture-logo-long.png"
             width={1024}
           />
           <img
-            alt="Covalent"
+            alt="Agent Framework"
             className="hidden size-10 shrink-0 object-contain group-data-[collapsible=icon]:block"
             decoding="async"
             height={512}
-            src="/logos/covalent-mark-512.png"
+            src="/logos/Accenture-Logo.png"
             width={512}
           />
         </Link>
