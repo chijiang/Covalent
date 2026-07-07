@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 
 import { useChatSessions } from "@/components/chat-sessions-provider";
+import { cn } from "@/lib/utils";
 
 import {
   getAgents,
@@ -97,8 +98,24 @@ const MIN_TRACE_PANEL_WIDTH = 280;
 const MAX_TRACE_PANEL_WIDTH = 640;
 const MIN_CONVERSATION_PANEL_WIDTH = 560;
 const CODE_BLOCK_COPY_RESET_MS = 1600;
+const TRACE_PAYLOAD_PREVIEW_CHARS = 600;
 
 type ChatCodeBlockTone = "inbound" | "outbound";
+type TraceActor = "agent" | "system" | "tool" | "user";
+
+type EnrichedTraceEntry = ActivityItem & {
+  label: string;
+  displayTime: string;
+  actor: TraceActor;
+  actorLabel: string;
+  eventTitle: string;
+};
+
+type TraceTurnGroup = {
+  turnIndex: number;
+  userPreview: string;
+  entries: EnrichedTraceEntry[];
+};
 
 function getMaxTracePanelWidth(containerWidth: number): number {
   if (!Number.isFinite(containerWidth) || containerWidth <= 0) {
@@ -344,6 +361,185 @@ function isWaitingForAnswerContent(content: string): boolean {
   return normalized === "Waiting for your answer…" || normalized === "Waiting for your answer...";
 }
 
+type SplitReasoningContent = {
+  reasoning: string;
+  answer: string;
+};
+
+const REASONING_LABEL_PATTERN =
+  /^(?:reasoning|reasoning path|reasoning process|thought process|analysis|analysis process|detailed reasoning|detailed breakdown\s*\/\s*reasoning|thinking|思考|推理|推理路径|分析|分析过程|诊断路径)$/i;
+
+const ANSWER_LABEL_PATTERN = /^(?:final answer|answer|response|result|output|最终答案|答案|回复|结果|输出)$/i;
+
+function stripMarkdownHeadingLabel(value: string): string {
+  return value
+    .replace(/^\s{0,3}#{1,6}\s*/, "")
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s*)/, "")
+    .replace(/^\s*\*\*/, "")
+    .replace(/\*\*\s*$/, "")
+    .replace(/^\s*/, "")
+    .replace(/\s*[:：]\s*$/, "")
+    .trim();
+}
+
+function splitLabeledLine(value: string, labels: RegExp): string | null {
+  const cleaned = value
+    .replace(/^\s{0,3}#{1,6}\s*/, "")
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s*)/, "")
+    .replace(/^\s*\*\*/, "")
+    .trim();
+  const match = cleaned.match(labels);
+  return match ? cleaned.slice(match[0].length).replace(/^\*\*/, "").trim() : null;
+}
+
+function splitReasoningContent(content: string): SplitReasoningContent | null {
+  const normalized = content.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const thinkMatch = normalized.match(/^<think(?:ing)?>([\s\S]*?)<\/think(?:ing)>\s*([\s\S]*)$/i);
+  if (thinkMatch?.[1] && thinkMatch[2]?.trim()) {
+    return {
+      reasoning: thinkMatch[1].trim(),
+      answer: thinkMatch[2].trim(),
+    };
+  }
+
+  const lines = normalized.split(/\r?\n/);
+  let reasoningStart = -1;
+  let answerStart = -1;
+  let inlineReasoning = "";
+  let inlineAnswer = "";
+  const sectionHeadingPattern = /^(?:#{1,6}\s*)?(?:\*\*)?\s*[^:\n：]{1,80}(?:\*\*)?\s*[:：]?\s*$/;
+  const reasoningInlinePattern = /^(?:reasoning|reasoning path|reasoning process|thought process|analysis|analysis process|detailed reasoning|detailed breakdown\s*\/\s*reasoning|thinking|思考|推理|推理路径|分析|分析过程|诊断路径)(?:\*\*)?\s*[:：]\s*/i;
+  const answerInlinePattern = /^(?:final answer|answer|response|result|output|最终答案|答案|回复|结果|输出)(?:\*\*)?\s*[:：]\s*/i;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const label = stripMarkdownHeadingLabel(lines[index]);
+    if (reasoningStart === -1 && REASONING_LABEL_PATTERN.test(label)) {
+      reasoningStart = index;
+      continue;
+    }
+    if (reasoningStart === -1) {
+      const inline = splitLabeledLine(lines[index], reasoningInlinePattern);
+      if (inline !== null) {
+        reasoningStart = index;
+        inlineReasoning = inline;
+        continue;
+      }
+    }
+    if (reasoningStart !== -1 && ANSWER_LABEL_PATTERN.test(label)) {
+      answerStart = index;
+      break;
+    }
+    if (reasoningStart !== -1) {
+      const inline = splitLabeledLine(lines[index], answerInlinePattern);
+      if (inline !== null) {
+        answerStart = index;
+        inlineAnswer = inline;
+        break;
+      }
+    }
+    if (
+      reasoningStart !== -1 &&
+      index > reasoningStart &&
+      sectionHeadingPattern.test(lines[index]) &&
+      !REASONING_LABEL_PATTERN.test(label)
+    ) {
+      const reasoning = [inlineReasoning, lines.slice(reasoningStart + 1, index).join("\n")]
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+      const answer = [lines.slice(0, reasoningStart).join("\n"), lines.slice(index).join("\n")]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
+      if (reasoning && answer) {
+        return { reasoning, answer };
+      }
+    }
+  }
+
+  if (reasoningStart !== -1 && answerStart === -1 && reasoningStart > 0) {
+    const reasoning = [inlineReasoning, lines.slice(reasoningStart + 1).join("\n")]
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    const answer = lines.slice(0, reasoningStart).join("\n").trim();
+    if (reasoning && answer) {
+      return { reasoning, answer };
+    }
+  }
+
+  if (reasoningStart === -1 || answerStart === -1) {
+    return null;
+  }
+
+  const reasoning = [inlineReasoning, lines.slice(reasoningStart + 1, answerStart).join("\n")]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  const answer = [inlineAnswer, lines.slice(answerStart + 1).join("\n")]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (!reasoning || !answer) {
+    return null;
+  }
+  return { reasoning, answer };
+}
+
+function ChatMarkdownContent({ content, tone }: { content: string; tone: ChatCodeBlockTone }) {
+  return (
+    <div className="chat-markdown">
+      <ReactMarkdown
+        components={{
+          pre({ children, ...props }) {
+            return (
+              <ChatCodeBlock {...props} tone={tone}>
+                {children}
+              </ChatCodeBlock>
+            );
+          },
+        }}
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeSanitize]}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function CollapsibleReasoningMessage({ content, tone }: { content: string; tone: ChatCodeBlockTone }) {
+  const [expanded, setExpanded] = useState(false);
+  const splitContent = useMemo(() => splitReasoningContent(content), [content]);
+
+  if (!splitContent) {
+    return <ChatMarkdownContent content={content} tone={tone} />;
+  }
+
+  return (
+    <div className="chat-reasoning-message">
+      <button
+        aria-expanded={expanded}
+        className="chat-reasoning-toggle"
+        onClick={() => setExpanded((current) => !current)}
+        type="button"
+      >
+        {expanded ? "Hide reasoning" : "Show reasoning"}
+      </button>
+      {expanded ? (
+        <div className="chat-reasoning-panel">
+          <ChatMarkdownContent content={splitContent.reasoning} tone={tone} />
+        </div>
+      ) : null}
+      <ChatMarkdownContent content={splitContent.answer} tone={tone} />
+    </div>
+  );
+}
+
 function AskUserPromptSummary({ prompt }: { prompt: PendingQuestionRequest }) {
   return (
     <section aria-label="Agent question" className="ask-user-prompt-summary">
@@ -378,6 +574,7 @@ function ChatMessageBubble({ message, sending }: { message: Message; sending: bo
   const tone = message.role === "user" ? "outbound" : "inbound";
   const displayContent =
     message.askUserPrompt && isWaitingForAnswerContent(message.content) ? "" : message.content;
+  const markdownContent = displayContent || (sending && message.role === "assistant" ? "Thinking..." : "");
 
   return (
     <article className={message.role === "user" ? "chat-message-row outbound" : "chat-message-row inbound"}>
@@ -410,23 +607,11 @@ function ChatMessageBubble({ message, sending }: { message: Message; sending: bo
             )}
           </div>
         ) : null}
-        <div className="chat-markdown">
-          <ReactMarkdown
-            components={{
-              pre({ children, ...props }) {
-                return (
-                  <ChatCodeBlock {...props} tone={tone}>
-                    {children}
-                  </ChatCodeBlock>
-                );
-              },
-            }}
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeSanitize]}
-          >
-            {displayContent || (sending && message.role === "assistant" ? "Thinking..." : "")}
-          </ReactMarkdown>
-        </div>
+        {message.role === "assistant" ? (
+          <CollapsibleReasoningMessage content={markdownContent} tone={tone} />
+        ) : (
+          <ChatMarkdownContent content={markdownContent} tone={tone} />
+        )}
       </div>
     </article>
   );
@@ -1032,11 +1217,206 @@ function formatDurationLabel(value: unknown): string | null {
 }
 
 function formatTracePayload(payload: unknown): string {
-  const text = typeof payload === "string" ? payload : `${JSON.stringify(payload, null, 2)}\n`;
-  if (text.length <= 4_000) {
-    return text;
+  return typeof payload === "string" ? payload : `${JSON.stringify(payload, null, 2)}\n`;
+}
+
+function buildSyntheticMessageTraceEntries(messages: Message[], options: { includeAssistantFinal: boolean }): ActivityItem[] {
+  return messages
+    .filter((message) => {
+      if (message.role === "user") {
+        return true;
+      }
+      return options.includeAssistantFinal && message.content.trim().length > 0 && !message.askUserPrompt;
+    })
+    .map((message) => ({
+      id: `${message.id}-trace`,
+      title: message.role === "user" ? "user_message" : "final",
+      payload:
+        message.role === "user"
+          ? {
+              text: message.content,
+              attachment_count: message.attachments?.length || 0,
+              source: message.askUserPrompt ? "ask_user_response" : "chat_query",
+            }
+          : {
+              output_text: message.content,
+              source: "conversation_message",
+            },
+    }));
+}
+
+function isAskUserToolResult(payload: Record<string, unknown> | null): boolean {
+  if (!payload || !Array.isArray(payload.results)) {
+    return false;
   }
-  return `${text.slice(0, 4_000).trimEnd()}\n... truncated ...\n`;
+  return payload.results.some((result) => {
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      return false;
+    }
+    const record = result as Record<string, unknown>;
+    return record.input_request !== undefined && record.input_request !== null;
+  });
+}
+
+function getTraceActor(title: string, rawPayload?: unknown): TraceActor {
+  const baseTitle = getBaseEventTitle(title);
+  if (baseTitle === "user_message" || baseTitle === "input_resolved") {
+    return "user";
+  }
+  if (baseTitle === "tool_results") {
+    return isAskUserToolResult(asTracePayloadRecord(rawPayload)) ? "user" : "tool";
+  }
+  if (baseTitle === "assistant" || baseTitle === "final" || baseTitle === "tool_calls") {
+    return "agent";
+  }
+  if (baseTitle === "thought") {
+    const payload = asTracePayloadRecord(rawPayload);
+    return payload?.kind === "model_reasoning" ? "agent" : "system";
+  }
+  if (baseTitle === "input_required" || baseTitle === "context_window" || baseTitle === "error" || baseTitle === "iteration" || baseTitle === "model_call") {
+    return "system";
+  }
+  return "agent";
+}
+
+function getTraceActorLabel(actor: TraceActor): string {
+  if (actor === "system") {
+    return "System";
+  }
+  if (actor === "tool") {
+    return "Tool";
+  }
+  if (actor === "user") {
+    return "User";
+  }
+  return "Agent";
+}
+
+function getTraceEventLabel(title: string, rawPayload?: unknown): string {
+  const baseTitle = getBaseEventTitle(title);
+  const isDelegate = isDelegateEventTitle(title);
+  if (isDelegate) {
+    return "Delegate";
+  }
+  if (baseTitle === "error") {
+    return "Error";
+  }
+  if (baseTitle === "tool_results") {
+    return "Result";
+  }
+  if (baseTitle === "tool_calls") {
+    return "Tool";
+  }
+  if (baseTitle === "iteration") {
+    return "Iteration";
+  }
+  if (baseTitle === "thought") {
+    const payload = asTracePayloadRecord(rawPayload);
+    if (payload?.kind === "model_reasoning") {
+      return "Reasoning";
+    }
+    return "Event";
+  }
+  if (baseTitle === "model_call") {
+    return "Model";
+  }
+  if (baseTitle === "context_window") {
+    return "Context";
+  }
+  if (baseTitle === "assistant") {
+    return "Stream";
+  }
+  if (baseTitle === "final") {
+    return "Final";
+  }
+  if (baseTitle === "user_message") {
+    return "Query";
+  }
+  if (baseTitle === "input_required" || baseTitle === "input_resolved") {
+    return "Input";
+  }
+  return "Event";
+}
+
+function getTurnUserPreview(message: Message): string {
+  const content = message.content.trim();
+  if (content) {
+    return truncateTraceSummaryText(content, 96);
+  }
+  const attachmentNames = (message.attachments || [])
+    .map((attachment) => attachment.name.trim())
+    .filter(Boolean);
+  if (attachmentNames.length === 1) {
+    return truncateTraceSummaryText(attachmentNames[0], 96);
+  }
+  if (attachmentNames.length > 1) {
+    return `${attachmentNames.length} attachments`;
+  }
+  return "User message";
+}
+
+function buildTraceTurnGroups(messages: Message[], items: EnrichedTraceEntry[]): TraceTurnGroup[] {
+  if (items.length === 0) {
+    return [];
+  }
+
+  const userMessages = messages.filter((message) => message.role === "user");
+  if (userMessages.length === 0) {
+    return [
+      {
+        turnIndex: 1,
+        userPreview: "Initial run",
+        entries: items,
+      },
+    ];
+  }
+
+  const groups: TraceTurnGroup[] = userMessages.map((message, index) => ({
+    turnIndex: index + 1,
+    userPreview: getTurnUserPreview(message),
+    entries: [],
+  }));
+
+  for (const item of items) {
+    const itemTimestamp = getTimestampFromId(item.id, 0);
+    let assignedIndex = 0;
+    for (let index = 0; index < userMessages.length; index += 1) {
+      const userTimestamp = getTimestampFromId(userMessages[index].id, 0);
+      if (userTimestamp <= itemTimestamp) {
+        assignedIndex = index;
+      }
+    }
+    groups[assignedIndex]?.entries.push(item);
+  }
+
+  return groups.filter((group) => group.entries.length > 0);
+}
+
+function TraceStepEntry({ item, summary }: { item: EnrichedTraceEntry; summary: string | null }) {
+  const [expanded, setExpanded] = useState(false);
+  const payloadText = formatTracePayload(item.payload);
+  const isLongPayload = payloadText.length > TRACE_PAYLOAD_PREVIEW_CHARS;
+  const displayPayload =
+    isLongPayload && !expanded ? `${payloadText.slice(0, TRACE_PAYLOAD_PREVIEW_CHARS).trimEnd()}...` : payloadText;
+
+  return (
+    <div className={cn("trace-step", `is-actor-${item.actor}`, expanded && "is-expanded")}>
+      <div className="trace-step-line flex h-6 min-h-6 items-center gap-2 overflow-hidden px-2">
+        <span className={cn("trace-step-actor shrink-0", `is-${item.actor}`)}>{item.actorLabel}</span>
+        <span className="trace-step-event w-[52px] shrink-0 truncate">{item.label}</span>
+        <span className="trace-step-summary min-w-0 flex-1 truncate">{summary || item.eventTitle}</span>
+        <span className="trace-step-time w-9 shrink-0 text-right">{item.displayTime}</span>
+        <button
+          className="trace-step-payload-toggle w-14 shrink-0 truncate text-right"
+          onClick={() => setExpanded((current) => !current)}
+          type="button"
+        >
+          {expanded ? "hide" : `payload${isLongPayload ? ` ${payloadText.length.toLocaleString()}` : ""}`}
+        </button>
+      </div>
+      {expanded ? <pre className="trace-step-payload">{displayPayload}</pre> : null}
+    </div>
+  );
 }
 
 function truncateTraceSummaryText(value: string, maxChars = 240): string {
@@ -1095,6 +1475,14 @@ function getTraceSummary(item: ActivityItem): string | null {
   }
   const baseTitle = getBaseEventTitle(item.title);
   const isDelegate = isDelegateEventTitle(item.title);
+
+  if (baseTitle === "user_message") {
+    const text = typeof payload.text === "string" ? payload.text.trim() : "";
+    const attachments = Number(payload.attachment_count) || 0;
+    const prefix = payload.source === "ask_user_response" ? "Answered ask-user prompt" : "User query";
+    const attachmentText = attachments ? ` with ${attachments} attachment${attachments === 1 ? "" : "s"}` : "";
+    return text ? `${prefix}${attachmentText}: ${truncateTraceSummaryText(text)}` : `${prefix}${attachmentText}.`;
+  }
 
   if (baseTitle === "context_window") {
     const originalMessages = Number(payload.original_message_count) || 0;
@@ -1192,6 +1580,14 @@ function getTraceBadges(item: ActivityItem): string[] {
   }
   const baseTitle = getBaseEventTitle(item.title);
   const isDelegate = isDelegateEventTitle(item.title);
+
+  if (baseTitle === "user_message") {
+    const attachments = Number(payload.attachment_count) || 0;
+    return [
+      payload.source === "ask_user_response" ? "ask user" : "query",
+      attachments ? `${attachments} attachment${attachments === 1 ? "" : "s"}` : "",
+    ].filter(Boolean) as string[];
+  }
 
   if (baseTitle === "context_window") {
     return [
@@ -1490,45 +1886,35 @@ export function ChatWorkspace() {
   );
 
   const attachmentDrafts = draftAttachments;
+  const conversationMessages = (activeThread?.messages || []) as Message[];
 
   const traceEntries = useMemo(() => {
-    const items = activeThread?.activity || [];
-    return items.map((item, index) => {
+    const activityItems = activeThread?.activity || [];
+    const syntheticItems = buildSyntheticMessageTraceEntries(conversationMessages, { includeAssistantFinal: !sending });
+    const items = [...activityItems, ...syntheticItems].sort(
+      (left, right) =>
+        getTimestampFromId(left.id, activeThread?.updatedAt || Date.now()) -
+        getTimestampFromId(right.id, activeThread?.updatedAt || Date.now()),
+    );
+    return items.map((item) => {
       const timestamp = getTimestampFromId(item.id, activeThread?.updatedAt || Date.now());
-      const baseTitle = getBaseEventTitle(item.title);
-      const payload = asTracePayloadRecord(item.payload);
-      const isDelegate = isDelegateEventTitle(item.title);
+      const actor = getTraceActor(item.title, item.payload);
       return {
         ...item,
-        label: isDelegate
-          ? "Delegate"
-          : baseTitle === "error"
-            ? "Error"
-            : baseTitle === "tool_results"
-              ? "Result"
-              : baseTitle === "tool_calls"
-                ? "Tool"
-                : baseTitle === "iteration"
-                  ? "Iteration"
-                  : baseTitle === "thought"
-                    ? "Thought"
-                : baseTitle === "model_call"
-                  ? "Model"
-                  : baseTitle === "context_window"
-                    ? "Context"
-                    : baseTitle === "assistant"
-                      ? "Stream"
-                      : baseTitle === "final"
-                        ? "Final"
-                        : baseTitle === "input_required" || baseTitle === "input_resolved"
-                      ? "Input"
-                      : "Event",
+        label: getTraceEventLabel(item.title, item.payload),
         displayTime: formatTime(timestamp),
+        actor,
+        actorLabel: getTraceActorLabel(actor),
+        eventTitle: formatActivityTitle(getBaseEventTitle(item.title)),
       };
     });
-  }, [activeThread]);
+  }, [activeThread?.activity, activeThread?.updatedAt, conversationMessages, sending]);
 
-  const conversationMessages = (activeThread?.messages || []) as Message[];
+  const traceTurnGroups = useMemo(
+    () => buildTraceTurnGroups(conversationMessages, traceEntries),
+    [conversationMessages, traceEntries],
+  );
+  const [collapsedTraceTurns, setCollapsedTraceTurns] = useState<Set<number>>(() => new Set());
   const displayedTraceEntries = traceEntries;
   const activePendingQuestion = activeThread?.pendingQuestion || null;
   const chatSplitStyle = {
@@ -1538,6 +1924,18 @@ export function ChatWorkspace() {
   useEffect(() => {
     setPendingDrafts(buildInitialPendingDrafts(activePendingQuestion));
   }, [activePendingQuestion]);
+
+  function toggleTraceTurn(turnIndex: number) {
+    setCollapsedTraceTurns((current) => {
+      const next = new Set(current);
+      if (next.has(turnIndex)) {
+        next.delete(turnIndex);
+      } else {
+        next.add(turnIndex);
+      }
+      return next;
+    });
+  }
 
   function handleTraceResizeStart(event: React.MouseEvent<HTMLDivElement>) {
     if (!isTracePanelOpen || event.button !== 0 || window.matchMedia("(max-width: 980px)").matches) {
@@ -2384,26 +2782,41 @@ export function ChatWorkspace() {
               </div>
 
               <div className="trace-feed is-console-feed">
-                {displayedTraceEntries.map((item) => (
-                  <article className="trace-entry compact-trace-entry" key={item.id}>
-                    <div className="trace-entry-head">
-                      <Badge variant="secondary" className="trace-pill">{item.label}</Badge>
-                      <span className="trace-time">{item.displayTime}</span>
-                    </div>
-                    <strong>{formatActivityTitle(item.title)}</strong>
-                    {getTraceSummary(item) ? <p className="trace-summary-copy">{getTraceSummary(item)}</p> : null}
-                    {getTraceBadges(item).length ? (
-                      <div className="trace-badge-row">
-                        {getTraceBadges(item).map((badge) => (
-                          <span className="trace-inline-badge" key={`${item.id}-${badge}`}>
-                            {badge}
+                {traceTurnGroups.length === 0 ? (
+                  <p className="trace-empty-copy">Trace events will appear here while the agent runs.</p>
+                ) : (
+                  traceTurnGroups.map((turn) => {
+                    const isCollapsed = collapsedTraceTurns.has(turn.turnIndex);
+                    return (
+                      <section
+                        className={`trace-turn-group${isCollapsed ? " is-collapsed" : ""}`}
+                        key={`turn-${turn.turnIndex}`}
+                      >
+                        <button
+                          aria-expanded={!isCollapsed}
+                          className="trace-turn-header"
+                          onClick={() => toggleTraceTurn(turn.turnIndex)}
+                          type="button"
+                        >
+                          <span className="trace-turn-label">Turn {turn.turnIndex}</span>
+                          <span className="trace-turn-preview">{turn.userPreview}</span>
+                          <span className="trace-turn-count">
+                            {turn.entries.length} step{turn.entries.length === 1 ? "" : "s"}
                           </span>
-                        ))}
-                      </div>
-                    ) : null}
-                    <pre className="trace-note">{formatTracePayload(item.payload)}</pre>
-                  </article>
-                ))}
+                          <span className="trace-turn-action">{isCollapsed ? "Expand" : "Collapse"}</span>
+                        </button>
+
+                        {!isCollapsed ? (
+                          <div className="trace-turn-steps">
+                            {turn.entries.map((item) => (
+                              <TraceStepEntry item={item} key={item.id} summary={getTraceSummary(item)} />
+                            ))}
+                          </div>
+                        ) : null}
+                      </section>
+                    );
+                  })
+                )}
               </div>
             </aside>
           ) : null}
