@@ -3494,7 +3494,7 @@ textarea {
 
 .mcp-tool-browser {
   display: grid;
-  grid-template-columns: minmax(220px, 32%) minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 34%) minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
   height: 100%;
@@ -3523,15 +3523,19 @@ textarea {
 
 .mcp-tool-list-inner {
   display: grid;
-  gap: 4px;
+  grid-auto-flow: row;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 6px;
   padding: 8px;
 }
 
 .mcp-tool-item {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   width: 100%;
   min-width: 0;
-  gap: 3px;
+  gap: 4px;
   padding: 10px 12px;
   border-radius: 10px;
   background: transparent;
@@ -3560,19 +3564,23 @@ textarea {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .mcp-tool-item strong {
   font-size: 12px;
   line-height: 1.25;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .mcp-tool-item span {
   color: var(--fg-muted);
   font-size: 11px;
-  line-height: 1.3;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
 }
 
 .mcp-tool-schema-preview {
@@ -3593,6 +3601,13 @@ textarea {
   border-radius: var(--radius-xl);
   border: 1px solid var(--border-soft);
   background: #fafafa;
+}
+
+@media (max-width: 1080px) {
+  .mcp-tool-browser {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(140px, 34%) minmax(0, 1fr);
+  }
 }
 
 .skill-detail-header {
