@@ -1,11 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, AlertTriangle, Fingerprint, KeyRound, RotateCcw, Search, UsersRound } from "lucide-react";
 
 import { ConsoleAlert } from "@/components/console/console-alert";
 import { ConsolePanel } from "@/components/console/console-panel";
-import { InventoryListItem } from "@/components/console/inventory-list-item";
-import { PanelHeader } from "@/components/console/panel-header";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,207 +33,386 @@ function formatDate(value?: string | null): string {
   }).format(new Date(value));
 }
 
+function formatKey(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 function formatMetadata(metadata: Record<string, unknown>): string {
   if (Object.keys(metadata || {}).length === 0) {
-    return "No metadata";
+    return "{}";
   }
   return JSON.stringify(metadata, null, 2);
 }
 
-function auditTitle(log: AuditLog): string {
-  return `${log.action}${log.target_id ? ` · ${log.target_id}` : ""}`;
+function metadataValue(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return value || "—";
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return JSON.stringify(value, null, 2);
 }
 
-function auditDescription(log: AuditLog): string {
-  const actor = log.actor_user_id || "anonymous";
-  const target = log.target_type || "unknown";
-  return `${actor} · ${target} · ${formatDate(log.created_at)}`;
+function outcomeVariant(outcome: string): "destructive" | "outline" | "secondary" {
+  if (outcome === "denied" || outcome === "failed") {
+    return "destructive";
+  }
+  if (outcome === "success" || outcome === "completed") {
+    return "outline";
+  }
+  return "secondary";
+}
+
+function isDeniedOrFailed(log: AuditLog): boolean {
+  return log.outcome === "denied" || log.outcome === "failed" || log.action.endsWith(".denied");
+}
+
+function MetricCard({
+  icon,
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  detail: string;
+  tone?: "danger" | "accent";
+}) {
+  return (
+    <div className={`panel-surface audit-log-metric-card${tone ? ` is-${tone}` : ""}`}>
+      <span className="audit-log-metric-icon">{icon}</span>
+      <div className="audit-log-metric-copy">
+        <span>{label}</span>
+        <strong>{value.toLocaleString()}</strong>
+        <small>{detail}</small>
+      </div>
+    </div>
+  );
+}
+
+function DetailField({ label, value, mono = false }: { label: string; value?: string | null; mono?: boolean }) {
+  return (
+    <div className="audit-log-detail-field">
+      <span>{label}</span>
+      <strong className={mono ? "audit-log-mono-value" : undefined}>{value || "n/a"}</strong>
+    </div>
+  );
 }
 
 export function AuditLogsWorkspace() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [filters, setFilters] = useState<AuditFilterState>({ action: "", outcome: "all", targetType: "" });
+  const [filters, setFilters] = useState<AuditFilterState>({ action: "", outcome: "all", targetType: "all" });
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const selectedLog = logs.find((log) => log.id === selectedId) ?? null;
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const nextLogs = await listAuditLogs({
-        limit: 200,
-        action: filters.action.trim() || undefined,
-        outcome: filters.outcome === "all" ? undefined : filters.outcome,
-        targetType: filters.targetType.trim() || undefined,
-      });
+      const nextLogs = await listAuditLogs({ limit: 200 });
       setLogs(nextLogs);
-      setSelectedId((current) => (current && nextLogs.some((log) => log.id === current) ? current : nextLogs[0]?.id ?? null));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load audit logs.");
     } finally {
       setLoading(false);
     }
-  }, [filters.action, filters.outcome, filters.targetType]);
+  }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
+  const targetTypes = useMemo(
+    () => Array.from(new Set(logs.map((log) => log.target_type).filter(Boolean))).sort((left, right) => left.localeCompare(right)),
+    [logs],
+  );
+
   const filteredLogs = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) {
-      return logs;
-    }
-    return logs.filter((log) =>
-      `${log.action} ${log.outcome} ${log.target_type} ${log.target_id ?? ""} ${log.actor_user_id ?? ""} ${log.actor_token_id ?? ""}`
+    const action = filters.action.trim().toLowerCase();
+    return logs.filter((log) => {
+      if (filters.outcome !== "all" && log.outcome !== filters.outcome) {
+        return false;
+      }
+      if (filters.targetType !== "all" && log.target_type !== filters.targetType) {
+        return false;
+      }
+      if (action && !log.action.toLowerCase().includes(action)) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return `${log.action} ${log.outcome} ${log.target_type} ${log.target_id ?? ""} ${log.actor_user_id ?? ""} ${log.actor_token_id ?? ""} ${log.request_id ?? ""}`
         .toLowerCase()
-        .includes(query),
-    );
-  }, [logs, searchQuery]);
+        .includes(query);
+    });
+  }, [filters, logs, searchQuery]);
 
-  const deniedCount = logs.filter((log) => log.outcome === "denied" || log.action.endsWith(".denied")).length;
+  useEffect(() => {
+    setSelectedId((current) => {
+      if (current && filteredLogs.some((log) => log.id === current)) {
+        return current;
+      }
+      return filteredLogs[0]?.id ?? null;
+    });
+  }, [filteredLogs]);
+
+  const selectedLog = filteredLogs.find((log) => log.id === selectedId) ?? null;
+  const deniedCount = logs.filter(isDeniedOrFailed).length;
+  const tokenActivityCount = logs.filter(
+    (log) => Boolean(log.actor_token_id) || log.target_type === "api_token" || log.action.includes("token"),
+  ).length;
+  const uniqueActorCount = new Set(logs.map((log) => log.actor_user_id).filter((value): value is string => Boolean(value))).size;
+  const activeFilterCount =
+    Number(Boolean(searchQuery.trim())) +
+    Number(Boolean(filters.action.trim())) +
+    Number(filters.outcome !== "all") +
+    Number(filters.targetType !== "all");
+  const metadataEntries = selectedLog ? Object.entries(selectedLog.metadata || {}) : [];
+
+  function clearFilters() {
+    setSearchQuery("");
+    setFilters({ action: "", outcome: "all", targetType: "all" });
+  }
 
   return (
-    <section className="page-section console-page-shell skill-settings-shell flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+    <section className="page-section console-page-shell skill-settings-shell audit-logs-workspace flex min-h-0 flex-1 flex-col gap-4">
       <PageHeaderActions>
         <Button disabled={loading} onClick={() => void refresh()} type="button">
+          <RotateCcw className={loading ? "animate-spin" : undefined} />
           {loading ? "Refreshing" : "Refresh"}
         </Button>
       </PageHeaderActions>
 
       {error ? <ConsoleAlert variant="error">{error}</ConsoleAlert> : null}
 
-      <section className="console-split-layout min-h-0 flex-1">
-        <ConsolePanel className="skill-inventory-panel">
-          <PanelHeader
-            badge={<Badge>{deniedCount} denied</Badge>}
-            meta={loading ? "Loading audit logs..." : `${filteredLogs.length} shown · ${logs.length} loaded`}
-            title="Audit logs"
-          />
+      <section className="audit-log-metric-grid" aria-label="Audit log summary">
+        <MetricCard detail="Most recent 200 events" icon={<Activity />} label="Loaded events" value={logs.length} />
+        <MetricCard detail="Denied or failed outcomes" icon={<AlertTriangle />} label="Attention needed" tone="danger" value={deniedCount} />
+        <MetricCard detail="Events linked to API tokens" icon={<KeyRound />} label="Token activity" tone="accent" value={tokenActivityCount} />
+        <MetricCard detail="Authenticated users in this view" icon={<UsersRound />} label="Unique actors" value={uniqueActorCount} />
+      </section>
 
-          <div className="console-toolbar skill-toolbar">
-            <label className="search-field console-search-field grow-block">
-              <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search action, actor, target, or token" value={searchQuery} />
-            </label>
+      <ConsolePanel className="audit-log-filter-panel">
+        <div className="audit-log-filter-heading">
+          <div>
+            <strong>Filter activity</strong>
+            <span>Narrow the event stream without losing the loaded summary.</span>
           </div>
+          {activeFilterCount > 0 ? <Badge variant="secondary">{activeFilterCount} active</Badge> : null}
+        </div>
 
-          <div className="grid gap-3 px-1 pb-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="audit-action">Action</Label>
+        <div className="audit-log-filter-grid">
+          <div className="audit-log-filter-field is-search">
+            <Label htmlFor="audit-search">Search</Label>
+            <div className="audit-log-search-control">
+              <Search aria-hidden />
               <Input
-                id="audit-action"
-                onChange={(event) => setFilters((current) => ({ ...current, action: event.target.value }))}
-                placeholder="agent.invoke.denied"
-                value={filters.action}
+                id="audit-search"
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Actor, target, token, or request ID"
+                value={searchQuery}
               />
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label>Outcome</Label>
-                <Select onValueChange={(value) => setFilters((current) => ({ ...current, outcome: value ?? "all" }))} value={filters.outcome}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {OUTCOME_OPTIONS.map((option) => (
-                      <SelectItem key={option} value={option}>
-                        {option === "all" ? "All" : option}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="audit-target-type">Target type</Label>
-                <Input
-                  id="audit-target-type"
-                  onChange={(event) => setFilters((current) => ({ ...current, targetType: event.target.value }))}
-                  placeholder="agent"
-                  value={filters.targetType}
-                />
-              </div>
+          </div>
+          <div className="audit-log-filter-field">
+            <Label htmlFor="audit-action">Action contains</Label>
+            <Input
+              id="audit-action"
+              onChange={(event) => setFilters((current) => ({ ...current, action: event.target.value }))}
+              placeholder="agent.invoke"
+              value={filters.action}
+            />
+          </div>
+          <div className="audit-log-filter-field">
+            <Label>Outcome</Label>
+            <Select onValueChange={(value) => setFilters((current) => ({ ...current, outcome: value ?? "all" }))} value={filters.outcome}>
+              <SelectTrigger aria-label="Filter by outcome">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {OUTCOME_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {option === "all" ? "All outcomes" : formatKey(option)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="audit-log-filter-field">
+            <Label>Target type</Label>
+            <Select onValueChange={(value) => setFilters((current) => ({ ...current, targetType: value ?? "all" }))} value={filters.targetType}>
+              <SelectTrigger aria-label="Filter by target type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All targets</SelectItem>
+                {targetTypes.map((targetType) => (
+                  <SelectItem key={targetType} value={targetType}>
+                    {formatKey(targetType)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button disabled={activeFilterCount === 0} onClick={clearFilters} type="button" variant="outline">
+            Clear
+          </Button>
+        </div>
+      </ConsolePanel>
+
+      <section className="audit-log-content-grid">
+        <ConsolePanel className="audit-log-feed-panel">
+          <div className="audit-log-panel-heading">
+            <div>
+              <span className="audit-log-eyebrow">Event stream</span>
+              <h2>{filteredLogs.length} events</h2>
             </div>
+            <Badge variant={deniedCount > 0 ? "destructive" : "outline"}>{deniedCount} flagged</Badge>
           </div>
 
-          <ScrollArea className="skill-list min-h-0 flex-1">
-            <div className="flex flex-col gap-2 pr-2">
+          <ScrollArea className="audit-log-feed-scroll">
+            <div className="audit-log-event-list">
               {loading ? <p className="empty-copy padded-empty">Loading audit logs...</p> : null}
               {!loading && filteredLogs.length === 0 ? <p className="empty-copy padded-empty">No audit logs match the current filters.</p> : null}
               {!loading
                 ? filteredLogs.map((log) => (
-                    <InventoryListItem
-                      active={log.id === selectedId}
-                      description={auditDescription(log)}
+                    <button
+                      aria-pressed={log.id === selectedId}
+                      className={`audit-log-event-card${log.id === selectedId ? " is-active" : ""}`}
                       key={log.id}
-                      meta={
-                        <>
-                          <Badge variant={log.outcome === "denied" || log.outcome === "failed" ? "destructive" : "outline"}>{log.outcome}</Badge>
-                          <Badge variant="outline">{log.target_type}</Badge>
-                        </>
-                      }
                       onClick={() => setSelectedId(log.id)}
-                      title={auditTitle(log)}
-                    />
+                      type="button"
+                    >
+                      <span className="audit-log-event-title-row">
+                        <strong>{log.action}</strong>
+                        <Badge variant={outcomeVariant(log.outcome)}>{log.outcome}</Badge>
+                      </span>
+                      <span className="audit-log-event-target">
+                        {log.target_type}
+                        {log.target_id ? <b>{log.target_id}</b> : null}
+                      </span>
+                      <span className="audit-log-event-footer">
+                        <span>{log.actor_user_id || "Anonymous actor"}</span>
+                        <time dateTime={log.created_at}>{formatDate(log.created_at)}</time>
+                      </span>
+                    </button>
                   ))
                 : null}
             </div>
           </ScrollArea>
         </ConsolePanel>
 
-        <div aria-hidden className="console-panel-resizer pointer-events-none opacity-0">
-          <span className="console-panel-resizer-grip" />
-        </div>
-
-        <ConsolePanel className="skill-detail-panel provider-detail-panel">
-          <ScrollArea className="provider-detail-scroll">
-            <div className="stack-gap-sm">
-              <div className="skill-detail-header">
-                <div className="stack-gap-xs grow-block">
-                  <h2 className="panel-title">{selectedLog ? selectedLog.action : "Select an audit event"}</h2>
-                  <p className="entity-meta skill-detail-description">
-                    Inspect actor, target, request, and metadata for production API and approval workflow events.
+        <ConsolePanel className="audit-log-detail-panel">
+          {selectedLog ? (
+            <>
+              <div className="audit-log-detail-header">
+                <div>
+                  <span className="audit-log-eyebrow">Selected event</span>
+                  <h2>{selectedLog.action}</h2>
+                  <p>
+                    <time dateTime={selectedLog.created_at}>{formatDate(selectedLog.created_at)}</time>
+                    <span aria-hidden>·</span>
+                    {selectedLog.target_type}
                   </p>
                 </div>
+                <Badge variant={outcomeVariant(selectedLog.outcome)}>{selectedLog.outcome}</Badge>
               </div>
 
-              {selectedLog ? (
-                <>
-                  <div className="console-form-section">
-                    <div className="console-form-section-header">
-                      <span>Event details</span>
-                    </div>
-                    <div className="console-form-section-body">
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <p className="entity-meta">Created: {formatDate(selectedLog.created_at)}</p>
-                        <p className="entity-meta">Outcome: {selectedLog.outcome}</p>
-                        <p className="entity-meta">Actor user: {selectedLog.actor_user_id || "anonymous"}</p>
-                        <p className="entity-meta">Actor token: {selectedLog.actor_token_id || "n/a"}</p>
-                        <p className="entity-meta">Workspace: {selectedLog.workspace_id || "n/a"}</p>
-                        <p className="entity-meta">Target: {selectedLog.target_type}{selectedLog.target_id ? ` · ${selectedLog.target_id}` : ""}</p>
-                        <p className="entity-meta">Request ID: {selectedLog.request_id || "n/a"}</p>
-                        <p className="entity-meta">IP: {selectedLog.ip_address || "n/a"}</p>
+              <ScrollArea className="audit-log-detail-scroll">
+                <div className="audit-log-detail-stack">
+                  <section className="audit-log-detail-section">
+                    <div className="audit-log-section-heading">
+                      <span className="audit-log-section-icon">
+                        <Activity />
+                      </span>
+                      <div>
+                        <h3>Event</h3>
+                        <p>What happened and which resource was affected.</p>
                       </div>
                     </div>
-                  </div>
+                    <div className="audit-log-detail-grid">
+                      <DetailField label="Action" mono value={selectedLog.action} />
+                      <DetailField label="Outcome" value={formatKey(selectedLog.outcome)} />
+                      <DetailField label="Target type" value={formatKey(selectedLog.target_type)} />
+                      <DetailField label="Target ID" mono value={selectedLog.target_id} />
+                    </div>
+                  </section>
 
-                  <div className="console-form-section">
-                    <div className="console-form-section-header">
-                      <span>Metadata</span>
+                  <section className="audit-log-detail-section">
+                    <div className="audit-log-section-heading">
+                      <span className="audit-log-section-icon">
+                        <Fingerprint />
+                      </span>
+                      <div>
+                        <h3>Actor and request</h3>
+                        <p>Identity and request context captured with the event.</p>
+                      </div>
                     </div>
-                    <div className="console-form-section-body">
-                      <pre className="code-preview skill-source-preview">{formatMetadata(selectedLog.metadata)}</pre>
+                    <div className="audit-log-detail-grid">
+                      <DetailField label="Actor user" mono value={selectedLog.actor_user_id || "Anonymous"} />
+                      <DetailField label="Actor token" mono value={selectedLog.actor_token_id} />
+                      <DetailField label="Workspace" mono value={selectedLog.workspace_id} />
+                      <DetailField label="Request ID" mono value={selectedLog.request_id} />
+                      <DetailField label="IP address" mono value={selectedLog.ip_address} />
+                      <DetailField label="User agent" value={selectedLog.user_agent} />
                     </div>
-                  </div>
-                </>
-              ) : (
-                <p className="empty-copy padded-empty">Select an audit event to inspect details.</p>
-              )}
+                  </section>
+
+                  <section className="audit-log-detail-section">
+                    <div className="audit-log-section-heading">
+                      <span className="audit-log-section-icon">
+                        <KeyRound />
+                      </span>
+                      <div>
+                        <h3>Metadata</h3>
+                        <p>Structured values supplied by the audited operation.</p>
+                      </div>
+                    </div>
+
+                    {metadataEntries.length > 0 ? (
+                      <div className="audit-log-metadata-grid">
+                        {metadataEntries.map(([key, value]) => {
+                          const formattedValue = metadataValue(value);
+                          const isStructured = typeof value === "object" && value !== null;
+                          return (
+                            <div className={`audit-log-metadata-item${isStructured ? " is-structured" : ""}`} key={key}>
+                              <span>{formatKey(key)}</span>
+                              {isStructured ? <pre>{formattedValue}</pre> : <strong>{formattedValue}</strong>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="audit-log-empty-metadata">No metadata was recorded for this event.</p>
+                    )}
+
+                    <details className="audit-log-raw-details">
+                      <summary>View raw JSON</summary>
+                      <pre>{formatMetadata(selectedLog.metadata)}</pre>
+                    </details>
+                  </section>
+                </div>
+              </ScrollArea>
+            </>
+          ) : (
+            <div className="audit-log-empty-detail">
+              <Fingerprint />
+              <h2>Select an audit event</h2>
+              <p>Choose an event from the stream to inspect its actor, request, target, and metadata.</p>
             </div>
-          </ScrollArea>
+          )}
         </ConsolePanel>
       </section>
     </section>

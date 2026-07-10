@@ -311,7 +311,38 @@ Authorization: Bearer cvt_<token-prefix>_<secret>
 Content-Type: application/json
 ```
 
-API tokens are created and revoked in the Service Console under API Tokens. Each token is owned by one user and workspace, and can be constrained with a fine-grained policy:
+A full token looks like `cvt_0a1b2c3d4e5f6g7h_<random-secret>`. Only this `cvt_<prefix>_<secret>` form is accepted on the `Authorization` header; the database stores only a salted hash of the secret plus the public prefix, so the full secret is shown **once** at creation time and cannot be recovered later.
+
+#### Creating an API token
+
+API tokens are created in the Service Console UI:
+
+1. **Sign in** to the console. On first boot an admin is seeded from `AGENT_FRAMEWORK_CONSOLE_SEED_ADMIN_*` (default `admin` / `admin123` — change the password before exposing the console).
+2. Open **Service Console → API Tokens** in the left navigation (also reachable from your account page → *api-tokens* tab). The page shows usage overview tiles, a request chart, and a two-panel token workspace: the token inventory list on the left, the editor form on the right.
+3. Click **New token** (the button appears in both the page header and the inventory panel heading). The right panel switches to **Create API token** mode and pre-fills a default name like `api-token-YYYY-MM-DD`.
+4. **Token details** — edit the **Name** (required) and optionally set **Expires at** as a local date/time. Scope is fixed to `agent:invoke`; the workspace is the current one.
+5. **Access policy**:
+   - **Allowed agents** — multi-select of configured agents. Leave empty to allow all agents created in your workspace; restrict to a subset (e.g. only `researcher`) to lock the token to those agents.
+   - **Allowed memory modes** — multi-select of *Stateless* (`none`) and/or *Session memory* (`session`). At least one is required; default is both. Controls whether callers using this token may use stateless or session memory.
+   - **Max trace level** — `None`, `Steps` (default), or `Debug`. Hides/reveals execution detail in streamed invoke responses. *Debug* can expose tool arguments and result summaries.
+   - **Requests per minute** / **Requests per day** / **Tokens per day** — optional positive integers. Leave blank for unlimited. Each is enforced against prior recorded invoke logs.
+6. Click **Create token**. A dialog opens titled **API token created** showing the full secret (`cvt_...`) in a read-only field with a **Copy** button next to it. ⚠️ This is the only time the secret is displayed — the backend keeps only a salted hash plus the public prefix, so it cannot be recovered. Copy it into your secrets manager (e.g. `export COVALENT_API_TOKEN=cvt_...`), then click **Done**.
+
+After creation the token appears in the inventory list, marked active with its prefix (`cvt_…`) and policy badges. Selecting a token opens it in the editor where you can update its name/policy with **Save changes**, review **Recent activity** (the last invoke logs), or revoke it:
+- **Revoke token** sits in the danger zone of the editor. Clicking it opens a confirmation dialog (`Revoke <name>?`). Confirming revokes immediately — any app still using `cvt_<prefix>_<secret>` is rejected on the next request. Revocation is permanent, but historical usage stays for audit. Revoked tokens' fields become read-only.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api-tokens` | List the caller's tokens (summary only, no secret) |
+| `POST` | `/api-tokens` | Create a token; returns the one-time plaintext secret |
+| `PATCH` | `/api-tokens/{token_id}` | Update name, scopes, policy, or expiry |
+| `DELETE` | `/api-tokens/{token_id}` | Revoke a token |
+| `GET` | `/api-tokens/usage` | Aggregated usage metrics (default last 30 days) |
+| `GET` | `/api-tokens/{token_id}/runs` | Recent invoke logs for a token |
+
+#### Token scopes & policy
+
+Each token is owned by one user and workspace, and can be constrained with a fine-grained policy:
 
 ```json
 {
@@ -334,6 +365,10 @@ Supported policy fields:
 | `max_requests_per_minute` | Optional token-level burst limit enforced from invoke logs |
 | `max_requests_per_day` | Optional token-level daily request quota enforced from invoke logs |
 | `max_tokens_per_day` | Optional daily token quota using recorded `total_tokens` |
+
+#### Invoking with a token
+
+Send the token as a bearer `Authorization` header on `POST /v1/agent/invoke`. The request body takes `agent`, `input` (string or OpenAI-style content array), optional `stream`, `memory`, `trace`, and `metadata`. The token's policy is enforced before the run — denied calls (invalid/expired token, agent not in `allowed_agents`, disallowed memory mode or trace level, or quota exceeded) return `4xx` and write an `agent.invoke.denied` audit event.
 
 Stateless invoke does not write conversation memory:
 
