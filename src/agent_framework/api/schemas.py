@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Literal
 
@@ -7,6 +8,16 @@ from pydantic import BaseModel, Field, field_validator
 
 from agent_framework.core.types import Capability, PromptContent
 from agent_framework.mcp.spec import McpServerConfig
+
+
+USERNAME_PATTERN = re.compile(r"^[a-z0-9_-]{3,32}$")
+
+
+def normalize_username(value: str) -> str:
+    normalized = value.strip().lower()
+    if not USERNAME_PATTERN.match(normalized):
+        raise ValueError("username must be 3-32 chars of a-z, 0-9, '_' or '-'")
+    return normalized
 
 
 class AgentRunRequest(BaseModel):
@@ -75,20 +86,26 @@ class PublicAgentInvokeResponse(BaseModel):
 
 
 class ConsoleLoginRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=320)
+    identifier: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=1, max_length=1024)
 
-    @field_validator("email")
+    @field_validator("identifier")
     @classmethod
-    def normalize_email(cls, value: str) -> str:
+    def normalize_identifier(cls, value: str) -> str:
         return value.strip().lower()
 
 
 class ConsoleRegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=8, max_length=1024)
     display_name: str = Field(default="", max_length=255)
     workspace_name: str = Field(default="Default workspace", max_length=255)
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        return normalize_username(value)
 
     @field_validator("email")
     @classmethod
@@ -106,10 +123,16 @@ class ConsoleUserPreferences(BaseModel):
 
 
 class ConsoleAccountUpdateRequest(BaseModel):
+    username: str | None = Field(default=None, min_length=3, max_length=32)
     email: str | None = Field(default=None, min_length=3, max_length=320)
     display_name: str | None = Field(default=None, max_length=255)
     avatar_url: str | None = Field(default=None, max_length=2048)
     preferences: ConsoleUserPreferences | None = None
+
+    @field_validator("username")
+    @classmethod
+    def normalize_optional_username(cls, value: str | None) -> str | None:
+        return None if value is None else normalize_username(value)
 
     @field_validator("email")
     @classmethod
@@ -164,6 +187,7 @@ class ApiTokenCreateResponse(ApiTokenSummaryResponse):
 
 class ConsoleUserResponse(BaseModel):
     user_id: str
+    username: str | None = None
     email: str
     display_name: str
     avatar_url: str | None = None
@@ -176,6 +200,7 @@ class ConsoleUserResponse(BaseModel):
 
 class ConsoleUserSummaryResponse(BaseModel):
     user_id: str
+    username: str | None = None
     email: str
     display_name: str
     role: str

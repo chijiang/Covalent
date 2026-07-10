@@ -17,6 +17,8 @@ export function AuthPage({ mode }: AuthPageProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { login, register } = useAuth();
+  const [identifier, setIdentifier] = useState("");
+  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -27,7 +29,7 @@ export function AuthPage({ mode }: AuthPageProps) {
   const isRegister = mode === "register";
   const title = isRegister ? "Create your Covalent account" : "Sign in to Covalent";
   const subtitle = isRegister
-    ? "The first registered user becomes an admin and can manage other users."
+    ? "Set up your account to start building with Covalent."
     : "Use your local account to access the agent control plane.";
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -37,13 +39,14 @@ export function AuthPage({ mode }: AuthPageProps) {
     try {
       if (isRegister) {
         await register({
+          username,
           email,
           password,
           display_name: displayName,
           workspace_name: workspaceName,
         });
       } else {
-        await login({ email, password });
+        await login({ identifier, password });
       }
       router.replace(searchParams.get("next") || "/");
     } catch (submitError) {
@@ -66,16 +69,35 @@ export function AuthPage({ mode }: AuthPageProps) {
           {error ? <p className="console-alert is-error">{error}</p> : null}
 
           <div className="space-y-1.5">
-            <Label htmlFor="auth-email">Username or email</Label>
+            <Label htmlFor="auth-identifier">{isRegister ? "Email" : "Username or email"}</Label>
             <Input
-              autoComplete="username"
-              id="auth-email"
-              onChange={(event) => setEmail(event.target.value)}
+              autoComplete={isRegister ? "email" : "username"}
+              id={isRegister ? "auth-email" : "auth-identifier"}
+              onChange={(event) => (isRegister ? setEmail(event.target.value) : setIdentifier(event.target.value))}
+              placeholder={isRegister ? "you@example.com" : "username or you@example.com"}
               required
-              type="text"
-              value={email}
+              type={isRegister ? "email" : "text"}
+              value={isRegister ? email : identifier}
             />
           </div>
+
+          {isRegister ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="auth-username">Username</Label>
+              <Input
+                autoComplete="username"
+                id="auth-username"
+                maxLength={32}
+                minLength={3}
+                onChange={(event) => setUsername(event.target.value)}
+                pattern="[A-Za-z0-9_-]{3,32}"
+                placeholder="ada"
+                required
+                title="3-32 characters: letters, digits, '_' or '-'"
+                value={username}
+              />
+            </div>
+          ) : null}
 
           <div className="space-y-1.5">
             <Label htmlFor="auth-password">Password</Label>
