@@ -3,9 +3,11 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
 import {
   Bot,
   Cable,
+  ChevronDown,
   ChevronUp,
   Cpu,
   LogOut,
@@ -29,6 +31,7 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
@@ -50,6 +53,13 @@ const ADMIN_ITEMS = [
   { href: "/service-console/users", label: "Users", icon: UsersRound },
   { href: "/service-console/audit-logs", label: "Audit logs", icon: ShieldCheck },
 ] as const;
+
+const SIDEBAR_SECTION_STORAGE_KEYS = {
+  workspace: "covalent.sidebar.workspace-open",
+  console: "covalent.sidebar.console-open",
+  administration: "covalent.sidebar.admin-open",
+  chatSessions: "covalent.sidebar.chat-sessions-open",
+} as const;
 
 function isNavActive(pathname: string, href: string, exact = false) {
   if (exact) {
@@ -74,12 +84,83 @@ function userInitials(name: string) {
     .toUpperCase();
 }
 
+function usePersistedDisclosure(storageKey: string, defaultOpen = true) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(storageKey);
+      if (stored === "1" || stored === "0") {
+        setOpen(stored === "1");
+      }
+    } catch {
+      // Keep the default when browser storage is unavailable.
+    }
+  }, [storageKey]);
+
+  const updateOpen = useCallback(
+    (nextOpen: boolean) => {
+      setOpen(nextOpen);
+      try {
+        window.localStorage.setItem(storageKey, nextOpen ? "1" : "0");
+      } catch {
+        // The control remains functional even without persisted storage.
+      }
+    },
+    [storageKey],
+  );
+
+  return [open, updateOpen] as const;
+}
+
+function SidebarSectionToggle({
+  label,
+  open,
+  onToggle,
+}: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <SidebarGroupLabel
+      className="w-full cursor-pointer justify-between text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-label)] transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:hidden"
+      render={
+        <button
+          aria-expanded={open}
+          aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
+          onClick={onToggle}
+          type="button"
+        />
+      }
+    >
+      <span>{label}</span>
+      <ChevronDown
+        aria-hidden="true"
+        className={cn("transition-transform duration-150", !open && "-rotate-90")}
+      />
+    </SidebarGroupLabel>
+  );
+}
+
 export function AppSidebar() {
   const pathname = usePathname();
   const { logout, user } = useAuth();
   const { chatHref } = useChatSessions();
   const isChatPage = pathname === "/";
   const initials = userInitials(user?.display_name || user?.email || "U");
+  const [workspaceOpen, setWorkspaceOpen] = usePersistedDisclosure(
+    SIDEBAR_SECTION_STORAGE_KEYS.workspace,
+  );
+  const [consoleOpen, setConsoleOpen] = usePersistedDisclosure(
+    SIDEBAR_SECTION_STORAGE_KEYS.console,
+  );
+  const [administrationOpen, setAdministrationOpen] = usePersistedDisclosure(
+    SIDEBAR_SECTION_STORAGE_KEYS.administration,
+  );
+  const [chatSessionsOpen, setChatSessionsOpen] = usePersistedDisclosure(
+    SIDEBAR_SECTION_STORAGE_KEYS.chatSessions,
+  );
 
   return (
     <Sidebar className="border-r-0" collapsible="icon" variant="inset">
@@ -109,11 +190,27 @@ export function AppSidebar() {
         </Link>
       </SidebarHeader>
       <SidebarContent className="gap-0 overflow-hidden">
-        <SidebarGroup className="min-h-0 flex-1">
-          <SidebarGroupLabel className="text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-label)] group-data-[collapsible=icon]:hidden">
-            Workspace
-          </SidebarGroupLabel>
-          <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
+        <SidebarGroup
+          className={cn(
+            "min-h-0",
+            workspaceOpen && isChatPage && chatSessionsOpen ? "flex-1" : "shrink-0",
+          )}
+        >
+          <SidebarSectionToggle
+            label="Workspace"
+            onToggle={() => setWorkspaceOpen(!workspaceOpen)}
+            open={workspaceOpen}
+          />
+          <SidebarGroupContent
+            className={cn(
+              workspaceOpen
+                ? cn(
+                    "flex min-h-0 flex-col",
+                    isChatPage && chatSessionsOpen && "flex-1",
+                  )
+                : "hidden group-data-[collapsible=icon]:block",
+            )}
+          >
             <SidebarMenu>
               {WORKSPACE_ITEMS.map((item) => {
                 const active = isNavActive(pathname, item.href, item.exact);
@@ -129,18 +226,38 @@ export function AppSidebar() {
                       <Icon />
                       <span>{item.label}</span>
                     </SidebarMenuButton>
+                    {isChatPage ? (
+                      <SidebarMenuAction
+                        aria-expanded={chatSessionsOpen}
+                        aria-label={`${chatSessionsOpen ? "Collapse" : "Expand"} chat sessions`}
+                        onClick={() => setChatSessionsOpen(!chatSessionsOpen)}
+                        type="button"
+                      >
+                        <ChevronDown
+                          aria-hidden="true"
+                          className={cn(
+                            "transition-transform duration-150",
+                            !chatSessionsOpen && "-rotate-90",
+                          )}
+                        />
+                      </SidebarMenuAction>
+                    ) : null}
                   </SidebarMenuItem>
                 );
               })}
             </SidebarMenu>
-            {isChatPage ? <ChatSidebarSessions /> : null}
+            {isChatPage && chatSessionsOpen ? <ChatSidebarSessions /> : null}
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup>
-          <SidebarGroupLabel className="text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-label)] group-data-[collapsible=icon]:hidden">
-            Service Console
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
+          <SidebarSectionToggle
+            label="Service Console"
+            onToggle={() => setConsoleOpen(!consoleOpen)}
+            open={consoleOpen}
+          />
+          <SidebarGroupContent
+            className={cn(!consoleOpen && "hidden group-data-[collapsible=icon]:block")}
+          >
             <SidebarMenu>
               {CONSOLE_ITEMS.map((item) => {
                 const active = isNavActive(pathname, item.href);
@@ -164,10 +281,16 @@ export function AppSidebar() {
         </SidebarGroup>
         {user?.role === "admin" ? (
           <SidebarGroup>
-            <SidebarGroupLabel className="text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-label)] group-data-[collapsible=icon]:hidden">
-              Administration
-            </SidebarGroupLabel>
-            <SidebarGroupContent>
+            <SidebarSectionToggle
+              label="Administration"
+              onToggle={() => setAdministrationOpen(!administrationOpen)}
+              open={administrationOpen}
+            />
+            <SidebarGroupContent
+              className={cn(
+                !administrationOpen && "hidden group-data-[collapsible=icon]:block",
+              )}
+            >
               <SidebarMenu>
                 {ADMIN_ITEMS.map((item) => {
                   const active = isNavActive(pathname, item.href);

@@ -4877,6 +4877,288 @@ textarea::placeholder {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* Chat trace final overrides. Keep these after the shared console rules. */
+.chat-page-shell .chat-trace-panel > .trace-feed {
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.chat-page-shell .trace-feed.is-console-feed {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-page-shell .trace-empty-copy {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chat-page-shell .trace-turn-group {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  gap: 0;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  align-self: flex-start;
+}
+
+.chat-page-shell .trace-turn-header {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 56px 60px;
+  align-items: center;
+  column-gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  min-height: 32px;
+  max-height: 32px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid rgba(220, 38, 38, 0.16);
+  border-radius: 10px;
+  background: linear-gradient(
+    135deg,
+    rgba(220, 38, 38, 0.08),
+    rgba(255, 255, 255, 0.92)
+  );
+  appearance: none;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.chat-page-shell .trace-turn-header:hover {
+  border-color: rgba(220, 38, 38, 0.28);
+  background: linear-gradient(
+    135deg,
+    rgba(220, 38, 38, 0.11),
+    rgba(255, 255, 255, 0.95)
+  );
+}
+
+.chat-page-shell .trace-turn-label {
+  margin: 0;
+  color: var(--surface-accent-strong);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: var(--tracking-label);
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.chat-page-shell .trace-turn-preview {
+  margin: 0;
+  color: var(--fg-primary);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.chat-page-shell .trace-turn-count,
+.chat-page-shell .trace-turn-action {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-secondary);
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.chat-page-shell .trace-turn-action {
+  color: var(--surface-accent-strong);
+}
+
+.chat-page-shell .trace-turn-group.is-collapsed .trace-turn-header {
+  background: var(--surface-primary);
+  border-color: var(--border-soft);
+}
+
+.chat-page-shell .chat-trace-panel .trace-turn-group:not(.is-collapsed) .trace-turn-header {
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+}
+
+.chat-page-shell .chat-trace-panel .trace-turn-steps {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  gap: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  overflow: hidden;
+  height: auto;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step {
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  background: var(--surface-primary);
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 3px solid transparent;
+  box-sizing: border-box;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step:last-child {
+  border-bottom: 0;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step.is-actor-agent {
+  border-left-color: var(--surface-accent-strong);
+}
+
+.chat-page-shell .chat-trace-panel .trace-step.is-actor-system {
+  border-left-color: #64748b;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step.is-actor-tool {
+  border-left-color: #d97706;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step.is-actor-user {
+  border-left-color: #0f766e;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 24px;
+  min-height: 24px;
+  max-height: 24px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-actor {
+  flex: 0 0 44px;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-actor.is-agent {
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.2);
+  color: #b91c1c;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-actor.is-system {
+  background: rgba(100, 116, 139, 0.12);
+  border-color: rgba(100, 116, 139, 0.22);
+  color: #475569;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-actor.is-tool {
+  background: rgba(217, 119, 6, 0.12);
+  border-color: rgba(217, 119, 6, 0.24);
+  color: #b45309;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-actor.is-user {
+  background: rgba(15, 118, 110, 0.1);
+  border-color: rgba(15, 118, 110, 0.2);
+  color: #0f766e;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-event {
+  flex: 0 0 52px;
+  min-width: 0;
+  color: var(--fg-primary);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-secondary);
+  font-size: 11px;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-time {
+  flex: 0 0 52px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+  font-size: 10px;
+  line-height: 1;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-payload-toggle {
+  flex: 0 0 54px;
+  min-width: 0;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--surface-accent-strong);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  appearance: none;
+  box-shadow: none;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-payload-toggle:hover,
+.chat-page-shell .chat-trace-panel .trace-step-payload-toggle:focus-visible {
+  text-decoration: underline;
+}
+
 .chat-page-shell .chat-trace-panel .trace-step.is-expanded .trace-step-line {
   max-height: none;
 }
