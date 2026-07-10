@@ -2405,18 +2405,26 @@ async def _update_console_user(
             user = await session.get(UserRow, user_id)
             if user is None:
                 raise HTTPException(status_code=404, detail=f"Unknown user: {user_id}")
+            user_changed = False
             if request.display_name is not None:
                 user.display_name = request.display_name.strip()
+                user_changed = True
             if request.role is not None:
                 user.role = request.role
+                user_changed = True
             if request.status is not None:
                 user.status = request.status
+                user_changed = True
+            # Assign in Python so onupdate=func.now() does not expire the attr on flush (MissingGreenlet).
+            if user_changed:
+                user.updated_at = datetime.now(UTC)
 
             member = await session.scalar(select(WorkspaceMemberRow).where(WorkspaceMemberRow.user_id == user.id))
             workspace: WorkspaceRow | None = None
             if member is not None:
                 if request.workspace_role is not None:
                     member.role = request.workspace_role
+                    member.updated_at = datetime.now(UTC)
                 workspace = await session.get(WorkspaceRow, member.workspace_id)
 
             return _console_user_summary_response(user, workspace, member)
