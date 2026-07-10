@@ -279,7 +279,7 @@ export function AccountSettingsWorkspace() {
         </TabsContent>
 
         <TabsContent
-          className="min-h-0 w-full flex-1 overflow-hidden pt-3 data-active:flex data-active:flex-col"
+          className="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto pt-3 data-active:flex data-active:flex-col"
           value="api-tokens"
         >
           <ApiTokensWorkspace embedded />

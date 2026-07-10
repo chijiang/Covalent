@@ -3309,6 +3309,320 @@ textarea {
   flex: 1 1 0%;
 }
 
+.api-token-workspace {
+  padding-bottom: 20px;
+}
+
+.api-token-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.api-token-metric-card {
+  display: flex;
+  min-height: 112px;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+}
+
+.api-token-metric-icon {
+  display: inline-flex;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in oklab, var(--primary) 24%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--primary) 9%, var(--background));
+  color: var(--primary);
+}
+
+.api-token-metric-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.api-token-metric-label {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.api-token-metric-value {
+  margin: 2px 0 1px;
+  color: var(--foreground);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.api-token-chart-panel {
+  padding: 16px;
+}
+
+.api-token-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.api-token-chart {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(5px, 1fr);
+  align-items: end;
+  min-height: 126px;
+  margin-top: 18px;
+  padding: 8px 2px 0;
+  border-bottom: 1px solid var(--border);
+  background-image: linear-gradient(to bottom, transparent 49%, color-mix(in oklab, var(--border) 52%, transparent) 50%, transparent 51%);
+}
+
+.api-token-chart-column {
+  display: flex;
+  height: 118px;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 1px;
+}
+
+.api-token-chart-bar {
+  width: 100%;
+  max-width: 14px;
+  min-height: 2px;
+  border-radius: 3px 3px 0 0;
+  background: var(--primary);
+  opacity: 0.88;
+  transition: opacity 120ms ease;
+}
+
+.api-token-chart-column:hover .api-token-chart-bar {
+  opacity: 1;
+}
+
+.api-token-chart-bar.is-empty {
+  background: var(--border);
+  opacity: 0.65;
+}
+
+.api-token-chart-axis {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 7px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.api-token-management-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
+  align-items: stretch;
+  gap: 12px;
+}
+
+.api-token-inventory-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(220px, 1fr);
+  height: 100%;
+  min-height: 540px;
+  overflow: hidden;
+}
+
+.api-token-inventory-heading,
+.api-token-editor-heading {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.api-token-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.api-token-list {
+  height: 100%;
+  min-height: 0;
+  max-height: 680px;
+  padding: 12px 6px 12px 12px;
+}
+
+.api-token-editor-panel {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.api-token-editor-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.api-token-detail-stat {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--muted) 38%, transparent);
+}
+
+.api-token-detail-stat span,
+.api-token-detail-stat strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-token-detail-stat span {
+  margin-bottom: 3px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.api-token-detail-stat strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.api-token-run-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.api-token-run-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.api-token-run-row:first-child {
+  padding-top: 0;
+}
+
+.api-token-run-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.api-token-run-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 12px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.api-token-run-metrics span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.api-token-run-metrics svg {
+  width: 12px;
+  height: 12px;
+}
+
+.api-token-run-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--destructive) 9%, transparent);
+  color: var(--destructive);
+  font-size: 12px;
+}
+
+.api-token-danger-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklab, var(--destructive) 26%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--destructive) 4%, var(--background));
+}
+
+.api-token-danger-zone h3,
+.api-token-danger-zone p {
+  margin: 0;
+}
+
+.api-token-danger-zone h3 {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.api-token-danger-zone p {
+  margin-top: 3px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1080px) {
+  .api-token-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .api-token-management-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .api-token-inventory-panel {
+    min-height: 440px;
+  }
+
+  .api-token-list {
+    max-height: 480px;
+  }
+}
+
+@media (max-width: 640px) {
+  .api-token-metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .api-token-section-heading,
+  .api-token-danger-zone {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .api-token-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .api-token-toolbar [data-slot="select-trigger"] {
+    width: 100%;
+  }
+
+  .api-token-run-row {
+    grid-template-columns: 1fr;
+  }
+
+  .api-token-run-metrics {
+    justify-content: flex-start;
+  }
+}
+
 .console-page-shell .console-split-layout.console-split-layout-embedded {
   grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
   gap: 12px;

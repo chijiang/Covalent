@@ -321,6 +321,52 @@ export type ApiTokenCreateResponse = ApiTokenSummary & {
   token: string;
 };
 
+export type ApiTokenUpdateRequest = {
+  name?: string;
+  scopes?: string[];
+  policy?: ApiTokenPolicy;
+  expires_at?: string | null;
+};
+
+export type ApiTokenUsageDaily = {
+  date: string;
+  requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  average_latency_ms?: number | null;
+};
+
+export type ApiTokenUsageByToken = {
+  token_id: string;
+  token_name: string;
+  token_prefix: string;
+  requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  total_tokens: number;
+  average_latency_ms?: number | null;
+  last_used_at?: string | null;
+};
+
+export type ApiTokenUsage = {
+  days: number;
+  starts_at: string;
+  ends_at: string;
+  active_tokens: number;
+  total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  average_latency_ms?: number | null;
+  daily: ApiTokenUsageDaily[];
+  by_token: ApiTokenUsageByToken[];
+};
+
 export type ConsoleLoginRequest = {
   identifier: string;
   password: string;

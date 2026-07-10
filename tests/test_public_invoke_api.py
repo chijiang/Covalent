@@ -15,6 +15,7 @@ from agent_framework.api.app import (
     ConsolePrincipalContext,
     _agent_run_log_response,
     _audit_request_metadata,
+    _build_api_token_usage_response,
     _build_agent_specs,
     create_app,
     _enforce_api_token_policy_limits,
@@ -31,6 +32,7 @@ from agent_framework.api.app import (
     _record_public_agent_run,
     _revoke_api_token,
     _resolve_console_identity,
+    _update_api_token,
     _validate_config_payload,
 )
 from agent_framework.api.auth import (
@@ -62,6 +64,7 @@ from agent_framework.api.schemas import (
     ConsoleAccountUpdateRequest,
     ConsoleLoginRequest,
     ConsoleRegisterRequest,
+    ApiTokenUpdateRequest,
     normalize_username,
 )
 
@@ -70,6 +73,152 @@ class ApiTokenPolicyTests(unittest.TestCase):
     def test_normalize_token_scopes_dedupes_and_defaults(self) -> None:
         self.assertEqual(_normalize_token_scopes(["agent:invoke", " agent:invoke ", ""]), ["agent:invoke"])
         self.assertEqual(_normalize_token_scopes([]), ["agent:invoke"])
+
+    def test_usage_summary_aggregates_aliases_status_and_latency(self) -> None:
+        now = datetime(2026, 7, 10, 12, tzinfo=UTC)
+        active_token = ApiTokenRow(
+            id="token_active",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            name="Production",
+            token_prefix="active",
+            token_hash="hash",
+            scopes=["agent:invoke"],
+            policy_json={},
+            created_at=now,
+            last_used_at=now,
+        )
+        revoked_token = ApiTokenRow(
+            id="token_revoked",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            name="Legacy",
+            token_prefix="legacy",
+            token_hash="hash",
+            scopes=["agent:invoke"],
+            policy_json={},
+            created_at=now,
+            revoked_at=now,
+        )
+        runs = [
+            AgentRunLogRow(
+                id="run_1",
+                token_id="token_active",
+                agent_name="support",
+                memory_mode="none",
+                status="completed",
+                latency_ms=120,
+                usage_json={"prompt_tokens": 3, "completion_tokens": 7, "total_tokens": 10},
+                error_json={},
+                metadata_json={},
+                created_at=datetime(2026, 7, 9, 10, tzinfo=UTC),
+            ),
+            AgentRunLogRow(
+                id="run_2",
+                token_id="token_active",
+                agent_name="support",
+                memory_mode="session",
+                status="failed",
+                latency_ms=240,
+                usage_json={"input_tokens": "5", "output_tokens": 5},
+                error_json={"message": "failed"},
+                metadata_json={},
+                created_at=datetime(2026, 7, 10, 11, tzinfo=UTC),
+            ),
+        ]
+
+        summary = _build_api_token_usage_response([active_token, revoked_token], runs, days=7, now=now)
+
+        self.assertEqual(summary.active_tokens, 1)
+        self.assertEqual(summary.total_requests, 2)
+        self.assertEqual(summary.successful_requests, 1)
+        self.assertEqual(summary.failed_requests, 1)
+        self.assertEqual(summary.total_tokens, 20)
+        self.assertEqual(summary.input_tokens, 8)
+        self.assertEqual(summary.output_tokens, 12)
+        self.assertEqual(summary.average_latency_ms, 180)
+        self.assertEqual(summary.daily[-1].requests, 1)
+        self.assertEqual(summary.by_token[0].token_id, "token_active")
+        self.assertEqual(summary.by_token[0].total_tokens, 20)
+
+    def test_update_api_token_changes_owned_active_token(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.users["user_1"] = UserRow(id="user_1", email="u1@example.com", display_name="User 1", role="member", status="active")
+        state.workspaces["workspace_1"] = WorkspaceRow(id="workspace_1", name="Workspace 1", slug="workspace-1")
+        state.add_token(
+            raw_token="cvt_test_secret",
+            token_prefix="test",
+            token_id="token_1",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            policy={},
+        )
+        principal = ConsolePrincipalContext(
+            user_id="user_1",
+            email="u1@example.com",
+            display_name="User 1",
+            role="member",
+            workspace_id="workspace_1",
+            workspace_name="Workspace 1",
+            workspace_slug="workspace-1",
+            workspace_role="member",
+        )
+
+        async def update_token():
+            return await _update_api_token(
+                SimpleNamespace(session_factory=state.session_factory),
+                "token_1",
+                ApiTokenUpdateRequest(
+                    name="  Production token  ",
+                    policy={"allowed_agents": ["support", "support"], "max_requests_per_day": "50"},
+                    expires_at=None,
+                ),
+                principal,
+            )
+
+        updated = anyio.run(update_token)
+
+        self.assertEqual(updated.name, "Production token")
+        self.assertEqual(updated.policy["allowed_agents"], ["support"])
+        self.assertEqual(updated.policy["max_requests_per_day"], 50)
+        self.assertIsNone(updated.expires_at)
+        self.assertEqual(state.audit_logs[-1].action, "api_token.updated")
+
+    def test_revoke_api_token_sets_loaded_updated_at(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.users["user_1"] = UserRow(id="user_1", email="u1@example.com", display_name="User 1", role="member", status="active")
+        state.workspaces["workspace_1"] = WorkspaceRow(id="workspace_1", name="Workspace 1", slug="workspace-1")
+        state.add_token(
+            raw_token="cvt_test_secret",
+            token_prefix="test",
+            token_id="token_1",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            policy={},
+        )
+        principal = ConsolePrincipalContext(
+            user_id="user_1",
+            email="u1@example.com",
+            display_name="User 1",
+            role="member",
+            workspace_id="workspace_1",
+            workspace_name="Workspace 1",
+            workspace_slug="workspace-1",
+            workspace_role="member",
+        )
+
+        async def revoke_token():
+            return await _revoke_api_token(
+                SimpleNamespace(session_factory=state.session_factory),
+                "token_1",
+                principal,
+            )
+
+        revoked = anyio.run(revoke_token)
+
+        self.assertIsNotNone(revoked.revoked_at)
+        self.assertEqual(revoked.updated_at, revoked.revoked_at)
+        self.assertEqual(state.audit_logs[-1].action, "api_token.revoked")
 
     def test_normalize_token_policy_dedupes_and_filters_supported_fields(self) -> None:
         policy = _normalize_token_policy(
