@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import json
 import logging
@@ -34,7 +34,9 @@ from agent_framework.api.schemas import (
     ApiTokenCreateRequest,
     ApiTokenCreateResponse,
     ApiTokenSummaryResponse,
+    ConsoleAccountUpdateRequest,
     ConsoleLoginRequest,
+    ConsolePasswordUpdateRequest,
     ConsoleRegisterRequest,
     ConsoleUserResponse,
     ConsoleUserSummaryResponse,
@@ -379,6 +381,51 @@ def create_app() -> FastAPI:
         db_manager: DatabaseManager = app.state.db_manager
         principal = await _resolve_console_principal(request, db_manager)
         return _console_user_response(principal)
+
+    @app.patch("/account")
+    async def update_current_console_account(
+        request: Request,
+        response: Response,
+        update_request: ConsoleAccountUpdateRequest,
+    ) -> ConsoleUserResponse:
+        settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        updated = await _update_current_account(db_manager, principal, update_request)
+        _set_console_session_cookie(response, settings, updated)
+        await _record_audit_log(
+            db_manager,
+            action="account.updated",
+            target_type="user",
+            target_id=updated.user_id,
+            principal=updated,
+            request=request,
+            metadata={
+                "email_changed": updated.email != principal.email,
+                "display_name_changed": updated.display_name != principal.display_name,
+                "avatar_changed": updated.avatar_url != principal.avatar_url,
+                "preferences_changed": updated.preferences != principal.preferences,
+            },
+        )
+        return _console_user_response(updated)
+
+    @app.post("/account/password")
+    async def update_current_console_password(
+        request: Request,
+        update_request: ConsolePasswordUpdateRequest,
+    ) -> dict[str, str]:
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        await _update_current_password(db_manager, principal, update_request)
+        await _record_audit_log(
+            db_manager,
+            action="account.password_changed",
+            target_type="user",
+            target_id=principal.user_id,
+            principal=principal,
+            request=request,
+        )
+        return {"status": "ok"}
 
     @app.post("/auth/register")
     async def register_console_user(
@@ -1741,6 +1788,8 @@ class ConsolePrincipalContext:
     workspace_name: str
     workspace_slug: str
     workspace_role: str
+    avatar_url: str | None = None
+    preferences: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_admin(self) -> bool:
@@ -1756,6 +1805,8 @@ def _console_user_response(principal: ConsolePrincipalContext) -> ConsoleUserRes
         user_id=principal.user_id,
         email=principal.email,
         display_name=principal.display_name,
+        avatar_url=principal.avatar_url,
+        preferences=principal.preferences,
         role=principal.role,
         workspace_id=principal.workspace_id,
         workspace_name=principal.workspace_name,
@@ -1900,6 +1951,8 @@ async def _resolve_console_principal(request: Request, db_manager: DatabaseManag
                 user_id=user.id,
                 email=user.email,
                 display_name=user.display_name,
+                avatar_url=user.avatar_url,
+                preferences=dict(user.preferences_json or {}),
                 role=user.role,
                 workspace_id=workspace.id,
                 workspace_name=workspace.name,
@@ -2066,6 +2119,8 @@ async def _principal_for_user(
         user_id=user.id,
         email=user.email,
         display_name=user.display_name,
+        avatar_url=user.avatar_url,
+        preferences=dict(user.preferences_json or {}),
         role=user.role,
         workspace_id=workspace.id,
         workspace_name=workspace.name,
@@ -2117,6 +2172,66 @@ async def _authenticate_console_password(
             if user is None or not verify_password(request.password, user.password_hash):
                 raise HTTPException(status_code=401, detail="Invalid email or password")
             return await _principal_for_user(session, user)
+
+
+async def _update_current_account(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    request: ConsoleAccountUpdateRequest,
+) -> ConsolePrincipalContext:
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            user = await session.get(UserRow, principal.user_id)
+            if user is None:
+                raise HTTPException(status_code=404, detail="Current user was not found")
+
+            if request.email is not None and request.email != user.email:
+                existing_user_id = await session.scalar(
+                    select(UserRow.id).where(
+                        UserRow.email == request.email,
+                        UserRow.id != user.id,
+                    )
+                )
+                if existing_user_id is not None:
+                    raise HTTPException(status_code=409, detail="A user with this email already exists")
+                user.email = request.email
+
+            if request.display_name is not None:
+                display_name = request.display_name.strip()
+                if not display_name:
+                    raise HTTPException(status_code=422, detail="Display name must not be empty")
+                user.display_name = display_name
+
+            if "avatar_url" in request.model_fields_set:
+                user.avatar_url = request.avatar_url
+
+            if request.preferences is not None:
+                user.preferences_json = request.preferences.model_dump()
+
+            await session.flush()
+            return await _principal_for_user(
+                session,
+                user,
+                workspace_name=principal.workspace_name,
+                workspace_slug=principal.workspace_slug,
+            )
+
+
+async def _update_current_password(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    request: ConsolePasswordUpdateRequest,
+) -> None:
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            user = await session.get(UserRow, principal.user_id)
+            if user is None:
+                raise HTTPException(status_code=404, detail="Current user was not found")
+            if not user.password_hash:
+                raise HTTPException(status_code=400, detail="This account does not use a local password")
+            if not verify_password(request.current_password, user.password_hash):
+                raise HTTPException(status_code=400, detail="Current password is incorrect")
+            user.password_hash = hash_password(request.new_password)
 
 
 async def _seed_initial_admin_user(db_manager: DatabaseManager, settings: AppSettings) -> None:
@@ -2251,51 +2366,6 @@ async def _record_audit_log(
             )
 
 
-async def _ensure_token_owner_workspace(
-    session: AsyncSession,
-    request: ApiTokenCreateRequest,
-    principal: ConsolePrincipalContext,
-) -> tuple[UserRow, WorkspaceRow]:
-    user_id = (request.user_id or "").strip() if principal.is_admin else principal.user_id
-    user: UserRow | None = await session.get(UserRow, user_id) if user_id else None
-    if user is None and principal.is_admin:
-        user = await session.scalar(select(UserRow).where(UserRow.email == request.user_email.strip()))
-    if user is None:
-        user = UserRow(
-            id=user_id or principal.user_id,
-            email=(request.user_email.strip() if principal.is_admin else principal.email) or "admin@local",
-            display_name=(request.user_display_name.strip() if principal.is_admin else principal.display_name) or "Local Admin",
-            role="admin" if principal.is_admin and request.user_email.strip() == "admin@local" else principal.role,
-            status="active",
-        )
-        session.add(user)
-    else:
-        if request.user_display_name.strip() and not user.display_name.strip():
-            user.display_name = request.user_display_name.strip()
-        if user.status != "active":
-            user.status = "active"
-
-    workspace_id = (request.workspace_id or "").strip() if principal.is_admin else principal.workspace_id
-    workspace: WorkspaceRow | None = await session.get(WorkspaceRow, workspace_id) if workspace_id else None
-    workspace_slug = _safe_storage_component(request.workspace_slug if principal.is_admin else principal.workspace_slug, "default")
-    if workspace is None:
-        workspace = await session.scalar(select(WorkspaceRow).where(WorkspaceRow.slug == workspace_slug))
-    if workspace is None:
-        workspace = WorkspaceRow(
-            id=workspace_id or principal.workspace_id,
-            name=(request.workspace_name.strip() if principal.is_admin else principal.workspace_name) or "Default workspace",
-            slug=workspace_slug,
-        )
-        session.add(workspace)
-
-    await session.flush()
-    member = await session.get(WorkspaceMemberRow, (workspace.id, user.id))
-    if member is None:
-        session.add(WorkspaceMemberRow(workspace_id=workspace.id, user_id=user.id, role="admin" if user.role == "admin" else "member"))
-
-    return user, workspace
-
-
 def _api_token_summary_response(
     token: ApiTokenRow,
     user: UserRow,
@@ -2330,11 +2400,10 @@ async def _list_api_token_summaries(
             .join(WorkspaceRow, ApiTokenRow.workspace_id == WorkspaceRow.id)
             .order_by(ApiTokenRow.created_at.desc())
         )
-        if not principal.is_admin:
-            stmt = stmt.where(
-                ApiTokenRow.user_id == principal.user_id,
-                ApiTokenRow.workspace_id == principal.workspace_id,
-            )
+        stmt = stmt.where(
+            ApiTokenRow.user_id == principal.user_id,
+            ApiTokenRow.workspace_id == principal.workspace_id,
+        )
         rows = (
             await session.execute(stmt)
         ).all()
@@ -2352,7 +2421,10 @@ async def _create_api_token(
     token_hash = hash_api_token(token, settings.api_token_hash_pepper)
     async with db_manager.session_factory() as session:
         async with session.begin():
-            user, workspace = await _ensure_token_owner_workspace(session, request, principal)
+            user = await session.get(UserRow, principal.user_id)
+            workspace = await session.get(WorkspaceRow, principal.workspace_id)
+            if user is None or workspace is None:
+                raise HTTPException(status_code=404, detail="Current token owner or workspace was not found")
             row = ApiTokenRow(
                 id=_new_chat_item_id("token"),
                 user_id=user.id,
@@ -2397,7 +2469,7 @@ async def _revoke_api_token(
             row = await session.get(ApiTokenRow, token_id)
             if row is None:
                 raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
-            if not principal.is_admin and (row.user_id != principal.user_id or row.workspace_id != principal.workspace_id):
+            if row.user_id != principal.user_id or row.workspace_id != principal.workspace_id:
                 raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
             if row.revoked_at is None:
                 row.revoked_at = datetime.now(UTC)
@@ -2472,7 +2544,7 @@ async def _list_api_token_runs(
         token = await session.get(ApiTokenRow, token_id)
         if token is None:
             raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
-        if not principal.is_admin and (token.user_id != principal.user_id or token.workspace_id != principal.workspace_id):
+        if token.user_id != principal.user_id or token.workspace_id != principal.workspace_id:
             raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
         rows = (
             await session.execute(
@@ -2496,15 +2568,12 @@ async def _list_audit_logs(
     actor_token_id: str | None = None,
     target_type: str | None = None,
 ) -> list[AuditLogResponse]:
+    if not principal.is_admin:
+        raise HTTPException(status_code=403, detail="Only admins can list audit logs")
     bounded_limit = min(max(limit, 1), 500)
     async with db_manager.session_factory() as session:
         stmt = select(AuditLogRow).order_by(AuditLogRow.created_at.desc()).limit(bounded_limit)
-        if not principal.is_admin:
-            stmt = stmt.where(
-                AuditLogRow.actor_user_id == principal.user_id,
-                AuditLogRow.workspace_id == principal.workspace_id,
-            )
-        elif actor_user_id:
+        if actor_user_id:
             stmt = stmt.where(AuditLogRow.actor_user_id == actor_user_id)
         if action:
             stmt = stmt.where(AuditLogRow.action == action)

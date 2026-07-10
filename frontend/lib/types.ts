@@ -312,10 +312,6 @@ export type ApiTokenSummary = {
 
 export type ApiTokenCreateRequest = {
   name: string;
-  user_email?: string;
-  user_display_name?: string;
-  workspace_name?: string;
-  workspace_slug?: string;
   scopes?: string[];
   policy?: ApiTokenPolicy;
   expires_at?: string | null;
@@ -337,14 +333,34 @@ export type ConsoleRegisterRequest = {
   workspace_name?: string;
 };
 
+export type ConsoleUserPreferences = {
+  language: string;
+  timezone: string;
+  default_agent?: string | null;
+};
+
 export type ConsoleUser = {
   user_id: string;
   email: string;
   display_name: string;
+  avatar_url?: string | null;
+  preferences: ConsoleUserPreferences;
   role: string;
   workspace_id: string;
   workspace_name: string;
   workspace_role: string;
+};
+
+export type ConsoleAccountUpdateRequest = {
+  email?: string | null;
+  display_name?: string | null;
+  avatar_url?: string | null;
+  preferences?: ConsoleUserPreferences | null;
+};
+
+export type ConsolePasswordUpdateRequest = {
+  current_password: string;
+  new_password: string;
 };
 
 export type ConsoleUserSummary = {

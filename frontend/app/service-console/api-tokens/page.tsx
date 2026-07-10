@@ -1,5 +1,5 @@
-import { ApiTokensWorkspace } from "@/components/api-tokens-workspace";
+import { redirect } from "next/navigation";
 
 export default function ApiTokensPage() {
-  return <ApiTokensWorkspace />;
+  redirect("/account?tab=api-tokens");
 }
