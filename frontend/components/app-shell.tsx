@@ -15,7 +15,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { isLoading, user } = useAuth();
   const isChatPage = pathname === "/";
-  const isConsolePage = pathname.startsWith("/service-console");
+  const isConsolePage = pathname.startsWith("/service-console") || pathname.startsWith("/account");
   const isAuthPage = pathname === "/login" || pathname === "/register";
 
   useEffect(() => {

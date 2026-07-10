@@ -213,6 +213,8 @@ class UserRow(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     display_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preferences_json: Mapped[dict[str, Any]] = mapped_column("preferences", JSONB, nullable=False, default=dict)
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")

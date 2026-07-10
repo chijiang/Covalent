@@ -14,7 +14,9 @@ import type {
   ConfigDocument,
   ConfigDocumentUpdateMetadata,
   ConfigKind,
+  ConsoleAccountUpdateRequest,
   ConsoleLoginRequest,
+  ConsolePasswordUpdateRequest,
   ConsoleRegisterRequest,
   ConsoleUser,
   ConsoleUserSummary,
@@ -101,6 +103,20 @@ export function registerConsoleUser(request: ConsoleRegisterRequest): Promise<Co
 
 export function logoutConsoleUser(): Promise<{ status: string }> {
   return apiFetchJson<{ status: string }>("auth/logout", { method: "POST" });
+}
+
+export function updateCurrentAccount(request: ConsoleAccountUpdateRequest): Promise<ConsoleUser> {
+  return apiFetchJson<ConsoleUser>("account", {
+    method: "PATCH",
+    body: JSON.stringify(request),
+  });
+}
+
+export function updateCurrentPassword(request: ConsolePasswordUpdateRequest): Promise<{ status: string }> {
+  return apiFetchJson<{ status: string }>("account/password", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
 }
 
 export function listConsoleUsers(): Promise<ConsoleUserSummary[]> {

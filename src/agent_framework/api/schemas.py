@@ -99,14 +99,43 @@ class ConsoleRegisterRequest(BaseModel):
         return normalized
 
 
+class ConsoleUserPreferences(BaseModel):
+    language: str = Field(default="system", min_length=1, max_length=32)
+    timezone: str = Field(default="auto", min_length=1, max_length=128)
+    default_agent: str | None = Field(default=None, max_length=255)
+
+
+class ConsoleAccountUpdateRequest(BaseModel):
+    email: str | None = Field(default=None, min_length=3, max_length=320)
+    display_name: str | None = Field(default=None, max_length=255)
+    avatar_url: str | None = Field(default=None, max_length=2048)
+    preferences: ConsoleUserPreferences | None = None
+
+    @field_validator("email")
+    @classmethod
+    def normalize_optional_email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if "@" not in normalized:
+            raise ValueError("email must be a valid email address")
+        return normalized
+
+    @field_validator("avatar_url")
+    @classmethod
+    def normalize_avatar_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
+class ConsolePasswordUpdateRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=8, max_length=1024)
+
+
 class ApiTokenCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    user_id: str | None = None
-    user_email: str = "admin@local"
-    user_display_name: str = "Local Admin"
-    workspace_id: str | None = None
-    workspace_name: str = "Default workspace"
-    workspace_slug: str = "default"
     scopes: list[str] = Field(default_factory=lambda: ["agent:invoke"])
     policy: dict[str, Any] = Field(default_factory=dict)
     expires_at: datetime | None = None
@@ -137,6 +166,8 @@ class ConsoleUserResponse(BaseModel):
     user_id: str
     email: str
     display_name: str
+    avatar_url: str | None = None
+    preferences: ConsoleUserPreferences = Field(default_factory=ConsoleUserPreferences)
     role: str
     workspace_id: str
     workspace_name: str

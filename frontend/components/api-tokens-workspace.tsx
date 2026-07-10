@@ -16,13 +16,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { createApiToken, getAgents, listApiTokenRuns, listApiTokens, revokeApiToken } from "@/lib/client-api";
 import type { AgentDetail, AgentRunLog, ApiTokenCreateResponse, ApiTokenSummary } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 type TokenFormState = {
   name: string;
-  userEmail: string;
-  userDisplayName: string;
-  workspaceName: string;
-  workspaceSlug: string;
   allowedAgents: string[];
   allowedMemoryModes: Array<"none" | "session">;
   maxTraceLevel: "none" | "steps" | "debug";
@@ -34,10 +31,6 @@ type TokenFormState = {
 
 const DEFAULT_FORM: TokenFormState = {
   name: "",
-  userEmail: "admin@local",
-  userDisplayName: "Local Admin",
-  workspaceName: "Default workspace",
-  workspaceSlug: "default",
   allowedAgents: [],
   allowedMemoryModes: ["none", "session"],
   maxTraceLevel: "steps",
@@ -138,7 +131,7 @@ function resetForm(): TokenFormState {
   return { ...DEFAULT_FORM, name: `api-token-${Date.now()}` };
 }
 
-export function ApiTokensWorkspace() {
+export function ApiTokensWorkspace({ embedded = false }: { embedded?: boolean }) {
   const [tokens, setTokens] = useState<ApiTokenSummary[]>([]);
   const [agents, setAgents] = useState<AgentDetail[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -166,9 +159,7 @@ export function ApiTokensWorkspace() {
     if (!query) {
       return tokens;
     }
-    return tokens.filter((token) =>
-      `${token.name} ${token.user_email} ${token.workspace_name} ${token.token_prefix}`.toLowerCase().includes(query),
-    );
+    return tokens.filter((token) => `${token.name} ${token.workspace_name} ${token.token_prefix}`.toLowerCase().includes(query));
   }, [searchQuery, tokens]);
 
   const refresh = useCallback(async (preferredId?: string | null) => {
@@ -260,10 +251,6 @@ export function ApiTokensWorkspace() {
       const maxTokensPerDay = parseOptionalPositiveInteger(form.maxTokensPerDay);
       const created = await createApiToken({
         name,
-        user_email: form.userEmail.trim() || "admin@local",
-        user_display_name: form.userDisplayName.trim() || "Local Admin",
-        workspace_name: form.workspaceName.trim() || "Default workspace",
-        workspace_slug: form.workspaceSlug.trim() || "default",
         scopes: ["agent:invoke"],
         expires_at: form.expiresAt ? new Date(form.expiresAt).toISOString() : null,
         policy: {
@@ -291,22 +278,36 @@ export function ApiTokensWorkspace() {
   }
 
   return (
-    <section className="page-section console-page-shell skill-settings-shell flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-      <PageHeaderActions>
-        <Button disabled={loading || !!busyAction} onClick={handleCreateToken} type="button">
-          {busyAction === "create" ? "Creating" : "Create token"}
-        </Button>
-      </PageHeaderActions>
+    <section
+      className={cn(
+        "console-page-shell skill-settings-shell flex min-h-0 flex-col overflow-hidden",
+        embedded
+          ? "api-tokens-embedded-shell w-full flex-1 gap-3"
+          : "page-section flex-1 gap-4",
+      )}
+    >
+      {!embedded ? (
+        <PageHeaderActions>
+          <Button disabled={loading || !!busyAction} onClick={handleCreateToken} type="button">
+            {busyAction === "create" ? "Creating" : "Create token"}
+          </Button>
+        </PageHeaderActions>
+      ) : null}
 
-      {message ? <ConsoleAlert variant="info">{message}</ConsoleAlert> : null}
-      {error ? <ConsoleAlert variant="error">{error}</ConsoleAlert> : null}
+      {message ? <ConsoleAlert className="shrink-0" variant="info">{message}</ConsoleAlert> : null}
+      {error ? <ConsoleAlert className="shrink-0" variant="error">{error}</ConsoleAlert> : null}
       {createdToken ? (
-        <ConsoleAlert variant="warning">
+        <ConsoleAlert className="shrink-0" variant="warning">
           New token: <code>{createdToken.token}</code>
         </ConsoleAlert>
       ) : null}
 
-      <section className="console-split-layout min-h-0 flex-1">
+      <section
+        className={cn(
+          "console-split-layout min-h-0 flex-1",
+          embedded && "console-split-layout-embedded",
+        )}
+      >
         <ConsolePanel className="skill-inventory-panel">
           <PanelHeader
             badge={<Badge>{activeCount} active</Badge>}
@@ -320,7 +321,7 @@ export function ApiTokensWorkspace() {
 
           <div className="console-toolbar skill-toolbar">
             <label className="search-field console-search-field grow-block">
-              <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search tokens, owners, or prefixes" value={searchQuery} />
+              <Input onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search token names or prefixes" value={searchQuery} />
             </label>
           </div>
 
@@ -336,7 +337,7 @@ export function ApiTokensWorkspace() {
                 ? filteredTokens.map((token) => (
                     <InventoryListItem
                       active={token.id === selectedId}
-                      description={`${token.user_email} · ${token.workspace_name}`}
+                      description={`${token.workspace_name} · Created ${formatDate(token.created_at)}`}
                       key={token.id}
                       meta={
                         <>
@@ -364,9 +365,11 @@ export function ApiTokensWorkspace() {
           </ScrollArea>
         </ConsolePanel>
 
-        <div aria-hidden className="console-panel-resizer pointer-events-none opacity-0">
-          <span className="console-panel-resizer-grip" />
-        </div>
+        {!embedded ? (
+          <div aria-hidden className="console-panel-resizer pointer-events-none opacity-0">
+            <span className="console-panel-resizer-grip" />
+          </div>
+        ) : null}
 
         <ConsolePanel className="skill-detail-panel provider-detail-panel">
           <ScrollArea className="provider-detail-scroll">
@@ -378,6 +381,11 @@ export function ApiTokensWorkspace() {
                     Tokens authenticate external calls to <code>POST /v1/agent/invoke</code>.
                   </p>
                 </div>
+                {embedded ? (
+                  <Button disabled={loading || !!busyAction} onClick={handleCreateToken} type="button">
+                    {busyAction === "create" ? "Creating" : "Create token"}
+                  </Button>
+                ) : null}
               </div>
 
               <div className="console-form-section">
@@ -394,23 +402,10 @@ export function ApiTokensWorkspace() {
                       <Label htmlFor="token-expires">Expires at</Label>
                       <Input id="token-expires" onChange={(event) => setForm((current) => ({ ...current, expiresAt: event.target.value }))} type="datetime-local" value={form.expiresAt} />
                     </div>
-                    <div className="space-y-1.5">
-                      <Label htmlFor="token-user-email">User email</Label>
-                      <Input id="token-user-email" onChange={(event) => setForm((current) => ({ ...current, userEmail: event.target.value }))} value={form.userEmail} />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label htmlFor="token-user-name">Display name</Label>
-                      <Input id="token-user-name" onChange={(event) => setForm((current) => ({ ...current, userDisplayName: event.target.value }))} value={form.userDisplayName} />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label htmlFor="token-workspace-name">Workspace</Label>
-                      <Input id="token-workspace-name" onChange={(event) => setForm((current) => ({ ...current, workspaceName: event.target.value }))} value={form.workspaceName} />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label htmlFor="token-workspace-slug">Workspace slug</Label>
-                      <Input id="token-workspace-slug" onChange={(event) => setForm((current) => ({ ...current, workspaceSlug: event.target.value }))} value={form.workspaceSlug} />
-                    </div>
                   </div>
+                  <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
+                    This token belongs to your account and current workspace. It cannot be reassigned to another user.
+                  </p>
                 </div>
               </div>
 

@@ -3238,6 +3238,21 @@ textarea {
   overflow: hidden;
 }
 
+.api-tokens-embedded-shell.skill-settings-shell {
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  height: auto;
+  padding-bottom: 0;
+  align-self: stretch;
+  flex: 1 1 0%;
+}
+
+.console-page-shell .console-split-layout.console-split-layout-embedded {
+  grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
+  gap: 12px;
+}
+
 .console-split-layout > .console-panel,
 .console-split-layout > .skill-detail-panel,
 .console-split-layout > .skill-inventory-panel,
@@ -4219,6 +4234,11 @@ textarea {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(220px, 0.8fr) minmax(0, 1.2fr);
     gap: 12px;
+  }
+
+  .console-page-shell .console-split-layout.console-split-layout-embedded {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(180px, 0.7fr) minmax(0, 1.3fr);
   }
 
   .console-panel-resizer {

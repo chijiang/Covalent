@@ -21,6 +21,7 @@ from agent_framework.api.app import (
     _ensure_console_principal_can_access_session,
     _ensure_skill_state_mutation_allowed,
     _list_audit_logs,
+    _list_api_token_runs,
     _normalize_token_policy,
     _normalize_token_scopes,
     _pick_agent_row_for_principal,
@@ -28,6 +29,7 @@ from agent_framework.api.app import (
     _parse_mcp_servers,
     _public_stream_events,
     _record_public_agent_run,
+    _revoke_api_token,
     _resolve_console_identity,
     _validate_config_payload,
 )
@@ -42,7 +44,7 @@ from agent_framework.api.auth import (
 )
 from agent_framework.core.agent import AgentSpec
 from agent_framework.core.types import GenerationResponse, TokenUsage
-from agent_framework.infra.db import AgentRow, AgentRunLogRow, ApiTokenRow, AuditLogRow, McpServerRow, UserRow
+from agent_framework.infra.db import AgentRow, AgentRunLogRow, ApiTokenRow, AuditLogRow, McpServerRow, UserRow, WorkspaceRow
 from agent_framework.infra.config_store import (
     ConfigPrincipal,
     PersistedAgentConfig,
@@ -674,6 +676,8 @@ class _PublicApiFakeSession:
     async def get(self, model, key):
         if model is UserRow:
             return self.state.users.get(key)
+        if model is WorkspaceRow:
+            return self.state.workspaces.get(key)
         if model is AgentRow:
             return self.state.agents.get(key)
         if model is ApiTokenRow:
@@ -752,6 +756,7 @@ class _PublicApiFakeSession:
 class _PublicApiFakeDbState:
     def __init__(self) -> None:
         self.users: dict[str, UserRow] = {}
+        self.workspaces: dict[str, WorkspaceRow] = {}
         self.tokens_by_id: dict[str, ApiTokenRow] = {}
         self.tokens_by_prefix: dict[str, ApiTokenRow] = {}
         self.agents: dict[str, AgentRow] = {}
@@ -942,7 +947,7 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
 
         self.assertEqual(context.exception.status_code, 429)
 
-    def test_audit_logs_are_scoped_for_members_and_filterable_for_admins(self) -> None:
+    def test_audit_logs_are_admin_only_and_filterable_for_admins(self) -> None:
         state = _PublicApiFakeDbState()
         state.audit_logs.extend(
             [
@@ -1004,12 +1009,48 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
                 target_type="agent",
             )
 
-        member_logs = anyio.run(list_member_logs)
+        with self.assertRaises(HTTPException) as context:
+            anyio.run(list_member_logs)
         admin_logs = anyio.run(list_denied_admin_logs)
 
-        self.assertEqual([log.id for log in member_logs], ["audit_1"])
+        self.assertEqual(context.exception.status_code, 403)
         self.assertEqual([log.id for log in admin_logs], ["audit_1"])
         self.assertEqual(admin_logs[0].metadata, {"status_code": 429})
+
+    def test_api_token_routes_do_not_allow_admins_to_manage_other_user_tokens(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.add_token(
+            raw_token="cvt_test_secret",
+            token_prefix="test",
+            token_id="token_1",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            policy={},
+        )
+        admin = ConsolePrincipalContext(
+            user_id="admin",
+            email="admin@example.com",
+            display_name="Admin",
+            role="admin",
+            workspace_id="workspace_admin",
+            workspace_name="Admin Workspace",
+            workspace_slug="admin",
+            workspace_role="admin",
+        )
+
+        async def revoke_other_user_token():
+            return await _revoke_api_token(SimpleNamespace(session_factory=state.session_factory), "token_1", admin)
+
+        async def list_other_user_token_runs():
+            return await _list_api_token_runs(SimpleNamespace(session_factory=state.session_factory), "token_1", admin)
+
+        with self.assertRaises(HTTPException) as revoke_context:
+            anyio.run(revoke_other_user_token)
+        with self.assertRaises(HTTPException) as runs_context:
+            anyio.run(list_other_user_token_runs)
+
+        self.assertEqual(revoke_context.exception.status_code, 404)
+        self.assertEqual(runs_context.exception.status_code, 404)
 
 
 if __name__ == "__main__":
