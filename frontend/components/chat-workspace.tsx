@@ -225,8 +225,8 @@ function ChatBubbleCopy({ content, tone }: { content: string; tone: "inbound" | 
         width: 28,
         height: 28,
         borderRadius: 6,
-        border: isOutbound ? "1px solid rgba(255, 255, 255, 0.32)" : "1px solid rgba(16, 16, 16, 0.12)",
-        background: isOutbound ? "rgba(255, 255, 255, 0.22)" : "#ffffff",
+        border: isOutbound ? "1px solid rgba(255, 255, 255, 0.32)" : "1px solid var(--border-soft)",
+        background: isOutbound ? "rgba(255, 255, 255, 0.22)" : "var(--surface-primary)",
         boxShadow: isOutbound ? "0 6px 14px rgba(0, 0, 0, 0.16)" : "0 6px 14px rgba(16, 16, 16, 0.1)",
         color: isOutbound ? "var(--fg-inverse)" : "var(--fg-primary)",
         cursor: "pointer",
@@ -264,8 +264,10 @@ function ChatCodeBlock({ children, tone, ...props }: ComponentPropsWithoutRef<"p
     minWidth: 0,
     overflow: "hidden",
     borderRadius: 12,
-    background: isOutbound ? "rgba(255, 255, 255, 0.1)" : "#f6f6f6",
-    boxShadow: isOutbound ? "inset 0 0 0 1px rgba(255, 255, 255, 0.12)" : "inset 0 0 0 1px rgba(16, 16, 16, 0.06)",
+    background: isOutbound ? "rgba(255, 255, 255, 0.1)" : "var(--surface-tertiary)",
+    boxShadow: isOutbound
+      ? "inset 0 0 0 1px rgba(255, 255, 255, 0.12)"
+      : "inset 0 0 0 1px color-mix(in oklch, var(--fg-primary), transparent 92%)",
   };
   const toolbarStyle: CSSProperties = {
     position: "absolute",
@@ -277,8 +279,8 @@ function ChatCodeBlock({ children, tone, ...props }: ComponentPropsWithoutRef<"p
     minHeight: 28,
     padding: "0 10px",
     borderRadius: 8,
-    border: isOutbound ? "1px solid rgba(255, 255, 255, 0.18)" : "1px solid rgba(16, 16, 16, 0.08)",
-    background: isOutbound ? "rgba(255, 255, 255, 0.14)" : "#ffffff",
+    border: isOutbound ? "1px solid rgba(255, 255, 255, 0.18)" : "1px solid var(--border-soft)",
+    background: isOutbound ? "rgba(255, 255, 255, 0.14)" : "var(--surface-primary)",
     color: isOutbound ? "var(--fg-inverse)" : "var(--fg-primary)",
     fontSize: 11,
     fontWeight: 700,
