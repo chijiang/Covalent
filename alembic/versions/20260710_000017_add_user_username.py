@@ -21,9 +21,6 @@ def upgrade() -> None:
     if "username" not in columns:
         op.add_column("users", sa.Column("username", sa.String(length=64), nullable=True))
 
-    # Backfill existing rows so the unique index can be created without conflicts.
-    op.execute("UPDATE users SET username = email WHERE username IS NULL")
-
     indexes = {index["name"] for index in inspector.get_indexes("users")}
     if "uq_users_username_lower" not in indexes:
         op.create_index(
