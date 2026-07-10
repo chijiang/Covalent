@@ -20,7 +20,8 @@ import zipfile
 import anyio
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 import jwt
 from jwt import PyJWTError
 from pydantic import ValidationError
@@ -209,6 +210,15 @@ RESOURCE_METADATA_FIELDS = (
     "publication_reviewed_by_user_id",
 )
 
+PUBLIC_PATHS: frozenset[str] = frozenset(
+    {
+        "/healthz",
+        "/auth/login",
+        "/auth/register",
+        "/auth/logout",
+    }
+)
+
 
 def _safe_extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
     target_dir = target_dir.resolve()
@@ -341,8 +351,40 @@ async def lifespan(app: FastAPI):
     await db_manager.dispose()
 
 
+class ConsoleAuthGuardMiddleware(BaseHTTPMiddleware):
+    """Gate every non-public, non-/v1 route behind a valid console identity.
+
+    /v1/* is intentionally left to the per-route API-token logic. This is a
+    default-deny gate: any future route that forgets to resolve a principal
+    is still protected unless explicitly whitelisted.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        # Normalize trailing slash so "/auth/login/" is still recognized.
+        normalized_path = path.rstrip("/") or "/"
+        settings: AppSettings | None = getattr(request.app.state, "settings", None)
+
+        if settings is not None and (settings.console_auth_mode or "local").strip().lower() == "dev":
+            return await call_next(request)
+        if normalized_path in PUBLIC_PATHS or path in PUBLIC_PATHS:
+            return await call_next(request)
+        if path.startswith("/v1/"):
+            return await call_next(request)
+
+        if settings is None:
+            return JSONResponse(status_code=503, content={"detail": "Service is not ready"})
+
+        try:
+            _resolve_console_identity(request, settings)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return await call_next(request)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Covalent", version="0.3.0", lifespan=lifespan)
+    app.add_middleware(ConsoleAuthGuardMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -953,9 +995,11 @@ def create_app() -> FastAPI:
         ]
 
     @app.get("/local-tools")
-    async def list_local_tools() -> list[LocalToolSummaryResponse]:
+    async def list_local_tools(request: Request) -> list[LocalToolSummaryResponse]:
         registry: FrameworkRegistry = app.state.registry
         settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
         return _available_local_tool_summaries(registry, settings)
 
     @app.get("/agents/{agent_name}")
@@ -1788,6 +1832,7 @@ class ConsolePrincipalContext:
     workspace_name: str
     workspace_slug: str
     workspace_role: str
+    username: str | None = None
     avatar_url: str | None = None
     preferences: dict[str, Any] = field(default_factory=dict)
 
@@ -1803,6 +1848,7 @@ class ConsolePrincipalContext:
 def _console_user_response(principal: ConsolePrincipalContext) -> ConsoleUserResponse:
     return ConsoleUserResponse(
         user_id=principal.user_id,
+        username=principal.username,
         email=principal.email,
         display_name=principal.display_name,
         avatar_url=principal.avatar_url,
@@ -1821,6 +1867,7 @@ def _console_user_summary_response(
 ) -> ConsoleUserSummaryResponse:
     return ConsoleUserSummaryResponse(
         user_id=user.id,
+        username=user.username,
         email=user.email,
         display_name=user.display_name,
         role=user.role,
@@ -1900,10 +1947,16 @@ async def _resolve_console_principal(request: Request, db_manager: DatabaseManag
 
     async with db_manager.session_factory() as session:
         async with session.begin():
-            existing_user_count = await session.scalar(select(func.count(UserRow.id)))
-            default_admin = not header_user_id and not header_email and int(existing_user_count or 0) == 0
-            fallback_email = header_email or "admin@local"
-            fallback_display_name = header_display_name or "Local Admin"
+            is_dev_identity = not header_user_id and not header_email
+            if is_dev_identity:
+                # Only reachable when the middleware lets an anonymous request through
+                # (console_auth_mode == "dev"). Resolve to the shared local admin account
+                # so dev mode keeps working without surfacing real user identity.
+                fallback_email = "admin@local"
+                fallback_display_name = header_display_name or "Local Admin"
+            else:
+                fallback_email = header_email
+                fallback_display_name = header_display_name or header_email
 
             user: UserRow | None = await session.get(UserRow, header_user_id) if header_user_id else None
             if user is None:
@@ -1914,7 +1967,7 @@ async def _resolve_console_principal(request: Request, db_manager: DatabaseManag
                     id=header_user_id or _new_chat_item_id("user"),
                     email=fallback_email,
                     display_name=fallback_display_name,
-                    role="admin" if default_admin or header_role == "admin" else "member",
+                    role="admin" if is_dev_identity or header_role == "admin" else "member",
                     status="active",
                 )
                 session.add(user)
@@ -1958,6 +2011,7 @@ async def _resolve_console_principal(request: Request, db_manager: DatabaseManag
                 workspace_name=workspace.name,
                 workspace_slug=workspace.slug,
                 workspace_role=member.role,
+                username=user.username,
             )
 
 
@@ -2126,6 +2180,7 @@ async def _principal_for_user(
         workspace_name=workspace.name,
         workspace_slug=workspace.slug,
         workspace_role=member.role,
+        username=user.username,
     )
 
 
@@ -2137,16 +2192,23 @@ async def _register_console_user(
     if not settings.console_signup_enabled:
         raise HTTPException(status_code=403, detail="Console sign up is disabled")
     email = request.email.strip().lower()
-    display_name = request.display_name.strip() or email.split("@", 1)[0]
+    username = request.username.strip().lower()
+    display_name = request.display_name.strip() or username
     async with db_manager.session_factory() as session:
         async with session.begin():
             existing = await session.scalar(select(UserRow).where(UserRow.email == email))
             if existing is not None:
                 raise HTTPException(status_code=409, detail="A user with this email already exists")
+            existing_username = await session.scalar(
+                select(UserRow).where(func.lower(UserRow.username) == username)
+            )
+            if existing_username is not None:
+                raise HTTPException(status_code=409, detail="A user with this username already exists")
             existing_user_count = await session.scalar(select(func.count(UserRow.id)))
             user = UserRow(
                 id=_new_chat_item_id("user"),
                 email=email,
+                username=username,
                 display_name=display_name,
                 password_hash=hash_password(request.password),
                 role="admin" if int(existing_user_count or 0) == 0 else "member",
@@ -2165,12 +2227,15 @@ async def _authenticate_console_password(
     db_manager: DatabaseManager,
     request: ConsoleLoginRequest,
 ) -> ConsolePrincipalContext:
-    email = request.email.strip().lower()
+    identifier = request.identifier.strip().lower()
     async with db_manager.session_factory() as session:
         async with session.begin():
-            user = await session.scalar(select(UserRow).where(UserRow.email == email))
+            if "@" in identifier:
+                user = await session.scalar(select(UserRow).where(UserRow.email == identifier))
+            else:
+                user = await session.scalar(select(UserRow).where(func.lower(UserRow.username) == identifier))
             if user is None or not verify_password(request.password, user.password_hash):
-                raise HTTPException(status_code=401, detail="Invalid email or password")
+                raise HTTPException(status_code=401, detail="Invalid username/email or password")
             return await _principal_for_user(session, user)
 
 
@@ -2184,6 +2249,17 @@ async def _update_current_account(
             user = await session.get(UserRow, principal.user_id)
             if user is None:
                 raise HTTPException(status_code=404, detail="Current user was not found")
+
+            if request.username is not None and request.username != (user.username or ""):
+                existing_user_id = await session.scalar(
+                    select(UserRow.id).where(
+                        func.lower(UserRow.username) == request.username,
+                        UserRow.id != user.id,
+                    )
+                )
+                if existing_user_id is not None:
+                    raise HTTPException(status_code=409, detail="A user with this username already exists")
+                user.username = request.username
 
             if request.email is not None and request.email != user.email:
                 existing_user_id = await session.scalar(
@@ -2238,16 +2314,20 @@ async def _seed_initial_admin_user(db_manager: DatabaseManager, settings: AppSet
     if not settings.console_seed_admin_enabled:
         return
     username = settings.console_seed_admin_username.strip().lower()
+    email = settings.console_seed_admin_email.strip().lower() or f"{username}@local"
     password = settings.console_seed_admin_password
     if not username or not password:
         return
     async with db_manager.session_factory() as session:
         async with session.begin():
-            user = await session.scalar(select(UserRow).where(UserRow.email == username))
+            user = await session.scalar(select(UserRow).where(UserRow.email == email))
+            if user is None and username:
+                user = await session.scalar(select(UserRow).where(func.lower(UserRow.username) == username))
             if user is None:
                 user = UserRow(
                     id=_new_chat_item_id("user"),
-                    email=username,
+                    email=email,
+                    username=username,
                     display_name=settings.console_seed_admin_display_name.strip() or username,
                     password_hash=hash_password(password),
                     role="admin",
@@ -2259,6 +2339,10 @@ async def _seed_initial_admin_user(db_manager: DatabaseManager, settings: AppSet
                     user.password_hash = hash_password(password)
                 if not user.display_name.strip():
                     user.display_name = settings.console_seed_admin_display_name.strip() or username
+                if not user.username:
+                    user.username = username
+                if not user.email or "@" not in user.email:
+                    user.email = email
                 user.role = "admin"
                 user.status = "active"
 

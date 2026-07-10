@@ -58,6 +58,12 @@ from agent_framework.infra.settings import AppSettings
 from agent_framework.infra.config_store import _is_editable_by_principal
 from agent_framework.model.base import ProviderConfig
 from agent_framework.registry.registry import FrameworkRegistry
+from agent_framework.api.schemas import (
+    ConsoleAccountUpdateRequest,
+    ConsoleLoginRequest,
+    ConsoleRegisterRequest,
+    normalize_username,
+)
 
 
 class ApiTokenPolicyTests(unittest.TestCase):
@@ -386,6 +392,47 @@ class ConsoleAuthAndAuditTests(unittest.TestCase):
         self.assertEqual(fake_session.rows[1].metadata_json["run_id"], "run_1")
 
 
+class UsernameSupportTests(unittest.TestCase):
+    def test_normalize_username_accepts_valid_and_lowercases(self) -> None:
+        self.assertEqual(normalize_username("  Ada_Lovelace  "), "ada_lovelace")
+        self.assertEqual(normalize_username("a1-_b"), "a1-_b")
+        self.assertEqual(normalize_username("x" * 32), "x" * 32)
+
+    def test_normalize_username_rejects_invalid(self) -> None:
+        for bad in ["ab", "x" * 33, "Ada!", "用户名", "has space", ".dot", ""]:
+            with self.assertRaises(ValueError):
+                normalize_username(bad)
+
+    def test_register_request_requires_and_normalizes_username(self) -> None:
+        payload = ConsoleRegisterRequest(
+            username="  Ada  ",
+            email="ada@example.com",
+            password="supersecret",
+        )
+        self.assertEqual(payload.username, "ada")
+        self.assertEqual(payload.email, "ada@example.com")
+
+    def test_register_request_rejects_bad_username(self) -> None:
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            ConsoleRegisterRequest(username="no", email="ada@example.com", password="supersecret")
+
+    def test_login_request_uses_identifier_without_at(self) -> None:
+        # A bare username (no @) must pass schema validation; the email-or-username
+        # decision happens in _authenticate_console_password, not the schema.
+        payload = ConsoleLoginRequest(identifier="  Ada  ", password="pw")
+        self.assertEqual(payload.identifier, "ada")
+
+    def test_account_update_username_is_optional_and_validated(self) -> None:
+        self.assertIsNone(ConsoleAccountUpdateRequest().username)
+        self.assertEqual(ConsoleAccountUpdateRequest(username="Ada").username, "ada")
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            ConsoleAccountUpdateRequest(username="bad name")
+
+
 class MultiUserPermissionTests(unittest.TestCase):
     def test_console_session_guard_rejects_other_user_session(self) -> None:
         principal = ConsolePrincipalContext(
@@ -647,6 +694,68 @@ class MultiUserPermissionTests(unittest.TestCase):
         self.assertEqual(agents[0].mcp_tools[0].server_name, "filesystem__user_user_2")
 
 
+def _build_guard_app(settings):
+    app = create_app()
+    app.state.settings = settings
+    app.state.db_manager = SimpleNamespace(session_factory=lambda: _PublicApiFakeSession(_PublicApiFakeDbState()))
+    app.state.registry = FrameworkRegistry()
+    app.state.runtime = SimpleNamespace()
+    return app, TestClient(app)
+
+
+def _session_cookie(settings: AppSettings, *, user_id: str = "user_1", email: str = "u1@example.com") -> str:
+    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+
+    principal = ConsolePrincipalContext(
+        user_id=user_id,
+        email=email,
+        display_name="User One",
+        role="member",
+        workspace_id="workspace_1",
+        workspace_name="Workspace 1",
+        workspace_slug="workspace-1",
+        workspace_role="member",
+    )
+    return _make_console_session_token(settings, principal)
+
+
+class ConsoleAuthGuardMiddlewareTests(unittest.TestCase):
+    def test_anonymous_request_to_protected_route_is_rejected(self) -> None:
+        app, client = _build_guard_app(AppSettings(console_auth_mode="local"))
+        for path in ["/me", "/sessions", "/local-tools", "/agents", "/config/agents"]:
+            response = client.get(path)
+            self.assertEqual(response.status_code, 401, path)
+
+    def test_public_whitelist_is_allowed_without_session(self) -> None:
+        app, client = _build_guard_app(AppSettings(console_auth_mode="local"))
+        response = client.get("/healthz")
+        self.assertNotEqual(response.status_code, 401)
+
+    def test_v1_route_is_not_gated_by_console_middleware(self) -> None:
+        # /v1/agent/invoke must fall through to its own API-token logic, not the console gate.
+        app, client = _build_guard_app(AppSettings(console_auth_mode="local"))
+        response = client.post(
+            "/v1/agent/invoke",
+            json={"agent": "researcher", "input": "hi", "memory": {"mode": "none"}, "trace": {"level": "none"}},
+        )
+        # Missing bearer token -> handled by the route's own auth, returns 401 but is NOT a middleware reject.
+        self.assertEqual(response.status_code, 401)
+
+    def test_dev_mode_is_not_gated(self) -> None:
+        app, client = _build_guard_app(AppSettings(console_auth_mode="dev"))
+        response = client.get("/me")
+        # dev mode bypasses the gate; request proceeds into the route (may fail later on db, but not 401-gated).
+        self.assertNotEqual(response.status_code, 401)
+
+    def test_valid_session_cookie_is_allowed(self) -> None:
+        settings = AppSettings(console_auth_mode="local")
+        app, client = _build_guard_app(settings)
+        cookie_name = settings.console_session_cookie_name
+        response = client.get("/me", cookies={cookie_name: _session_cookie(settings)})
+        # Gate passes; route proceeds (downstream behavior depends on db, but must not be a 401 gate).
+        self.assertNotEqual(response.status_code, 401)
+
+
 class _FakeTransaction:
     async def __aenter__(self):
         return self
@@ -672,6 +781,9 @@ class _PublicApiFakeSession:
 
     def begin(self):
         return _FakeTransaction()
+
+    async def flush(self):
+        return None
 
     async def get(self, model, key):
         if model is UserRow:

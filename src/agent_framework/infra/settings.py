@@ -46,6 +46,7 @@ class AppSettings(BaseSettings):
     console_signup_enabled: bool = True
     console_seed_admin_enabled: bool = True
     console_seed_admin_username: str = "admin"
+    console_seed_admin_email: str = "admin@local"
     console_seed_admin_password: str = "admin123"
     console_seed_admin_display_name: str = "Admin"
     console_seed_admin_workspace_name: str = "Default workspace"

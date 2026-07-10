@@ -26,7 +26,7 @@ This is an agentic framework with subprocess-isolated skills, MCP integration, a
 uv sync
 
 # Configure (copy and edit .env)
-cp env.example .env
+cp .env.example .env
 
 # Run backend (requires AGENT_FRAMEWORK_DATABASE_URL)
 uv run python main.py serve
@@ -69,7 +69,33 @@ All settings are loaded from environment variables with the prefix `AGENT_FRAMEW
 | `AGENT_FRAMEWORK_BACKEND_PORT` | `5170` | Backend port used by `main.py serve` and `dev.sh` |
 | `AGENT_FRAMEWORK_FRONTEND_PORT` | `3100` | Frontend dev port used by `dev.sh` |
 
-See [env.example](env.example) for a starter `.env` template.
+See [.env.example](.env.example) for a starter `.env` template (copy it to `.env`).
+
+### Authentication
+
+The backend has two access planes, each with its own auth:
+
+- **External integration API — `/v1/*`**: authenticated per request with an **API token** created in the Service Console, sent as `Authorization: Bearer cvt_...`. Tokens carry scopes and policies (allowed agents, memory modes, trace level, rate limits). See [Production Agent Invoke API](#production-agent-invoke-api).
+- **Everything else** (Service Console routes — `/agents`, `/sessions`, `/config/*`, `/skills/*`, `/users`, `/api-tokens`, etc.): gated by a **console login**. A default-deny middleware rejects any unauthenticated request with `401` before it reaches the route. The only public exceptions are `/healthz` and `/auth/{login,register,logout}`.
+
+The console auth mode is controlled by `AGENT_FRAMEWORK_CONSOLE_AUTH_MODE`:
+
+| Mode | Behavior |
+|------|----------|
+| `dev` | Gate **disabled**. Anonymous requests resolve to a shared local admin. **Local development only — never use in production.** |
+| `local` / `session` / `password` | Cookie session issued by `POST /auth/login` (default). |
+| `trusted_header` | Trust `x-covalent-*` identity headers injected by your reverse proxy. |
+| `jwt` | Validate an external JWT bearer token (requires `AGENT_FRAMEWORK_CONSOLE_AUTH_JWT_SECRET`). |
+
+Security settings that **must** be changed for any non-`dev` deployment:
+
+| Variable | Default | Why it matters |
+|----------|---------|----------------|
+| `AGENT_FRAMEWORK_CONSOLE_AUTH_MODE` | `local` | Set explicitly. `dev` disables all console auth. |
+| `AGENT_FRAMEWORK_CONSOLE_SESSION_SECRET` | `dev-session-secret-change-me` | Signs session cookies; with the default value sessions can be forged. |
+| `AGENT_FRAMEWORK_API_TOKEN_HASH_PEPPER` | `dev-token-pepper-change-me` | Hashes API tokens; rotating it invalidates all existing tokens. |
+
+An initial admin is seeded on first boot from `AGENT_FRAMEWORK_CONSOLE_SEED_ADMIN_*` (enabled by default with `admin` / `admin123` — change the password). Self-service sign-up via `/auth/register` is controlled by `AGENT_FRAMEWORK_CONSOLE_SIGNUP_ENABLED`.
 
 Prefer registering providers in the Service Console. The `DEFAULT_*` model variables above are fallbacks used when the `providers` table is empty or an agent inherits the default route without an explicit provider override.
 

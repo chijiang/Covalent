@@ -322,11 +322,12 @@ export type ApiTokenCreateResponse = ApiTokenSummary & {
 };
 
 export type ConsoleLoginRequest = {
-  email: string;
+  identifier: string;
   password: string;
 };
 
 export type ConsoleRegisterRequest = {
+  username: string;
   email: string;
   password: string;
   display_name?: string;
@@ -341,6 +342,7 @@ export type ConsoleUserPreferences = {
 
 export type ConsoleUser = {
   user_id: string;
+  username?: string | null;
   email: string;
   display_name: string;
   avatar_url?: string | null;
@@ -352,6 +354,7 @@ export type ConsoleUser = {
 };
 
 export type ConsoleAccountUpdateRequest = {
+  username?: string | null;
   email?: string | null;
   display_name?: string | null;
   avatar_url?: string | null;
@@ -365,6 +368,7 @@ export type ConsolePasswordUpdateRequest = {
 
 export type ConsoleUserSummary = {
   user_id: string;
+  username?: string | null;
   email: string;
   display_name: string;
   role: "admin" | "member" | string;
