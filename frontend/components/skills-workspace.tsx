@@ -37,7 +37,7 @@ const SKILL_LIST_PANEL_STORAGE_KEY = "agent-framework.service-console.skills-lis
 const DEFAULT_SKILL_LIST_PANEL_WIDTH = 324;
 const MIN_SKILL_LIST_PANEL_WIDTH = 272;
 const MAX_SKILL_LIST_PANEL_WIDTH = 500;
-const MIN_SKILL_DETAIL_PANEL_WIDTH = 700;
+const MIN_SKILL_DETAIL_PANEL_WIDTH = 560;
 
 type PreviewTreeNode = {
   name: string;
