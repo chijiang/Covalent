@@ -53,12 +53,14 @@ import type {
   HealthResponse,
   PendingQuestionRequest,
 } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
   attachments?: ComposerAttachment[];
+  askUserPrompt?: PendingQuestionRequest | null;
 };
 
 type ComposerAttachment = {
@@ -96,8 +98,24 @@ const MIN_TRACE_PANEL_WIDTH = 280;
 const MAX_TRACE_PANEL_WIDTH = 640;
 const MIN_CONVERSATION_PANEL_WIDTH = 560;
 const CODE_BLOCK_COPY_RESET_MS = 1600;
+const TRACE_PAYLOAD_PREVIEW_CHARS = 600;
 
 type ChatCodeBlockTone = "inbound" | "outbound";
+type TraceActor = "agent" | "system" | "tool" | "user";
+
+type EnrichedTraceEntry = ActivityItem & {
+  label: string;
+  displayTime: string;
+  actor: TraceActor;
+  actorLabel: string;
+  eventTitle: string;
+};
+
+type TraceTurnGroup = {
+  turnIndex: number;
+  userPreview: string;
+  entries: EnrichedTraceEntry[];
+};
 
 function getMaxTracePanelWidth(containerWidth: number): number {
   if (!Number.isFinite(containerWidth) || containerWidth <= 0) {
@@ -897,6 +915,7 @@ function formatTime(value: number): string {
   return new Intl.DateTimeFormat("en-US", {
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
     hour12: false,
   }).format(value);
 }
@@ -927,11 +946,252 @@ function formatDurationLabel(value: unknown): string | null {
 }
 
 function formatTracePayload(payload: unknown): string {
-  const text = typeof payload === "string" ? payload : `${JSON.stringify(payload, null, 2)}\n`;
-  if (text.length <= 4_000) {
-    return text;
+  return typeof payload === "string" ? payload : `${JSON.stringify(payload, null, 2)}\n`;
+}
+
+function buildSyntheticMessageTraceEntries(
+  messages: Message[],
+  activityItems: ActivityItem[] = [],
+): ActivityItem[] {
+  const syntheticItems: ActivityItem[] = messages
+    .filter((message) => message.role === "user")
+    .map((message) => ({
+      id: `${message.id}-trace`,
+      title: "user_message",
+      payload: {
+        text: message.content,
+        attachment_count: message.attachments?.length || 0,
+        source: message.askUserPrompt ? "ask_user_response" : "chat_query",
+      },
+    }));
+
+  const hasRuntimeFinal = activityItems.some((item) => getBaseEventTitle(item.title) === "final");
+  if (hasRuntimeFinal) {
+    return syntheticItems;
   }
-  return `${text.slice(0, 4_000).trimEnd()}\n... truncated ...\n`;
+
+  const latestAssistantMessage = [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === "assistant" &&
+        message.content.trim().length > 0 &&
+        !message.askUserPrompt,
+    );
+  if (!latestAssistantMessage) {
+    return syntheticItems;
+  }
+
+  const latestActivityTimestamp = activityItems.reduce(
+    (latest, item) => Math.max(latest, getTimestampFromId(item.id, 0)),
+    0,
+  );
+  const assistantTimestamp = getTimestampFromId(latestAssistantMessage.id, 0);
+  const finalTimestamp = Math.max(latestActivityTimestamp + 1, assistantTimestamp);
+
+  return [
+    ...syntheticItems,
+    {
+      id: `final-${finalTimestamp}-synthetic`,
+      title: "final",
+      payload: {
+        output_text: latestAssistantMessage.content,
+        source: "conversation_message",
+      },
+    },
+  ];
+}
+
+function isAskUserToolResult(payload: Record<string, unknown> | null): boolean {
+  if (!payload || !Array.isArray(payload.results)) {
+    return false;
+  }
+  return payload.results.some((result) => {
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      return false;
+    }
+    const record = result as Record<string, unknown>;
+    return record.input_request !== undefined && record.input_request !== null;
+  });
+}
+
+function getTraceActor(title: string, rawPayload?: unknown): TraceActor {
+  const baseTitle = getBaseEventTitle(title);
+  if (baseTitle === "user_message" || baseTitle === "input_resolved") {
+    return "user";
+  }
+  if (baseTitle === "tool_results") {
+    return isAskUserToolResult(asTracePayloadRecord(rawPayload)) ? "user" : "tool";
+  }
+  if (baseTitle === "assistant" || baseTitle === "final" || baseTitle === "tool_calls") {
+    return "agent";
+  }
+  if (baseTitle === "thought") {
+    const payload = asTracePayloadRecord(rawPayload);
+    return payload?.kind === "model_reasoning" ? "agent" : "system";
+  }
+  if (
+    baseTitle === "input_required" ||
+    baseTitle === "context_window" ||
+    baseTitle === "error" ||
+    baseTitle === "iteration" ||
+    baseTitle === "model_call"
+  ) {
+    return "system";
+  }
+  return "agent";
+}
+
+function getTraceActorLabel(actor: TraceActor): string {
+  if (actor === "system") {
+    return "System";
+  }
+  if (actor === "tool") {
+    return "Tool";
+  }
+  if (actor === "user") {
+    return "User";
+  }
+  return "Agent";
+}
+
+function getTraceEventLabel(title: string, rawPayload?: unknown): string {
+  const baseTitle = getBaseEventTitle(title);
+  const isDelegate = isDelegateEventTitle(title);
+  if (isDelegate) {
+    return "Delegate";
+  }
+  if (baseTitle === "error") {
+    return "Error";
+  }
+  if (baseTitle === "tool_results") {
+    return "Result";
+  }
+  if (baseTitle === "tool_calls") {
+    return "Tool";
+  }
+  if (baseTitle === "iteration") {
+    return "Iteration";
+  }
+  if (baseTitle === "thought") {
+    const payload = asTracePayloadRecord(rawPayload);
+    return payload?.kind === "model_reasoning" ? "Reasoning" : "Event";
+  }
+  if (baseTitle === "model_call") {
+    return "Model";
+  }
+  if (baseTitle === "context_window") {
+    return "Context";
+  }
+  if (baseTitle === "assistant") {
+    return "Stream";
+  }
+  if (baseTitle === "final") {
+    return "Final";
+  }
+  if (baseTitle === "user_message") {
+    return "Query";
+  }
+  if (baseTitle === "input_required" || baseTitle === "input_resolved") {
+    return "Input";
+  }
+  return "Event";
+}
+
+function getTurnUserPreview(message: Message): string {
+  const content = message.content.trim();
+  if (content) {
+    return truncateTraceSummaryText(content, 96);
+  }
+  const attachmentNames = (message.attachments || [])
+    .map((attachment) => attachment.name.trim())
+    .filter(Boolean);
+  if (attachmentNames.length === 1) {
+    return truncateTraceSummaryText(attachmentNames[0], 96);
+  }
+  if (attachmentNames.length > 1) {
+    return `${attachmentNames.length} attachments`;
+  }
+  return "User message";
+}
+
+function buildTraceTurnGroups(
+  messages: Message[],
+  items: EnrichedTraceEntry[],
+): TraceTurnGroup[] {
+  if (items.length === 0) {
+    return [];
+  }
+
+  const userMessages = messages.filter((message) => message.role === "user");
+  if (userMessages.length === 0) {
+    return [
+      {
+        turnIndex: 1,
+        userPreview: "Initial run",
+        entries: items,
+      },
+    ];
+  }
+
+  const groups: TraceTurnGroup[] = userMessages.map((message, index) => ({
+    turnIndex: index + 1,
+    userPreview: getTurnUserPreview(message),
+    entries: [],
+  }));
+
+  for (const item of items) {
+    const itemTimestamp = getTimestampFromId(item.id, 0);
+    let assignedIndex = 0;
+    for (let index = 0; index < userMessages.length; index += 1) {
+      const userTimestamp = getTimestampFromId(userMessages[index].id, 0);
+      if (userTimestamp <= itemTimestamp) {
+        assignedIndex = index;
+      }
+    }
+    groups[assignedIndex]?.entries.push(item);
+  }
+
+  return groups.filter((group) => group.entries.length > 0);
+}
+
+function TraceStepEntry({
+  item,
+  summary,
+}: {
+  item: EnrichedTraceEntry;
+  summary: string | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const payloadText = formatTracePayload(item.payload);
+  const isLongPayload = payloadText.length > TRACE_PAYLOAD_PREVIEW_CHARS;
+  const displayPayload =
+    isLongPayload && !expanded
+      ? `${payloadText.slice(0, TRACE_PAYLOAD_PREVIEW_CHARS).trimEnd()}...`
+      : payloadText;
+
+  return (
+    <div className={cn("trace-step", `is-actor-${item.actor}`, expanded && "is-expanded")}>
+      <div className="trace-step-line flex h-6 min-h-6 items-center gap-2 overflow-hidden px-2">
+        <span className={cn("trace-step-actor shrink-0", `is-${item.actor}`)}>
+          {item.actorLabel}
+        </span>
+        <span className="trace-step-event w-[52px] shrink-0 truncate">{item.label}</span>
+        <span className="trace-step-summary min-w-0 flex-1 truncate">
+          {summary || item.eventTitle}
+        </span>
+        <span className="trace-step-time w-14 shrink-0 text-right">{item.displayTime}</span>
+        <button
+          className="trace-step-payload-toggle w-14 shrink-0 truncate text-right"
+          onClick={() => setExpanded((current) => !current)}
+          type="button"
+        >
+          {expanded ? "hide" : "payload"}
+        </button>
+      </div>
+      {expanded ? <pre className="trace-step-payload">{displayPayload}</pre> : null}
+    </div>
+  );
 }
 
 function truncateTraceSummaryText(value: string, maxChars = 240): string {
@@ -950,22 +1210,6 @@ function isDelegateEventTitle(value: string): boolean {
 
 function getBaseEventTitle(value: string): string {
   return isDelegateEventTitle(value) ? value.slice(DELEGATE_EVENT_PREFIX.length) : value;
-}
-
-function getTraceSourceBadges(isDelegate: boolean, payload: Record<string, unknown>): string[] {
-  if (!isDelegate) {
-    return [];
-  }
-
-  const agentName = typeof payload.agent_name === "string" ? payload.agent_name.trim() : "";
-  const delegatedBy = typeof payload.delegated_by === "string" ? payload.delegated_by.trim() : "";
-  const parentIteration = Number(payload.parent_iteration) || 0;
-
-  return [
-    agentName ? `delegate ${agentName}` : "delegate",
-    delegatedBy ? `via ${delegatedBy}` : "",
-    parentIteration > 0 ? `parent ${parentIteration}` : "",
-  ].filter(Boolean);
 }
 
 function withTraceSourcePrefix(isDelegate: boolean, payload: Record<string, unknown>, summary: string): string {
@@ -1075,88 +1319,6 @@ function getTraceSummary(item: ActivityItem): string | null {
   }
 
   return null;
-}
-
-function getTraceBadges(item: ActivityItem): string[] {
-  const payload = asTracePayloadRecord(item.payload);
-  if (!payload) {
-    return [];
-  }
-  const baseTitle = getBaseEventTitle(item.title);
-  const isDelegate = isDelegateEventTitle(item.title);
-
-  if (baseTitle === "context_window") {
-    return [
-      ...getTraceSourceBadges(isDelegate, payload),
-      `${payload.iteration || "?"} iter`,
-      `${payload.request_message_count || 0} msgs`,
-      `${formatCompactNumber(Number(payload.request_char_count) || 0)} chars`,
-      Number(payload.tool_message_compaction_count) > 0 ? `${payload.tool_message_compaction_count} tool trims` : "",
-    ].filter(Boolean) as string[];
-  }
-
-  if (baseTitle === "model_call") {
-    return [
-      ...getTraceSourceBadges(isDelegate, payload),
-      `${payload.iteration || "?"} iter`,
-      typeof payload.phase === "string" ? payload.phase : "react",
-      formatDurationLabel(payload.elapsed_ms) || "",
-      payload.status === "error" ? `HTTP ${payload.status_code || 502}` : `${payload.tool_call_count || 0} tools`,
-      payload.compacted ? "compacted" : "",
-    ].filter(Boolean) as string[];
-  }
-
-  if (baseTitle === "tool_calls") {
-    const toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls.length : 0;
-    return [
-      ...getTraceSourceBadges(isDelegate, payload),
-      toolCalls ? `${toolCalls} call${toolCalls === 1 ? "" : "s"}` : "",
-    ].filter(Boolean) as string[];
-  }
-
-  if (baseTitle === "tool_results") {
-    const results = Array.isArray(payload.results) ? payload.results.length : 0;
-    return [
-      ...getTraceSourceBadges(isDelegate, payload),
-      results ? `${results} result${results === 1 ? "" : "s"}` : "",
-    ].filter(Boolean) as string[];
-  }
-
-  if (baseTitle === "thought") {
-    return [
-      ...getTraceSourceBadges(isDelegate, payload),
-      `${payload.iteration || "?"} iter`,
-      typeof payload.stage === "string" ? payload.stage : "react",
-      typeof payload.kind === "string" ? payload.kind.replaceAll("_", " ") : "",
-    ].filter(Boolean) as string[];
-  }
-
-  if (baseTitle === "iteration") {
-    return [
-      ...getTraceSourceBadges(isDelegate, payload),
-      typeof payload.iteration === "number" ? `${payload.iteration} iter` : "",
-    ].filter(Boolean) as string[];
-  }
-
-  if (baseTitle === "assistant") {
-    return [...getTraceSourceBadges(isDelegate, payload), `${payload.iteration || "?"} iter`, "stream"].filter(Boolean) as string[];
-  }
-
-  if (baseTitle === "final") {
-    return [...getTraceSourceBadges(isDelegate, payload), "complete"].filter(Boolean) as string[];
-  }
-
-  if (baseTitle === "input_required") {
-    const questions = Array.isArray(payload.questions) ? payload.questions.length : 0;
-    return [...getTraceSourceBadges(isDelegate, payload), questions ? `${questions} questions` : "awaiting input"].filter(Boolean) as string[];
-  }
-
-  if (baseTitle === "error") {
-    const statusCode = Number(payload.status_code) || 0;
-    return [...getTraceSourceBadges(isDelegate, payload), statusCode ? `HTTP ${statusCode}` : ""].filter(Boolean) as string[];
-  }
-
-  return [];
 }
 
 function isTraceStreamEvent(event: string): boolean {
@@ -1382,44 +1544,43 @@ export function ChatWorkspace() {
   );
 
   const attachmentDrafts = draftAttachments;
+  const conversationMessages = useMemo(
+    () => (activeThread?.messages || []) as Message[],
+    [activeThread?.messages],
+  );
 
   const traceEntries = useMemo(() => {
-    const items = activeThread?.activity || [];
+    const activityItems = activeThread?.activity || [];
+    const syntheticItems = buildSyntheticMessageTraceEntries(
+      conversationMessages,
+      activityItems,
+    );
+    const items = [...activityItems, ...syntheticItems].sort(
+      (left, right) =>
+        getTimestampFromId(left.id, activeThread?.updatedAt || Date.now()) -
+        getTimestampFromId(right.id, activeThread?.updatedAt || Date.now()),
+    );
     return items.map((item) => {
       const timestamp = getTimestampFromId(item.id, activeThread?.updatedAt || Date.now());
-      const baseTitle = getBaseEventTitle(item.title);
-      const isDelegate = isDelegateEventTitle(item.title);
+      const actor = getTraceActor(item.title, item.payload);
       return {
         ...item,
-        label: isDelegate
-          ? "Delegate"
-          : baseTitle === "error"
-            ? "Error"
-            : baseTitle === "tool_results"
-              ? "Result"
-              : baseTitle === "tool_calls"
-                ? "Tool"
-                : baseTitle === "iteration"
-                  ? "Iteration"
-                  : baseTitle === "thought"
-                    ? "Thought"
-                : baseTitle === "model_call"
-                  ? "Model"
-                  : baseTitle === "context_window"
-                    ? "Context"
-                    : baseTitle === "assistant"
-                      ? "Stream"
-                      : baseTitle === "final"
-                        ? "Final"
-                        : baseTitle === "input_required" || baseTitle === "input_resolved"
-                      ? "Input"
-                      : "Event",
+        label: getTraceEventLabel(item.title, item.payload),
         displayTime: formatTime(timestamp),
+        actor,
+        actorLabel: getTraceActorLabel(actor),
+        eventTitle: formatActivityTitle(getBaseEventTitle(item.title)),
       };
     });
-  }, [activeThread]);
+  }, [activeThread?.activity, activeThread?.updatedAt, conversationMessages]);
 
-  const conversationMessages = (activeThread?.messages || []) as Message[];
+  const traceTurnGroups = useMemo(
+    () => buildTraceTurnGroups(conversationMessages, traceEntries),
+    [conversationMessages, traceEntries],
+  );
+  const [collapsedTraceTurns, setCollapsedTraceTurns] = useState<Set<number>>(
+    () => new Set(),
+  );
   const displayedTraceEntries = traceEntries;
   const activePendingQuestion = activeThread?.pendingQuestion || null;
   const chatSplitStyle = {
@@ -1429,6 +1590,18 @@ export function ChatWorkspace() {
   useEffect(() => {
     setPendingDrafts(buildInitialPendingDrafts(activePendingQuestion));
   }, [activePendingQuestion]);
+
+  function toggleTraceTurn(turnIndex: number) {
+    setCollapsedTraceTurns((current) => {
+      const next = new Set(current);
+      if (next.has(turnIndex)) {
+        next.delete(turnIndex);
+      } else {
+        next.add(turnIndex);
+      }
+      return next;
+    });
+  }
 
   function handleTraceResizeStart(event: React.MouseEvent<HTMLDivElement>) {
     if (!isTracePanelOpen || event.button !== 0 || window.matchMedia("(max-width: 980px)").matches) {
@@ -2269,26 +2442,50 @@ export function ChatWorkspace() {
               </div>
 
               <div className="trace-feed is-console-feed">
-                {displayedTraceEntries.map((item) => (
-                  <article className="trace-entry compact-trace-entry" key={item.id}>
-                    <div className="trace-entry-head">
-                      <Badge variant="secondary" className="trace-pill">{item.label}</Badge>
-                      <span className="trace-time">{item.displayTime}</span>
-                    </div>
-                    <strong>{formatActivityTitle(item.title)}</strong>
-                    {getTraceSummary(item) ? <p className="trace-summary-copy">{getTraceSummary(item)}</p> : null}
-                    {getTraceBadges(item).length ? (
-                      <div className="trace-badge-row">
-                        {getTraceBadges(item).map((badge) => (
-                          <span className="trace-inline-badge" key={`${item.id}-${badge}`}>
-                            {badge}
+                {traceTurnGroups.length === 0 ? (
+                  <p className="trace-empty-copy">
+                    Trace events will appear here while the agent runs.
+                  </p>
+                ) : (
+                  traceTurnGroups.map((turn) => {
+                    const isCollapsed = collapsedTraceTurns.has(turn.turnIndex);
+                    return (
+                      <section
+                        className={`trace-turn-group${isCollapsed ? " is-collapsed" : ""}`}
+                        key={`turn-${turn.turnIndex}`}
+                      >
+                        <button
+                          aria-expanded={!isCollapsed}
+                          className="trace-turn-header"
+                          onClick={() => toggleTraceTurn(turn.turnIndex)}
+                          type="button"
+                        >
+                          <span className="trace-turn-label">Turn {turn.turnIndex}</span>
+                          <span className="trace-turn-preview">{turn.userPreview}</span>
+                          <span className="trace-turn-count">
+                            {turn.entries.length} step
+                            {turn.entries.length === 1 ? "" : "s"}
                           </span>
-                        ))}
-                      </div>
-                    ) : null}
-                    <pre className="trace-note">{formatTracePayload(item.payload)}</pre>
-                  </article>
-                ))}
+                          <span className="trace-turn-action">
+                            {isCollapsed ? "Expand" : "Collapse"}
+                          </span>
+                        </button>
+
+                        {!isCollapsed ? (
+                          <div className="trace-turn-steps">
+                            {turn.entries.map((item) => (
+                              <TraceStepEntry
+                                item={item}
+                                key={item.id}
+                                summary={getTraceSummary(item)}
+                              />
+                            ))}
+                          </div>
+                        ) : null}
+                      </section>
+                    );
+                  })
+                )}
               </div>
             </aside>
           ) : null}

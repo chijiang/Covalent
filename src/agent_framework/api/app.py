@@ -2521,15 +2521,12 @@ async def _create_api_token(
                 expires_at=request.expires_at,
             )
             session.add(row)
-        async with session.begin():
-            saved = await session.get(ApiTokenRow, row.id)
-            if saved is None:
-                raise HTTPException(status_code=500, detail="API token was not saved")
-            user = await session.get(UserRow, saved.user_id)
-            workspace = await session.get(WorkspaceRow, saved.workspace_id)
+            await session.flush()
+            user = await session.get(UserRow, row.user_id)
+            workspace = await session.get(WorkspaceRow, row.workspace_id)
             if user is None or workspace is None:
                 raise HTTPException(status_code=500, detail="API token owner was not saved")
-            summary = _api_token_summary_response(saved, user, workspace)
+            summary = _api_token_summary_response(row, user, workspace)
     await _record_audit_log(
         db_manager,
         action="api_token.created",
@@ -2550,17 +2547,13 @@ async def _revoke_api_token(
 ) -> ApiTokenSummaryResponse:
     async with db_manager.session_factory() as session:
         async with session.begin():
-            row = await session.get(ApiTokenRow, token_id)
-            if row is None:
-                raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
-            if row.user_id != principal.user_id or row.workspace_id != principal.workspace_id:
-                raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
-            if row.revoked_at is None:
-                row.revoked_at = datetime.now(UTC)
-        async with session.begin():
             saved = await session.get(ApiTokenRow, token_id)
             if saved is None:
                 raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+            if saved.user_id != principal.user_id or saved.workspace_id != principal.workspace_id:
+                raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+            if saved.revoked_at is None:
+                saved.revoked_at = datetime.now(UTC)
             user = await session.get(UserRow, saved.user_id)
             workspace = await session.get(WorkspaceRow, saved.workspace_id)
             if user is None or workspace is None:
