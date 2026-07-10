@@ -164,6 +164,13 @@ class ApiTokenCreateRequest(BaseModel):
     expires_at: datetime | None = None
 
 
+class ApiTokenUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    scopes: list[str] | None = None
+    policy: dict[str, Any] | None = None
+    expires_at: datetime | None = None
+
+
 class ApiTokenSummaryResponse(BaseModel):
     id: str
     name: str
@@ -183,6 +190,45 @@ class ApiTokenSummaryResponse(BaseModel):
 
 class ApiTokenCreateResponse(ApiTokenSummaryResponse):
     token: str
+
+
+class ApiTokenUsageDailyResponse(BaseModel):
+    date: str
+    requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    total_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    average_latency_ms: int | None = None
+
+
+class ApiTokenUsageByTokenResponse(BaseModel):
+    token_id: str
+    token_name: str
+    token_prefix: str
+    requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    total_tokens: int = 0
+    average_latency_ms: int | None = None
+    last_used_at: datetime | None = None
+
+
+class ApiTokenUsageResponse(BaseModel):
+    days: int
+    starts_at: datetime
+    ends_at: datetime
+    active_tokens: int = 0
+    total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    total_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    average_latency_ms: int | None = None
+    daily: list[ApiTokenUsageDailyResponse] = Field(default_factory=list)
+    by_token: list[ApiTokenUsageByTokenResponse] = Field(default_factory=list)
 
 
 class ConsoleUserResponse(BaseModel):

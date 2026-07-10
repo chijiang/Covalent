@@ -7,6 +7,8 @@ import type {
   ApiTokenCreateRequest,
   ApiTokenCreateResponse,
   ApiTokenSummary,
+  ApiTokenUpdateRequest,
+  ApiTokenUsage,
   AttachmentDeliveryMode,
   AttachmentUploadResponse,
   ChatSession,
@@ -219,9 +221,22 @@ export function createApiToken(request: ApiTokenCreateRequest): Promise<ApiToken
   });
 }
 
+export function updateApiToken(tokenId: string, request: ApiTokenUpdateRequest): Promise<ApiTokenSummary> {
+  return apiFetchJson<ApiTokenSummary>(`api-tokens/${encodeURIComponent(tokenId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(request),
+  });
+}
+
 export function revokeApiToken(tokenId: string): Promise<ApiTokenSummary> {
   return apiFetchJson<ApiTokenSummary>(`api-tokens/${encodeURIComponent(tokenId)}`, {
     method: "DELETE",
+  });
+}
+
+export function getApiTokenUsage(days = 30): Promise<ApiTokenUsage> {
+  return apiFetchJson<ApiTokenUsage>(`api-tokens/usage?days=${encodeURIComponent(String(days))}`, {
+    method: "GET",
   });
 }
 
