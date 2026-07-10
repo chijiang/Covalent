@@ -1,7 +1,9 @@
 import type {
   AgentDetail,
+  AgentRunLog,
   AgentRunRequest,
   AgentSummary,
+  AuditLog,
   ApiTokenCreateRequest,
   ApiTokenCreateResponse,
   ApiTokenSummary,
@@ -12,6 +14,11 @@ import type {
   ConfigDocument,
   ConfigDocumentUpdateMetadata,
   ConfigKind,
+  ConsoleLoginRequest,
+  ConsoleRegisterRequest,
+  ConsoleUser,
+  ConsoleUserSummary,
+  ConsoleUserUpdateRequest,
   HealthResponse,
   LocalToolSummary,
   McpInspectResponse,
@@ -21,6 +28,7 @@ import type {
   ManagementExportResponse,
   ManagementImportResponse,
   ManagementKind,
+  PublicationRequestResponse,
   SkillInstallRequest,
   SkillInstallResponse,
   SkillPreviewResponse,
@@ -33,29 +41,8 @@ function buildPath(path: string): string {
   return `${API_PREFIX}/${path.replace(/^\/+/, "")}`;
 }
 
-function localDirectBackendBaseUrl(): string | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  const configured = process.env.NEXT_PUBLIC_AGENT_FRAMEWORK_API_BASE_URL?.trim();
-  if (configured) {
-    return configured.replace(/\/+$/, "");
-  }
-
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-    return "http://127.0.0.1:5170";
-  }
-
-  return null;
-}
-
 function buildStreamPath(path: string): string {
   const normalizedPath = path.replace(/^\/+/, "");
-  const directBaseUrl = localDirectBackendBaseUrl();
-  if (directBaseUrl) {
-    return `${directBaseUrl}/${normalizedPath}`;
-  }
   return buildPath(normalizedPath);
 }
 
@@ -75,6 +62,7 @@ async function apiFetchJson<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.body instanceof FormData ? {} : { "content-type": "application/json" }),
       ...(init?.headers || {}),
     },
+    credentials: "include",
     cache: "no-store",
   });
 
@@ -91,6 +79,39 @@ export function sortAgentsForPicker(agents: AgentDetail[]): AgentDetail[] {
 
 export function getHealth(): Promise<HealthResponse> {
   return apiFetchJson<HealthResponse>("healthz", { method: "GET" });
+}
+
+export function getCurrentUser(): Promise<ConsoleUser> {
+  return apiFetchJson<ConsoleUser>("me", { method: "GET" });
+}
+
+export function loginConsoleUser(request: ConsoleLoginRequest): Promise<ConsoleUser> {
+  return apiFetchJson<ConsoleUser>("auth/login", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function registerConsoleUser(request: ConsoleRegisterRequest): Promise<ConsoleUser> {
+  return apiFetchJson<ConsoleUser>("auth/register", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function logoutConsoleUser(): Promise<{ status: string }> {
+  return apiFetchJson<{ status: string }>("auth/logout", { method: "POST" });
+}
+
+export function listConsoleUsers(): Promise<ConsoleUserSummary[]> {
+  return apiFetchJson<ConsoleUserSummary[]>("users", { method: "GET" });
+}
+
+export function updateConsoleUser(userId: string, request: ConsoleUserUpdateRequest): Promise<ConsoleUserSummary> {
+  return apiFetchJson<ConsoleUserSummary>(`users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(request),
+  });
 }
 
 export async function getAgents(): Promise<AgentDetail[]> {
@@ -135,6 +156,23 @@ export function saveConfig(kind: ConfigKind, raw: string, metadata?: ConfigDocum
   });
 }
 
+export function requestConfigPublication(kind: ConfigKind, resourceName: string): Promise<PublicationRequestResponse> {
+  return apiFetchJson<PublicationRequestResponse>(`config/${kind}/${encodeURIComponent(resourceName)}/publish-request`, {
+    method: "POST",
+  });
+}
+
+export function reviewConfigPublication(
+  kind: ConfigKind,
+  resourceName: string,
+  status: "approved" | "rejected",
+): Promise<PublicationRequestResponse> {
+  return apiFetchJson<PublicationRequestResponse>(`config/${kind}/${encodeURIComponent(resourceName)}/publication-review`, {
+    method: "POST",
+    body: JSON.stringify({ status }),
+  });
+}
+
 export function fetchProviderModels(providerName: string): Promise<string[]> {
   return apiFetchJson<string[]>(`providers/${encodeURIComponent(providerName)}/models`, { method: "GET" });
 }
@@ -169,6 +207,27 @@ export function revokeApiToken(tokenId: string): Promise<ApiTokenSummary> {
   return apiFetchJson<ApiTokenSummary>(`api-tokens/${encodeURIComponent(tokenId)}`, {
     method: "DELETE",
   });
+}
+
+export function listApiTokenRuns(tokenId: string, limit = 50): Promise<AgentRunLog[]> {
+  return apiFetchJson<AgentRunLog[]>(`api-tokens/${encodeURIComponent(tokenId)}/runs?limit=${encodeURIComponent(String(limit))}`, {
+    method: "GET",
+  });
+}
+
+export function listAuditLogs(params: { limit?: number; action?: string; outcome?: string; targetType?: string } = {}): Promise<AuditLog[]> {
+  const searchParams = new URLSearchParams();
+  searchParams.set("limit", String(params.limit ?? 100));
+  if (params.action) {
+    searchParams.set("action", params.action);
+  }
+  if (params.outcome) {
+    searchParams.set("outcome", params.outcome);
+  }
+  if (params.targetType) {
+    searchParams.set("target_type", params.targetType);
+  }
+  return apiFetchJson<AuditLog[]>(`audit-logs?${searchParams.toString()}`, { method: "GET" });
 }
 
 type StreamEvent = {
@@ -219,6 +278,7 @@ export async function streamAgent(
       "content-type": "application/json",
     },
     body: JSON.stringify(request),
+    credentials: "include",
     cache: "no-store",
   });
 

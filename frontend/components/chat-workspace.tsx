@@ -32,7 +32,6 @@ import {
 } from "lucide-react";
 
 import { useChatSessions } from "@/components/chat-sessions-provider";
-import { cn } from "@/lib/utils";
 
 import {
   getAgents,
@@ -43,7 +42,7 @@ import {
   streamAgent,
   uploadChatAttachments,
 } from "@/lib/client-api";
-import { uid, type ChatThread, type ChatThreadMessage } from "@/lib/chat-thread-model";
+import { uid, type ChatThread } from "@/lib/chat-thread-model";
 import type {
   AgentDetail,
   AgentInputPart,
@@ -60,7 +59,6 @@ type Message = {
   role: "user" | "assistant";
   content: string;
   attachments?: ComposerAttachment[];
-  askUserPrompt?: PendingQuestionRequest | null;
 };
 
 type ComposerAttachment = {
@@ -98,24 +96,8 @@ const MIN_TRACE_PANEL_WIDTH = 280;
 const MAX_TRACE_PANEL_WIDTH = 640;
 const MIN_CONVERSATION_PANEL_WIDTH = 560;
 const CODE_BLOCK_COPY_RESET_MS = 1600;
-const TRACE_PAYLOAD_PREVIEW_CHARS = 600;
 
 type ChatCodeBlockTone = "inbound" | "outbound";
-type TraceActor = "agent" | "system" | "tool" | "user";
-
-type EnrichedTraceEntry = ActivityItem & {
-  label: string;
-  displayTime: string;
-  actor: TraceActor;
-  actorLabel: string;
-  eventTitle: string;
-};
-
-type TraceTurnGroup = {
-  turnIndex: number;
-  userPreview: string;
-  entries: EnrichedTraceEntry[];
-};
 
 function getMaxTracePanelWidth(containerWidth: number): number {
   if (!Number.isFinite(containerWidth) || containerWidth <= 0) {
@@ -356,74 +338,13 @@ function ChatCodeBlock({ children, tone, ...props }: ComponentPropsWithoutRef<"p
   );
 }
 
-function isWaitingForAnswerContent(content: string): boolean {
-  const normalized = content.trim();
-  return normalized === "Waiting for your answer…" || normalized === "Waiting for your answer...";
-}
-
-function ChatMarkdownContent({ content, tone }: { content: string; tone: ChatCodeBlockTone }) {
-  return (
-    <div className="chat-markdown">
-      <ReactMarkdown
-        components={{
-          pre({ children, ...props }) {
-            return (
-              <ChatCodeBlock {...props} tone={tone}>
-                {children}
-              </ChatCodeBlock>
-            );
-          },
-        }}
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeSanitize]}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-function AskUserPromptSummary({ prompt }: { prompt: PendingQuestionRequest }) {
-  return (
-    <section aria-label="Agent question" className="ask-user-prompt-summary">
-      <div className="ask-user-prompt-summary-header">
-        <p className="section-kicker">Input required</p>
-        <strong className="ask-user-prompt-summary-title">{prompt.title}</strong>
-      </div>
-      <div className="ask-user-prompt-summary-list">
-        {prompt.questions.map((question) => (
-          <article className="ask-user-prompt-summary-card" key={question.header}>
-            <strong>{question.header}</strong>
-            <p>{question.question}</p>
-            {question.message ? <p className="helper-copy">{question.message}</p> : null}
-            {question.options.length ? (
-              <ul className="ask-user-prompt-option-list">
-                {question.options.map((option) => (
-                  <li key={option.label}>
-                    {option.label}
-                    {option.description ? ` — ${option.description}` : ""}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function ChatMessageBubble({ message, sending }: { message: Message; sending: boolean }) {
   const tone = message.role === "user" ? "outbound" : "inbound";
-  const displayContent =
-    message.askUserPrompt && isWaitingForAnswerContent(message.content) ? "" : message.content;
-  const markdownContent = displayContent || (sending && message.role === "assistant" ? "Thinking..." : "");
 
   return (
     <article className={message.role === "user" ? "chat-message-row outbound" : "chat-message-row inbound"}>
       <div className={message.role === "user" ? "chat-bubble outbound" : "chat-bubble inbound"}>
-        <ChatBubbleCopy content={displayContent || ""} tone={tone} />
-        {message.askUserPrompt ? <AskUserPromptSummary prompt={message.askUserPrompt} /> : null}
+        <ChatBubbleCopy content={message.content || ""} tone={tone} />
         {message.attachments?.length ? (
           <div className="chat-attachment-list">
             {message.attachments.map((file) =>
@@ -450,7 +371,23 @@ function ChatMessageBubble({ message, sending }: { message: Message; sending: bo
             )}
           </div>
         ) : null}
-        <ChatMarkdownContent content={markdownContent} tone={tone} />
+        <div className="chat-markdown">
+          <ReactMarkdown
+            components={{
+              pre({ children, ...props }) {
+                return (
+                  <ChatCodeBlock {...props} tone={tone}>
+                    {children}
+                  </ChatCodeBlock>
+                );
+              },
+            }}
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeSanitize]}
+          >
+            {message.content || (sending && message.role === "assistant" ? "Thinking..." : "")}
+          </ReactMarkdown>
+        </div>
       </div>
     </article>
   );
@@ -773,71 +710,6 @@ function normalizePendingQuestionRequest(raw: unknown): PendingQuestionRequest |
   };
 }
 
-function getResolvedQuestionsFromActivity(items: ActivityItem[]): PendingQuestionRequest[] {
-  const resolvedIds = new Set<string>();
-
-  for (const item of items) {
-    if (item.title === "input_resolved" && item.payload && typeof item.payload === "object") {
-      const resolvedId = (item.payload as Record<string, unknown>).id;
-      if (typeof resolvedId === "string" && resolvedId.trim()) {
-        resolvedIds.add(resolvedId);
-      }
-    }
-  }
-
-  const resolvedQuestions: PendingQuestionRequest[] = [];
-  for (const item of items) {
-    if (item.title !== "input_required") {
-      continue;
-    }
-    const request = normalizePendingQuestionRequest(item.payload);
-    if (request && resolvedIds.has(request.id)) {
-      resolvedQuestions.push(request);
-    }
-  }
-
-  return resolvedQuestions;
-}
-
-function enrichMessagesWithAskUserPrompts(messages: ChatThreadMessage[], activity: ActivityItem[]): ChatThreadMessage[] {
-  const resolvedQuestions = getResolvedQuestionsFromActivity(activity);
-  if (resolvedQuestions.length === 0) {
-    return messages.map((message) =>
-      message.role === "assistant" && isWaitingForAnswerContent(message.content)
-        ? { ...message, content: "" }
-        : message,
-    );
-  }
-
-  let questionIdx = 0;
-  const enriched: ChatThreadMessage[] = [];
-
-  for (const message of messages) {
-    if (message.role === "user" && questionIdx < resolvedQuestions.length) {
-      const hasPriorUser = enriched.some((entry) => entry.role === "user");
-      if (hasPriorUser) {
-        const request = resolvedQuestions[questionIdx];
-        enriched.push({
-          id: `ask-user-prompt-${request.id}`,
-          role: "assistant",
-          content: "",
-          askUserPrompt: request,
-        });
-        questionIdx += 1;
-      }
-    }
-
-    if (message.role === "assistant" && isWaitingForAnswerContent(message.content) && !message.askUserPrompt) {
-      enriched.push({ ...message, content: "" });
-      continue;
-    }
-
-    enriched.push(message);
-  }
-
-  return enriched;
-}
-
 function getPendingQuestionFromActivity(items: ActivityItem[]): PendingQuestionRequest | null {
   const resolvedIds = new Set<string>();
 
@@ -983,22 +855,19 @@ function normalizeAttachment(raw: Record<string, unknown>): ComposerAttachment {
 }
 
 function threadFromSession(session: ChatSession): ChatThread {
-  const activity = session.activity.map((item) => ({ id: item.id, title: item.title, payload: item.payload }));
-  const baseMessages = session.messages.map((message) => ({
-    id: message.id,
-    role: message.role,
-    content: message.content,
-    attachments: message.attachments.map((attachment) => normalizeAttachment(attachment)),
-  }));
-
   return {
     id: session.id,
     title: session.title,
     titleSource: session.title_source,
     sessionId: session.id,
     agentName: session.agent_name || "",
-    messages: enrichMessagesWithAskUserPrompts(baseMessages, activity),
-    activity,
+    messages: session.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      attachments: message.attachments.map((attachment) => normalizeAttachment(attachment)),
+    })),
+    activity: session.activity.map((item) => ({ id: item.id, title: item.title, payload: item.payload })),
     createdAt: toTimestamp(session.created_at),
     updatedAt: toTimestamp(session.updated_at),
     previewText: session.preview_text,
@@ -1026,7 +895,6 @@ function formatTime(value: number): string {
   return new Intl.DateTimeFormat("en-US", {
     hour: "2-digit",
     minute: "2-digit",
-    second: "2-digit",
     hour12: false,
   }).format(value);
 }
@@ -1057,229 +925,11 @@ function formatDurationLabel(value: unknown): string | null {
 }
 
 function formatTracePayload(payload: unknown): string {
-  return typeof payload === "string" ? payload : `${JSON.stringify(payload, null, 2)}\n`;
-}
-
-function buildSyntheticMessageTraceEntries(
-  messages: Message[],
-  activityItems: ActivityItem[] = [],
-): ActivityItem[] {
-  const syntheticItems: ActivityItem[] = messages
-    .filter((message) => message.role === "user")
-    .map((message) => ({
-      id: `${message.id}-trace`,
-      title: "user_message",
-      payload: {
-        text: message.content,
-        attachment_count: message.attachments?.length || 0,
-        source: message.askUserPrompt ? "ask_user_response" : "chat_query",
-      },
-    }));
-
-  const hasRuntimeFinal = activityItems.some((item) => getBaseEventTitle(item.title) === "final");
-  if (hasRuntimeFinal) {
-    return syntheticItems;
+  const text = typeof payload === "string" ? payload : `${JSON.stringify(payload, null, 2)}\n`;
+  if (text.length <= 4_000) {
+    return text;
   }
-
-  const latestAssistantMessage = [...messages]
-    .reverse()
-    .find((message) => message.role === "assistant" && message.content.trim().length > 0 && !message.askUserPrompt);
-  if (!latestAssistantMessage) {
-    return syntheticItems;
-  }
-
-  const latestActivityTimestamp = activityItems.reduce(
-    (latest, item) => Math.max(latest, getTimestampFromId(item.id, 0)),
-    0,
-  );
-  const assistantTimestamp = getTimestampFromId(latestAssistantMessage.id, 0);
-  const finalTimestamp = Math.max(latestActivityTimestamp + 1, assistantTimestamp);
-
-  return [
-    ...syntheticItems,
-    {
-      id: `final-${finalTimestamp}-synthetic`,
-      title: "final",
-      payload: {
-        output_text: latestAssistantMessage.content,
-        source: "conversation_message",
-      },
-    },
-  ];
-}
-
-function isAskUserToolResult(payload: Record<string, unknown> | null): boolean {
-  if (!payload || !Array.isArray(payload.results)) {
-    return false;
-  }
-  return payload.results.some((result) => {
-    if (!result || typeof result !== "object" || Array.isArray(result)) {
-      return false;
-    }
-    const record = result as Record<string, unknown>;
-    return record.input_request !== undefined && record.input_request !== null;
-  });
-}
-
-function getTraceActor(title: string, rawPayload?: unknown): TraceActor {
-  const baseTitle = getBaseEventTitle(title);
-  if (baseTitle === "user_message" || baseTitle === "input_resolved") {
-    return "user";
-  }
-  if (baseTitle === "tool_results") {
-    return isAskUserToolResult(asTracePayloadRecord(rawPayload)) ? "user" : "tool";
-  }
-  if (baseTitle === "assistant" || baseTitle === "final" || baseTitle === "tool_calls") {
-    return "agent";
-  }
-  if (baseTitle === "thought") {
-    const payload = asTracePayloadRecord(rawPayload);
-    return payload?.kind === "model_reasoning" ? "agent" : "system";
-  }
-  if (baseTitle === "input_required" || baseTitle === "context_window" || baseTitle === "error" || baseTitle === "iteration" || baseTitle === "model_call") {
-    return "system";
-  }
-  return "agent";
-}
-
-function getTraceActorLabel(actor: TraceActor): string {
-  if (actor === "system") {
-    return "System";
-  }
-  if (actor === "tool") {
-    return "Tool";
-  }
-  if (actor === "user") {
-    return "User";
-  }
-  return "Agent";
-}
-
-function getTraceEventLabel(title: string, rawPayload?: unknown): string {
-  const baseTitle = getBaseEventTitle(title);
-  const isDelegate = isDelegateEventTitle(title);
-  if (isDelegate) {
-    return "Delegate";
-  }
-  if (baseTitle === "error") {
-    return "Error";
-  }
-  if (baseTitle === "tool_results") {
-    return "Result";
-  }
-  if (baseTitle === "tool_calls") {
-    return "Tool";
-  }
-  if (baseTitle === "iteration") {
-    return "Iteration";
-  }
-  if (baseTitle === "thought") {
-    const payload = asTracePayloadRecord(rawPayload);
-    if (payload?.kind === "model_reasoning") {
-      return "Reasoning";
-    }
-    return "Event";
-  }
-  if (baseTitle === "model_call") {
-    return "Model";
-  }
-  if (baseTitle === "context_window") {
-    return "Context";
-  }
-  if (baseTitle === "assistant") {
-    return "Stream";
-  }
-  if (baseTitle === "final") {
-    return "Final";
-  }
-  if (baseTitle === "user_message") {
-    return "Query";
-  }
-  if (baseTitle === "input_required" || baseTitle === "input_resolved") {
-    return "Input";
-  }
-  return "Event";
-}
-
-function getTurnUserPreview(message: Message): string {
-  const content = message.content.trim();
-  if (content) {
-    return truncateTraceSummaryText(content, 96);
-  }
-  const attachmentNames = (message.attachments || [])
-    .map((attachment) => attachment.name.trim())
-    .filter(Boolean);
-  if (attachmentNames.length === 1) {
-    return truncateTraceSummaryText(attachmentNames[0], 96);
-  }
-  if (attachmentNames.length > 1) {
-    return `${attachmentNames.length} attachments`;
-  }
-  return "User message";
-}
-
-function buildTraceTurnGroups(messages: Message[], items: EnrichedTraceEntry[]): TraceTurnGroup[] {
-  if (items.length === 0) {
-    return [];
-  }
-
-  const userMessages = messages.filter((message) => message.role === "user");
-  if (userMessages.length === 0) {
-    return [
-      {
-        turnIndex: 1,
-        userPreview: "Initial run",
-        entries: items,
-      },
-    ];
-  }
-
-  const groups: TraceTurnGroup[] = userMessages.map((message, index) => ({
-    turnIndex: index + 1,
-    userPreview: getTurnUserPreview(message),
-    entries: [],
-  }));
-
-  for (const item of items) {
-    const itemTimestamp = getTimestampFromId(item.id, 0);
-    let assignedIndex = 0;
-    for (let index = 0; index < userMessages.length; index += 1) {
-      const userTimestamp = getTimestampFromId(userMessages[index].id, 0);
-      if (userTimestamp <= itemTimestamp) {
-        assignedIndex = index;
-      }
-    }
-    groups[assignedIndex]?.entries.push(item);
-  }
-
-  return groups.filter((group) => group.entries.length > 0);
-}
-
-function TraceStepEntry({ item, summary }: { item: EnrichedTraceEntry; summary: string | null }) {
-  const [expanded, setExpanded] = useState(false);
-  const payloadText = formatTracePayload(item.payload);
-  const isLongPayload = payloadText.length > TRACE_PAYLOAD_PREVIEW_CHARS;
-  const displayPayload =
-    isLongPayload && !expanded ? `${payloadText.slice(0, TRACE_PAYLOAD_PREVIEW_CHARS).trimEnd()}...` : payloadText;
-
-  return (
-    <div className={cn("trace-step", `is-actor-${item.actor}`, expanded && "is-expanded")}>
-      <div className="trace-step-line flex h-6 min-h-6 items-center gap-2 overflow-hidden px-2">
-        <span className={cn("trace-step-actor shrink-0", `is-${item.actor}`)}>{item.actorLabel}</span>
-        <span className="trace-step-event w-[52px] shrink-0 truncate">{item.label}</span>
-        <span className="trace-step-summary min-w-0 flex-1 truncate">{summary || item.eventTitle}</span>
-        <span className="trace-step-time w-14 shrink-0 text-right">{item.displayTime}</span>
-        <button
-          className="trace-step-payload-toggle w-14 shrink-0 truncate text-right"
-          onClick={() => setExpanded((current) => !current)}
-          type="button"
-        >
-          {expanded ? "hide" : "payload"}
-        </button>
-      </div>
-      {expanded ? <pre className="trace-step-payload">{displayPayload}</pre> : null}
-    </div>
-  );
+  return `${text.slice(0, 4_000).trimEnd()}\n... truncated ...\n`;
 }
 
 function truncateTraceSummaryText(value: string, maxChars = 240): string {
@@ -1339,19 +989,9 @@ function getTraceSummary(item: ActivityItem): string | null {
   const baseTitle = getBaseEventTitle(item.title);
   const isDelegate = isDelegateEventTitle(item.title);
 
-  if (baseTitle === "user_message") {
-    const text = typeof payload.text === "string" ? payload.text.trim() : "";
-    const attachments = Number(payload.attachment_count) || 0;
-    const prefix = payload.source === "ask_user_response" ? "Answered ask-user prompt" : "User query";
-    const attachmentText = attachments ? ` with ${attachments} attachment${attachments === 1 ? "" : "s"}` : "";
-    return text ? `${prefix}${attachmentText}: ${truncateTraceSummaryText(text)}` : `${prefix}${attachmentText}.`;
-  }
-
   if (baseTitle === "context_window") {
     const originalMessages = Number(payload.original_message_count) || 0;
     const requestMessages = Number(payload.request_message_count) || 0;
-    const originalChars = Number(payload.original_char_count) || 0;
-    const requestChars = Number(payload.request_char_count) || 0;
     const summarized = Number(payload.summarized_message_count) || 0;
     const dropped = Number(payload.dropped_message_count) || 0;
     const truncated = Number(payload.truncated_message_count) || 0;
@@ -1375,7 +1015,6 @@ function getTraceSummary(item: ActivityItem): string | null {
     const status = payload.status === "error" ? "failed" : "completed";
     const duration = formatDurationLabel(payload.elapsed_ms);
     const requestMessages = Number(payload.request_message_count) || 0;
-    const requestChars = Number(payload.request_char_count) || 0;
     const promptTokens = Number(payload.prompt_tokens) || 0;
     const completionTokens = Number(payload.completion_tokens) || 0;
     const tokenInfo = promptTokens ? ` (${formatCompactNumber(promptTokens)}+${formatCompactNumber(completionTokens)} tokens)` : "";
@@ -1443,14 +1082,6 @@ function getTraceBadges(item: ActivityItem): string[] {
   }
   const baseTitle = getBaseEventTitle(item.title);
   const isDelegate = isDelegateEventTitle(item.title);
-
-  if (baseTitle === "user_message") {
-    const attachments = Number(payload.attachment_count) || 0;
-    return [
-      payload.source === "ask_user_response" ? "ask user" : "query",
-      attachments ? `${attachments} attachment${attachments === 1 ? "" : "s"}` : "",
-    ].filter(Boolean) as string[];
-  }
 
   if (baseTitle === "context_window") {
     return [
@@ -1749,35 +1380,44 @@ export function ChatWorkspace() {
   );
 
   const attachmentDrafts = draftAttachments;
-  const conversationMessages = (activeThread?.messages || []) as Message[];
 
   const traceEntries = useMemo(() => {
-    const activityItems = activeThread?.activity || [];
-    const syntheticItems = buildSyntheticMessageTraceEntries(conversationMessages, activityItems);
-    const items = [...activityItems, ...syntheticItems].sort(
-      (left, right) =>
-        getTimestampFromId(left.id, activeThread?.updatedAt || Date.now()) -
-        getTimestampFromId(right.id, activeThread?.updatedAt || Date.now()),
-    );
+    const items = activeThread?.activity || [];
     return items.map((item) => {
       const timestamp = getTimestampFromId(item.id, activeThread?.updatedAt || Date.now());
-      const actor = getTraceActor(item.title, item.payload);
+      const baseTitle = getBaseEventTitle(item.title);
+      const isDelegate = isDelegateEventTitle(item.title);
       return {
         ...item,
-        label: getTraceEventLabel(item.title, item.payload),
+        label: isDelegate
+          ? "Delegate"
+          : baseTitle === "error"
+            ? "Error"
+            : baseTitle === "tool_results"
+              ? "Result"
+              : baseTitle === "tool_calls"
+                ? "Tool"
+                : baseTitle === "iteration"
+                  ? "Iteration"
+                  : baseTitle === "thought"
+                    ? "Thought"
+                : baseTitle === "model_call"
+                  ? "Model"
+                  : baseTitle === "context_window"
+                    ? "Context"
+                    : baseTitle === "assistant"
+                      ? "Stream"
+                      : baseTitle === "final"
+                        ? "Final"
+                        : baseTitle === "input_required" || baseTitle === "input_resolved"
+                      ? "Input"
+                      : "Event",
         displayTime: formatTime(timestamp),
-        actor,
-        actorLabel: getTraceActorLabel(actor),
-        eventTitle: formatActivityTitle(getBaseEventTitle(item.title)),
       };
     });
-  }, [activeThread?.activity, activeThread?.updatedAt, conversationMessages, sending]);
+  }, [activeThread]);
 
-  const traceTurnGroups = useMemo(
-    () => buildTraceTurnGroups(conversationMessages, traceEntries),
-    [conversationMessages, traceEntries],
-  );
-  const [collapsedTraceTurns, setCollapsedTraceTurns] = useState<Set<number>>(() => new Set());
+  const conversationMessages = (activeThread?.messages || []) as Message[];
   const displayedTraceEntries = traceEntries;
   const activePendingQuestion = activeThread?.pendingQuestion || null;
   const chatSplitStyle = {
@@ -1787,18 +1427,6 @@ export function ChatWorkspace() {
   useEffect(() => {
     setPendingDrafts(buildInitialPendingDrafts(activePendingQuestion));
   }, [activePendingQuestion]);
-
-  function toggleTraceTurn(turnIndex: number) {
-    setCollapsedTraceTurns((current) => {
-      const next = new Set(current);
-      if (next.has(turnIndex)) {
-        next.delete(turnIndex);
-      } else {
-        next.add(turnIndex);
-      }
-      return next;
-    });
-  }
 
   function handleTraceResizeStart(event: React.MouseEvent<HTMLDivElement>) {
     if (!isTracePanelOpen || event.button !== 0 || window.matchMedia("(max-width: 980px)").matches) {
@@ -2025,7 +1653,6 @@ export function ChatWorkspace() {
               ...thread,
               updatedAt: Date.now(),
               pendingQuestion: null,
-              activity: [...thread.activity, { id: uid(event), title: event, payload }],
               messages: thread.messages.map((message) =>
                 message.id === assistantId ? { ...message, content: text || message.content } : message,
               ),
@@ -2048,13 +1675,7 @@ export function ChatWorkspace() {
               pendingQuestion,
               activity: [...thread.activity, { id: uid(event), title: event, payload }],
               messages: thread.messages.map((message) =>
-                message.id === assistantId
-                  ? {
-                      ...message,
-                      content: message.content || "Waiting for your answer…",
-                      askUserPrompt: pendingQuestion,
-                    }
-                  : message,
+                message.id === assistantId ? { ...message, content: message.content || "Waiting for your answer…" } : message,
               ),
             }));
             return;
@@ -2646,41 +2267,26 @@ export function ChatWorkspace() {
               </div>
 
               <div className="trace-feed is-console-feed">
-                {traceTurnGroups.length === 0 ? (
-                  <p className="trace-empty-copy">Trace events will appear here while the agent runs.</p>
-                ) : (
-                  traceTurnGroups.map((turn) => {
-                    const isCollapsed = collapsedTraceTurns.has(turn.turnIndex);
-                    return (
-                      <section
-                        className={`trace-turn-group${isCollapsed ? " is-collapsed" : ""}`}
-                        key={`turn-${turn.turnIndex}`}
-                      >
-                        <button
-                          aria-expanded={!isCollapsed}
-                          className="trace-turn-header"
-                          onClick={() => toggleTraceTurn(turn.turnIndex)}
-                          type="button"
-                        >
-                          <span className="trace-turn-label">Turn {turn.turnIndex}</span>
-                          <span className="trace-turn-preview">{turn.userPreview}</span>
-                          <span className="trace-turn-count">
-                            {turn.entries.length} step{turn.entries.length === 1 ? "" : "s"}
+                {displayedTraceEntries.map((item) => (
+                  <article className="trace-entry compact-trace-entry" key={item.id}>
+                    <div className="trace-entry-head">
+                      <Badge variant="secondary" className="trace-pill">{item.label}</Badge>
+                      <span className="trace-time">{item.displayTime}</span>
+                    </div>
+                    <strong>{formatActivityTitle(item.title)}</strong>
+                    {getTraceSummary(item) ? <p className="trace-summary-copy">{getTraceSummary(item)}</p> : null}
+                    {getTraceBadges(item).length ? (
+                      <div className="trace-badge-row">
+                        {getTraceBadges(item).map((badge) => (
+                          <span className="trace-inline-badge" key={`${item.id}-${badge}`}>
+                            {badge}
                           </span>
-                          <span className="trace-turn-action">{isCollapsed ? "Expand" : "Collapse"}</span>
-                        </button>
-
-                        {!isCollapsed ? (
-                          <div className="trace-turn-steps">
-                            {turn.entries.map((item) => (
-                              <TraceStepEntry item={item} key={item.id} summary={getTraceSummary(item)} />
-                            ))}
-                          </div>
-                        ) : null}
-                      </section>
-                    );
-                  })
-                )}
+                        ))}
+                      </div>
+                    ) : null}
+                    <pre className="trace-note">{formatTracePayload(item.payload)}</pre>
+                  </article>
+                ))}
               </div>
             </aside>
           ) : null}

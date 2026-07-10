@@ -33,6 +33,9 @@ class ChatSessionSummary(BaseModel):
     title: str
     title_source: SessionTitleSource = "auto"
     agent_name: str | None = None
+    owner_user_id: str | None = None
+    workspace_id: str | None = None
+    created_by_token_id: str | None = None
     preview_text: str = ""
     message_count: int = 0
     created_at: datetime
@@ -55,7 +58,7 @@ class SessionStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def list_sessions(self) -> list[ChatSessionSummary]:
+    async def list_sessions(self, *, owner_user_id: str | None = None, workspace_id: str | None = None) -> list[ChatSessionSummary]:
         raise NotImplementedError
 
     @abstractmethod
@@ -107,8 +110,13 @@ class InMemorySessionStore(SessionStore):
         record.memory_messages = [message.model_copy(deep=True) for message in messages]
         record.updated_at = datetime.now(UTC)
 
-    async def list_sessions(self) -> list[ChatSessionSummary]:
-        summaries = [ChatSessionSummary.model_validate(record.model_dump()) for record in self._sessions.values()]
+    async def list_sessions(self, *, owner_user_id: str | None = None, workspace_id: str | None = None) -> list[ChatSessionSummary]:
+        summaries = [
+            ChatSessionSummary.model_validate(record.model_dump())
+            for record in self._sessions.values()
+            if (owner_user_id is None or record.owner_user_id == owner_user_id)
+            and (workspace_id is None or record.workspace_id == workspace_id)
+        ]
         return sorted(summaries, key=lambda record: record.updated_at, reverse=True)
 
     async def get_session(self, session_id: str) -> ChatSessionRecord | None:
@@ -158,9 +166,14 @@ class PersistentSessionStore(SessionStore):
 
         await run_session_operation(self._session_factory, _save)
 
-    async def list_sessions(self) -> list[ChatSessionSummary]:
+    async def list_sessions(self, *, owner_user_id: str | None = None, workspace_id: str | None = None) -> list[ChatSessionSummary]:
         async def _list(session: AsyncSession) -> list[ChatSessionRow]:
-            return list(await session.scalars(select(ChatSessionRow).order_by(desc(ChatSessionRow.updated_at))))
+            stmt = select(ChatSessionRow).order_by(desc(ChatSessionRow.updated_at))
+            if owner_user_id is not None:
+                stmt = stmt.where(ChatSessionRow.owner_user_id == owner_user_id)
+            if workspace_id is not None:
+                stmt = stmt.where(ChatSessionRow.workspace_id == workspace_id)
+            return list(await session.scalars(stmt))
 
         rows = await run_session_operation(self._session_factory, _list)
         return [self._summary_from_row(row) for row in rows]
@@ -181,6 +194,12 @@ class PersistentSessionStore(SessionStore):
                 if row is None:
                     row = ChatSessionRow(id=record.id)
                     session.add(row)
+                if record.owner_user_id is not None:
+                    row.owner_user_id = record.owner_user_id
+                if record.workspace_id is not None:
+                    row.workspace_id = record.workspace_id
+                if record.created_by_token_id is not None:
+                    row.created_by_token_id = record.created_by_token_id
                 row.title = record.title
                 row.title_source = record.title_source
                 row.agent_name = record.agent_name
@@ -224,6 +243,9 @@ class PersistentSessionStore(SessionStore):
             title=row.title,
             title_source=row.title_source,
             agent_name=row.agent_name,
+            owner_user_id=row.owner_user_id,
+            workspace_id=row.workspace_id,
+            created_by_token_id=row.created_by_token_id,
             preview_text=row.preview_text,
             message_count=len(row.transcript_messages_json or []),
             created_at=row.created_at,

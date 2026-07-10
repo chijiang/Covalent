@@ -31,6 +31,14 @@ class McpServerRow(TimestampMixin, Base):
     __tablename__ = "mcp_servers"
 
     name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(32), nullable=False, default="public")
+    publication_status: Mapped[str] = mapped_column(String(32), nullable=False, default="approved")
+    publication_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publication_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publication_reviewed_by_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     transport: Mapped[str] = mapped_column(String(32), nullable=False)
     command: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -54,6 +62,14 @@ class AgentRow(TimestampMixin, Base):
     __tablename__ = "agents"
 
     name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(32), nullable=False, default="public")
+    publication_status: Mapped[str] = mapped_column(String(32), nullable=False, default="approved")
+    publication_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publication_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publication_reviewed_by_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
@@ -74,6 +90,13 @@ class SkillSourceRow(TimestampMixin, Base):
     __tablename__ = "skill_sources"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(32), nullable=False, default="public")
+    publication_status: Mapped[str] = mapped_column(String(32), nullable=False, default="approved")
+    publication_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publication_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publication_reviewed_by_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     source_type: Mapped[str] = mapped_column(String(32), nullable=False, default="git")
     category: Mapped[str] = mapped_column(String(32), nullable=False, default="github_synced")
@@ -168,6 +191,14 @@ class ProviderRow(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(32), nullable=False, default="public")
+    publication_status: Mapped[str] = mapped_column(String(32), nullable=False, default="approved")
+    publication_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publication_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publication_reviewed_by_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     provider_type: Mapped[str] = mapped_column(String(100), nullable=False, default="openai_compatible")
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
     api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -182,6 +213,7 @@ class UserRow(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     display_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     auth_subject: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
@@ -260,6 +292,24 @@ class AgentRunLogRow(Base):
     model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     usage_json: Mapped[dict[str, Any]] = mapped_column("usage", JSONB, nullable=False, default=dict)
     error_json: Mapped[dict[str, Any]] = mapped_column("error", JSONB, nullable=False, default=dict)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AuditLogRow(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor_token_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("api_tokens.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True)
+    action: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False, default="success")
+    request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 

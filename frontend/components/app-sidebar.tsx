@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   Bot,
@@ -8,7 +9,9 @@ import {
   Cpu,
   KeyRound,
   MessageSquare,
+  ShieldCheck,
   Sparkles,
+  UsersRound,
 } from "lucide-react";
 
 import { ChatSidebarSessions } from "@/components/chat-sidebar-sessions";
@@ -35,6 +38,8 @@ const CONSOLE_ITEMS = [
   { href: "/service-console/provider-settings", label: "Provider settings", icon: Cpu },
   { href: "/service-console/agent-settings", label: "Agent settings", icon: Bot },
   { href: "/service-console/api-tokens", label: "API tokens", icon: KeyRound },
+  { href: "/service-console/audit-logs", label: "Audit logs", icon: ShieldCheck },
+  { href: "/service-console/users", label: "Users", icon: UsersRound },
   { href: "/service-console/mcp-services", label: "MCP services", icon: Cable },
   { href: "/service-console/skill-settings", label: "Skill settings", icon: Sparkles },
 ] as const;
@@ -66,19 +71,19 @@ export function AppSidebar() {
           className="flex min-w-0 items-center rounded-md py-0.5 transition-opacity hover:opacity-80 group-data-[collapsible=icon]:justify-center"
           href={chatHref}
         >
-          <img
+          <Image
             alt="Covalent"
             className="h-10 w-full max-w-full object-contain object-left group-data-[collapsible=icon]:hidden"
-            decoding="async"
             height={188}
+            priority
             src="/logos/covalent-logo-horizontal-1024.png"
             width={1024}
           />
-          <img
+          <Image
             alt="Covalent"
             className="hidden size-10 shrink-0 object-contain group-data-[collapsible=icon]:block"
-            decoding="async"
             height={512}
+            priority
             src="/logos/covalent-mark-512.png"
             width={512}
           />

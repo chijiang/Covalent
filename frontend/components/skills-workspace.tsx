@@ -1,11 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Collapsible } from "@base-ui/react/collapsible";
-import { ChevronRight, FileText, Folder, FolderOpen } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import rehypeSanitize from "rehype-sanitize";
-import remarkGfm from "remark-gfm";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,15 +8,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConsoleAlert } from "@/components/console/console-alert";
 import { ConsolePanel } from "@/components/console/console-panel";
 import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
 import { PanelHeader } from "@/components/console/panel-header";
+import { PublicationControls } from "@/components/console/publication-controls";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
-import { cn } from "@/lib/utils";
 import {
   disableSkill,
   enableSkill,
@@ -156,10 +150,6 @@ function skillStatusLabel(enabled: boolean): string {
   return enabled ? "Enabled" : "Disabled";
 }
 
-function skillStatusTone(enabled: boolean): string {
-  return enabled ? "enabled" : "disabled";
-}
-
 function skillSourceLabel(skill: SkillSummary): string {
   return isGitSkill(skill) ? "Git" : "Local";
 }
@@ -172,35 +162,6 @@ function downloadTextFile(filename: string, content: string, contentType = "text
   link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
-}
-
-function previewLanguageLabel(file: PreviewFile | null): string {
-  if (!file) {
-    return "Text";
-  }
-  if (file.path.toLowerCase().endsWith(".md")) {
-    return "Markdown";
-  }
-  return file.language || "Text";
-}
-
-function isMarkdownPreview(file: PreviewFile | null): boolean {
-  return Boolean(file?.path.toLowerCase().endsWith(".md") || file?.language?.toLowerCase() === "markdown");
-}
-
-function previewLineCount(content: string): number {
-  if (!content) {
-    return 0;
-  }
-  return content.split("\n").length;
-}
-
-function previewByteCount(content: string): string {
-  const bytes = new TextEncoder().encode(content).length;
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
 export function SkillsWorkspace() {
@@ -273,6 +234,14 @@ export function SkillsWorkspace() {
     [selectedSkillName, skills],
   );
 
+  const sourceDirSummary = selectedSkill?.source_dir
+    ? selectedSkill.source_dir.split(/[\\/]/).filter(Boolean).at(-1) ?? selectedSkill.source_dir
+    : "None";
+  const toolSummary = selectedSkill && selectedSkill.tools.length ? selectedSkill.tools.join(", ") : "None";
+  const referenceSummary = selectedSkill && selectedSkill.references.length ? selectedSkill.references.join(", ") : "None";
+  const toolCountSummary = selectedSkill ? `${selectedSkill.tools.length} tools` : "0 tools";
+  const referenceCountSummary = selectedSkill ? `${selectedSkill.references.length} refs` : "0 refs";
+
   useEffect(() => {
     if (!selectedSkillName) {
       setPreview(null);
@@ -328,11 +297,6 @@ export function SkillsWorkspace() {
     () => previewFiles.find((file) => file.path === selectedPreviewPath) ?? previewFiles[0] ?? null,
     [previewFiles, selectedPreviewPath],
   );
-  const selectedPreviewContent = selectedPreviewFile?.content ?? "";
-  const selectedPreviewLanguage = previewLanguageLabel(selectedPreviewFile);
-  const selectedPreviewLineCount = previewLineCount(selectedPreviewContent);
-  const selectedPreviewSize = previewByteCount(selectedPreviewContent);
-  const selectedPreviewIsMarkdown = isMarkdownPreview(selectedPreviewFile);
 
   useEffect(() => {
     if (!selectedPreviewPath) {
@@ -359,53 +323,42 @@ export function SkillsWorkspace() {
   const gitCount = useMemo(() => skills.filter((skill) => isGitSkill(skill)).length, [skills]);
   const canDeleteSelectedSkill = selectedSkill?.category !== "built_in";
 
-  function setPreviewDirectoryOpen(path: string, open: boolean) {
-    setExpandedPreviewDirs((current) => {
-      if (open) {
-        return current.includes(path) ? current : [...current, path];
-      }
-      return current.filter((value) => value !== path);
-    });
+  function togglePreviewDirectory(path: string) {
+    setExpandedPreviewDirs((current) => (current.includes(path) ? current.filter((value) => value !== path) : [...current, path]));
   }
 
   function renderPreviewTree(nodes: PreviewTreeNode[], depth = 0) {
     return nodes.map((node) => {
-      const paddingInlineStart = `${10 + depth * 16}px`;
+      const paddingInlineStart = `${10 + depth * 14}px`;
       if (node.kind === "directory") {
         const isExpanded = expandedPreviewDirSet.has(node.path);
         return (
-          <Collapsible.Root
-            className="skill-tree-group"
-            key={node.path}
-            onOpenChange={(open) => setPreviewDirectoryOpen(node.path, open)}
-            open={isExpanded}
-          >
-            <Collapsible.Trigger
+          <div className="skill-tree-group" key={node.path}>
+            <button
+              aria-expanded={isExpanded}
               className="skill-tree-toggle"
+              onClick={() => togglePreviewDirectory(node.path)}
               style={{ paddingInlineStart }}
               title={node.path}
+              type="button"
             >
-              <ChevronRight aria-hidden="true" className="skill-tree-chevron" />
-              {isExpanded ? <FolderOpen aria-hidden="true" className="skill-tree-icon" /> : <Folder aria-hidden="true" className="skill-tree-icon" />}
-              <span className="skill-tree-label">{node.name}</span>
-            </Collapsible.Trigger>
-            <Collapsible.Panel className="skill-tree-panel" keepMounted>
-              {renderPreviewTree(node.children, depth + 1)}
-            </Collapsible.Panel>
-          </Collapsible.Root>
+              <span aria-hidden="true" className="skill-tree-prefix">{isExpanded ? "v" : ">"}</span>
+              <span className="skill-tree-label">{node.name}/</span>
+            </button>
+            {isExpanded ? renderPreviewTree(node.children, depth + 1) : null}
+          </div>
         );
       }
 
       return (
         <button
-          className={cn("skill-file-item", node.path === selectedPreviewFile?.path ? "is-active" : "")}
+          className={node.path === selectedPreviewFile?.path ? "skill-file-item is-active" : "skill-file-item"}
           key={node.path}
           onClick={() => setSelectedPreviewPath(node.path)}
           style={{ paddingInlineStart }}
           title={node.file?.path || node.path}
           type="button"
         >
-          <FileText aria-hidden="true" className="skill-tree-icon" />
           <span className="skill-tree-label">{node.name}</span>
         </button>
       );
@@ -676,9 +629,25 @@ export function SkillsWorkspace() {
                           </Badge>
                         </div>
                         <p className="entity-meta skill-detail-description">{selectedSkill.description || "No description provided."}</p>
+                        <p className="skill-inline-copy">
+                          {selectedSkill.enabled
+                            ? "Visible to agents and included in prompt and tool resolution."
+                            : "Hidden from agents and excluded from prompt and tool resolution."}
+                        </p>
                       </div>
 
                       <div className="page-action-row skill-detail-actions">
+                        {selectedSkill.publication_resource_name ? (
+                          <PublicationControls
+                            kind="skill_sources"
+                            resourceName={selectedSkill.publication_resource_name}
+                            metadata={selectedSkill}
+                            disabled={busyAction !== null}
+                            onUpdated={refresh}
+                            onMessage={setMessage}
+                            onError={setError}
+                          />
+                        ) : null}
                         <Button
                           variant="outline"
                           disabled={busyAction === "enable-skill" || busyAction === "disable-skill"}
@@ -709,57 +678,56 @@ export function SkillsWorkspace() {
                       </div>
                     </div>
 
-                    <section className="detail-block skill-source-shell">
+                    <div className="skill-meta-rail" role="list" aria-label="Skill metadata">
+                      <div className="skill-meta-chip" role="listitem" aria-label={`Version ${selectedSkill.version || "Unknown"}`} title={`Version ${selectedSkill.version || "Unknown"}`}>
+                        <strong className="skill-meta-summary">v{selectedSkill.version || "unknown"}</strong>
+                      </div>
+                      <div className="skill-meta-chip" role="listitem" aria-label={`Source ${skillSourceLabel(selectedSkill)}`} title={`Source ${skillSourceLabel(selectedSkill)}`}>
+                        <strong className="skill-meta-summary">{skillSourceLabel(selectedSkill)}</strong>
+                      </div>
+                      <div className="skill-meta-chip" role="listitem" aria-label={`Runtime ${selectedSkill.runtime_type || "static"}`} title={`Runtime ${selectedSkill.runtime_type || "static"}`}>
+                        <strong className="skill-meta-summary">{selectedSkill.runtime_type || "static"}</strong>
+                      </div>
+                      <div className="skill-meta-chip skill-meta-chip-path" role="listitem" aria-label={`Directory ${selectedSkill.source_dir || "Not provided"}`} title={`Directory ${selectedSkill.source_dir || "Not provided"}`}>
+                        <strong className="skill-meta-summary skill-path-value">
+                          {sourceDirSummary === "None" ? "No dir" : sourceDirSummary}
+                        </strong>
+                      </div>
+                      <div className="skill-meta-chip skill-meta-chip-resources" role="listitem" aria-label={`Tools ${toolCountSummary}`} title={selectedSkill.tools.length ? toolSummary : "No tools declared."}>
+                        <strong className="skill-meta-summary skill-meta-inline-value">
+                          {toolCountSummary}
+                        </strong>
+                      </div>
+                      <div className="skill-meta-chip skill-meta-chip-resources" role="listitem" aria-label={`References ${referenceCountSummary}`} title={selectedSkill.references.length ? referenceSummary : "No reference files found."}>
+                        <strong className="skill-meta-summary skill-meta-inline-value">
+                          {referenceCountSummary}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <section className="detail-block skill-source-shell stack-gap-sm">
+                      <div className="panel-title-row align-start-row">
+                        <div className="stack-gap-2xs grow-block">
+                          <h3 className="panel-title">Bundled files</h3>
+                        </div>
+                        <Badge>{previewFiles.length} files</Badge>
+                      </div>
+
                       {previewLoading ? <p className="empty-copy padded-empty">Loading file preview...</p> : null}
                       {!previewLoading && previewFiles.length === 0 ? <p className="empty-copy padded-empty">No preview files available for this skill.</p> : null}
 
                       {!previewLoading && previewFiles.length > 0 ? (
                         <div className="skill-source-workbench">
-                          <aside className="skill-file-list" aria-label="Bundled skill files">
-                            <div className="skill-file-list-head">
-                              <strong>Files</strong>
-                              <Badge variant="outline">{previewFiles.length}</Badge>
-                            </div>
-                            <ScrollArea className="skill-file-list-scroll">
-                              <div className="skill-file-tree">
-                                {renderPreviewTree(previewTree)}
-                              </div>
-                            </ScrollArea>
+                          <aside className="skill-file-list">
+                            {renderPreviewTree(previewTree)}
                           </aside>
 
                           <section className="skill-file-preview">
                             <div className="skill-file-preview-head">
-                              <div className="skill-file-preview-title">
-                                <strong>{selectedPreviewFile?.path || "Preview"}</strong>
-                                <span>{selectedPreviewLanguage}</span>
-                              </div>
-                              <div className="skill-file-preview-stats" aria-label="File preview metadata">
-                                <span>{selectedPreviewLineCount} lines</span>
-                                <span>{selectedPreviewSize}</span>
-                              </div>
+                              <strong>{selectedPreviewFile?.path || "Preview"}</strong>
+                              <span>{selectedPreviewFile?.language || "text"}</span>
                             </div>
-                            <Tabs className="skill-file-preview-tabs" defaultValue={selectedPreviewIsMarkdown ? "rendered" : "source"} key={selectedPreviewFile?.path || "preview"}>
-                              <div className="skill-file-preview-toolbar">
-                                <TabsList variant="line">
-                                  <TabsTrigger value="rendered" disabled={!selectedPreviewIsMarkdown}>Rendered</TabsTrigger>
-                                  <TabsTrigger value="source">Source</TabsTrigger>
-                                </TabsList>
-                              </div>
-                              <TabsContent className="skill-file-preview-pane" value="rendered">
-                                <ScrollArea className="skill-file-preview-scroll">
-                                  <article className="skill-document-preview">
-                                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
-                                      {selectedPreviewContent}
-                                    </ReactMarkdown>
-                                  </article>
-                                </ScrollArea>
-                              </TabsContent>
-                              <TabsContent className="skill-file-preview-pane" value="source">
-                                <ScrollArea className="skill-file-preview-scroll">
-                                  <pre className="code-preview skill-source-preview">{selectedPreviewContent}</pre>
-                                </ScrollArea>
-                              </TabsContent>
-                            </Tabs>
+                            <pre className="code-preview skill-source-preview">{selectedPreviewFile?.content ?? ""}</pre>
                           </section>
                         </div>
                       ) : null}

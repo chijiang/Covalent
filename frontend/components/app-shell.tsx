@@ -6,14 +6,17 @@ import { usePathname } from "next/navigation";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppTopBar } from "@/components/app-top-bar";
+import { useAuth } from "@/components/auth-provider";
 import { ChatSessionsProvider } from "@/components/chat-sessions-provider";
 import { PageShellProvider } from "@/components/page-shell-context";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const { isLoading, user } = useAuth();
   const isChatPage = pathname === "/";
   const isConsolePage = pathname.startsWith("/service-console");
+  const isAuthPage = pathname === "/login" || pathname === "/register";
 
   useEffect(() => {
     document.body.classList.toggle("chat-page-body", isChatPage);
@@ -23,6 +26,18 @@ export function AppShell({ children }: { children: ReactNode }) {
       document.body.classList.remove("chat-page-body", "service-console-body");
     };
   }, [isChatPage, isConsolePage]);
+
+  if (isAuthPage) {
+    return <>{children}</>;
+  }
+
+  if (isLoading || !user) {
+    return (
+      <div className="auth-loading-screen">
+        <div className="auth-loading-card">Checking session...</div>
+      </div>
+    );
+  }
 
   return (
     <Suspense fallback={null}>

@@ -8,11 +8,12 @@ import { ConsolePanel } from "@/components/console/console-panel";
 import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
 import { PanelHeader } from "@/components/console/panel-header";
+import { PublicationControls } from "@/components/console/publication-controls";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { callMcpTool, exportManagementConfig, getConfig, importManagementConfig, inspectMcpServer, saveConfig } from "@/lib/client-api";
 import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
-import type { ConfigDocument, McpInspectResponse, McpServerConfig } from "@/lib/types";
+import type { McpInspectResponse, McpServerConfig } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -241,7 +242,6 @@ function envEntriesToRecord(entries: EnvFormEntry[]): Record<string, string> {
 
 export function McpWorkspace() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
-  const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
   const [editor, setEditor] = useState("[]\n");
   const [selectedName, setSelectedName] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -263,7 +263,6 @@ export function McpWorkspace() {
     setError(null);
     try {
       const nextDocument = await getConfig("mcp");
-      setConfigDocument(nextDocument);
       setEditor(nextDocument.raw);
       const list = Array.isArray(nextDocument.data) ? (nextDocument.data as McpServerConfig[]) : [];
       setInspectionByServer((current) => Object.fromEntries(Object.entries(current).filter(([name]) => list.some((server) => server.name === name))));
@@ -531,7 +530,6 @@ export function McpWorkspace() {
         });
       }
       const saved = await saveConfig("mcp", nextRaw);
-      setConfigDocument(saved);
       setEditor(saved.raw);
       setMessage(`Saved service: ${nextServer.name}.`);
       await refresh();
@@ -557,7 +555,6 @@ export function McpWorkspace() {
     });
     await runAction("delete", async () => {
       const saved = await saveConfig("mcp", nextRaw);
-      setConfigDocument(saved);
       setEditor(saved.raw);
       setMessage(`Deleted service: ${selectedServer.name}.`);
       await refresh();
@@ -778,6 +775,15 @@ export function McpWorkspace() {
                           {busyAction === "delete" ? "Deleting" : "Delete service"}
                         </Button>
                       </div>
+                      <PublicationControls
+                        disabled={!!busyAction}
+                        kind="mcp"
+                        metadata={selectedServer}
+                        onError={(nextError) => setError(nextError || null)}
+                        onMessage={setMessage}
+                        onUpdated={refresh}
+                        resourceName={selectedServer.internal_name || selectedServer.name}
+                      />
                     </div>
 
                     <div className="skill-meta-rail" role="list" aria-label="MCP service metadata">

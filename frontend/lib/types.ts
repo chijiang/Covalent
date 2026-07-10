@@ -15,6 +15,20 @@ export type ProviderEntry = {
   is_default: boolean;
   position: number;
   models?: string[];
+} & ResourcePublicationMetadata;
+
+export type ResourceVisibility = "private" | "public";
+export type PublicationStatus = "draft" | "pending" | "approved" | "rejected";
+
+export type ResourcePublicationMetadata = {
+  internal_name?: string | null;
+  owner_user_id?: string | null;
+  workspace_id?: string | null;
+  visibility?: ResourceVisibility;
+  publication_status?: PublicationStatus;
+  publication_requested_at?: string | null;
+  publication_reviewed_at?: string | null;
+  publication_reviewed_by_user_id?: string | null;
 };
 
 export type ProviderConfig = {
@@ -53,7 +67,7 @@ export type AgentConfig = {
   capabilities: Capability[];
   max_iterations?: number;
   metadata?: Record<string, unknown>;
-};
+} & ResourcePublicationMetadata;
 
 export type AgentSummary = {
   name: string;
@@ -191,7 +205,7 @@ export type McpServerConfig = {
   args?: string[];
   url?: string | null;
   env?: Record<string, string>;
-};
+} & ResourcePublicationMetadata;
 
 export type McpToolSummary = {
   name: string;
@@ -221,7 +235,8 @@ export type SkillSummary = {
   tools: string[];
   references: string[];
   enabled: boolean;
-};
+  publication_resource_name?: string | null;
+} & ResourcePublicationMetadata;
 
 export type SkillPreviewFile = {
   path: string;
@@ -272,6 +287,9 @@ export type ApiTokenPolicy = {
   allowed_agents?: string[];
   allowed_memory_modes?: Array<"none" | "session">;
   max_trace_level?: "none" | "steps" | "debug";
+  max_requests_per_minute?: number;
+  max_requests_per_day?: number;
+  max_tokens_per_day?: number;
   [key: string]: unknown;
 };
 
@@ -305,4 +323,87 @@ export type ApiTokenCreateRequest = {
 
 export type ApiTokenCreateResponse = ApiTokenSummary & {
   token: string;
+};
+
+export type ConsoleLoginRequest = {
+  email: string;
+  password: string;
+};
+
+export type ConsoleRegisterRequest = {
+  email: string;
+  password: string;
+  display_name?: string;
+  workspace_name?: string;
+};
+
+export type ConsoleUser = {
+  user_id: string;
+  email: string;
+  display_name: string;
+  role: string;
+  workspace_id: string;
+  workspace_name: string;
+  workspace_role: string;
+};
+
+export type ConsoleUserSummary = {
+  user_id: string;
+  email: string;
+  display_name: string;
+  role: "admin" | "member" | string;
+  status: "active" | "disabled" | string;
+  workspace_id?: string | null;
+  workspace_name?: string | null;
+  workspace_role?: "admin" | "member" | string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConsoleUserUpdateRequest = {
+  display_name?: string | null;
+  role?: "admin" | "member" | null;
+  status?: "active" | "disabled" | null;
+  workspace_role?: "admin" | "member" | null;
+};
+
+export type PublicationRequestResponse = {
+  kind: ConfigKind;
+  name: string;
+  visibility: ResourceVisibility;
+  publication_status: PublicationStatus;
+};
+
+export type AgentRunLog = {
+  id: string;
+  user_id?: string | null;
+  token_id?: string | null;
+  workspace_id?: string | null;
+  agent_name: string;
+  memory_mode: string;
+  session_id?: string | null;
+  status: string;
+  latency_ms?: number | null;
+  provider?: string | null;
+  model?: string | null;
+  usage: Record<string, unknown>;
+  error: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type AuditLog = {
+  id: string;
+  actor_user_id?: string | null;
+  actor_token_id?: string | null;
+  workspace_id?: string | null;
+  action: string;
+  target_type: string;
+  target_id?: string | null;
+  outcome: string;
+  request_id?: string | null;
+  ip_address?: string | null;
+  user_agent?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
 };

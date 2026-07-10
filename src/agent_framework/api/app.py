@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 import json
 import logging
 import os
 import mimetypes
 from pathlib import Path
 import re
+import secrets
 import shutil
 import tempfile
 from time import perf_counter
@@ -16,18 +18,27 @@ from uuid import uuid4
 import zipfile
 
 import anyio
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+import jwt
+from jwt import PyJWTError
 from pydantic import ValidationError
 import yaml
 
 from agent_framework.api.schemas import (
     AgentRunRequest,
     AgentRunResponse,
+    AgentRunLogResponse,
+    AuditLogResponse,
     ApiTokenCreateRequest,
     ApiTokenCreateResponse,
     ApiTokenSummaryResponse,
+    ConsoleLoginRequest,
+    ConsoleRegisterRequest,
+    ConsoleUserResponse,
+    ConsoleUserSummaryResponse,
+    ConsoleUserUpdateRequest,
     LocalToolSummaryResponse,
     AgentSummaryResponse,
     AttachmentUploadResponse,
@@ -49,6 +60,8 @@ from agent_framework.api.schemas import (
     McpToolCallResponse,
     McpToolSummaryResponse,
     ProviderSummaryResponse,
+    PublicationRequestResponse,
+    PublicationReviewRequest,
     PublicAgentInvokeRequest,
     PublicAgentInvokeResponse,
     SkillInstallRequest,
@@ -63,27 +76,35 @@ from agent_framework.api.auth import (
     ApiPrincipal,
     authenticate_api_token,
     generate_api_token,
+    hash_password,
     hash_api_token,
     require_agent_allowed,
     require_memory_mode_allowed,
     require_scope,
     require_trace_level_allowed,
+    verify_password,
 )
 from agent_framework.core.attachment_processing import process_attachment_bytes
 from agent_framework.core.agent import AgentSpec
 from agent_framework.core.workspace_tools import register_workspace_tools
 from agent_framework.core.types import Capability, GenerationRequest, Message, ResumedToolResult, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
-from agent_framework.infra.config_store import ConfigKind, ConfigStore, PersistedAgentConfig, PersistedSkillSourceConfig
-from sqlalchemy import select, text
+from agent_framework.infra.config_store import ConfigKind, ConfigPrincipal, ConfigStore, PersistedAgentConfig, PersistedSkillSourceConfig
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_framework.infra.db import (
+    AuditLogRow,
     AgentRunLogRow,
+    AgentRow,
     ApiTokenRow,
     ChatSessionRow,
     DatabaseManager,
     UserRow,
     WorkspaceMemberRow,
     WorkspaceRow,
+    McpServerRow,
+    ProviderRow,
+    SkillSourceRow,
 )
 from agent_framework.infra.migrations import run_database_migrations
 from agent_framework.infra.memory import (
@@ -176,6 +197,16 @@ TRACE_ACTIVITY_EVENTS = {
     SSE_EVENT_DELEGATE_MODEL_CALL,
 }
 
+RESOURCE_METADATA_FIELDS = (
+    "owner_user_id",
+    "workspace_id",
+    "visibility",
+    "publication_status",
+    "publication_requested_at",
+    "publication_reviewed_at",
+    "publication_reviewed_by_user_id",
+)
+
 
 def _safe_extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
     target_dir = target_dir.resolve()
@@ -254,7 +285,7 @@ async def build_registry(
         "agents",
         _seed_agent_payload(settings, provider_config, mcp_servers),
     )
-    for agent in _build_agent_specs(agent_payload, provider_config, mcp_servers, settings):
+    for agent in _build_agent_specs(agent_payload, provider_config, mcp_servers, settings, mcp_payload=mcp_payload):
         registry.register_agent(agent)
 
     loader = SkillLoader(settings)
@@ -275,6 +306,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("AGENT_FRAMEWORK_DATABASE_URL must be set when using persistent config storage")
     await anyio.to_thread.run_sync(run_database_migrations, database_url.replace('+asyncpg', ''))
     db_manager = DatabaseManager(database_url)
+    await _seed_initial_admin_user(db_manager, settings)
     config_store = ConfigStore(db_manager.session_factory)
     registry, loader, skill_source_payload = await build_registry(settings, config_store)
 
@@ -342,21 +374,145 @@ def create_app() -> FastAPI:
 
         return checks
 
-    @app.get("/api-tokens")
-    async def list_api_tokens() -> list[ApiTokenSummaryResponse]:
+    @app.get("/me")
+    async def get_current_console_user(request: Request) -> ConsoleUserResponse:
         db_manager: DatabaseManager = app.state.db_manager
-        return await _list_api_token_summaries(db_manager)
+        principal = await _resolve_console_principal(request, db_manager)
+        return _console_user_response(principal)
 
-    @app.post("/api-tokens")
-    async def create_api_token(request: ApiTokenCreateRequest) -> ApiTokenCreateResponse:
+    @app.post("/auth/register")
+    async def register_console_user(
+        request: Request,
+        response: Response,
+        register_request: ConsoleRegisterRequest,
+    ) -> ConsoleUserResponse:
         settings: AppSettings = app.state.settings
         db_manager: DatabaseManager = app.state.db_manager
-        return await _create_api_token(db_manager, settings, request)
+        principal = await _register_console_user(db_manager, settings, register_request)
+        _set_console_session_cookie(response, settings, principal)
+        await _record_audit_log(
+            db_manager,
+            action="auth.register",
+            target_type="user",
+            target_id=principal.user_id,
+            principal=principal,
+            request=request,
+        )
+        return _console_user_response(principal)
+
+    @app.post("/auth/login")
+    async def login_console_user(
+        request: Request,
+        response: Response,
+        login_request: ConsoleLoginRequest,
+    ) -> ConsoleUserResponse:
+        settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _authenticate_console_password(db_manager, login_request)
+        _set_console_session_cookie(response, settings, principal)
+        await _record_audit_log(
+            db_manager,
+            action="auth.login",
+            target_type="user",
+            target_id=principal.user_id,
+            principal=principal,
+            request=request,
+        )
+        return _console_user_response(principal)
+
+    @app.post("/auth/logout")
+    async def logout_console_user(request: Request, response: Response) -> dict[str, str]:
+        settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
+        try:
+            principal = await _resolve_console_principal(request, db_manager)
+        except HTTPException:
+            principal = None
+        _clear_console_session_cookie(response, settings)
+        if principal is not None:
+            await _record_audit_log(
+                db_manager,
+                action="auth.logout",
+                target_type="user",
+                target_id=principal.user_id,
+                principal=principal,
+                request=request,
+            )
+        return {"status": "ok"}
+
+    @app.get("/users")
+    async def list_console_users(request: Request) -> list[ConsoleUserSummaryResponse]:
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        return await _list_console_users(db_manager, principal)
+
+    @app.patch("/users/{user_id}")
+    async def update_console_user(
+        request: Request,
+        user_id: str,
+        update_request: ConsoleUserUpdateRequest,
+    ) -> ConsoleUserSummaryResponse:
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        updated = await _update_console_user(db_manager, principal, user_id, update_request)
+        await _record_audit_log(
+            db_manager,
+            action="user.updated",
+            target_type="user",
+            target_id=updated.user_id,
+            principal=principal,
+            request=request,
+            metadata={"role": updated.role, "status": updated.status, "workspace_role": updated.workspace_role},
+        )
+        return updated
+
+    @app.get("/api-tokens")
+    async def list_api_tokens(request: Request) -> list[ApiTokenSummaryResponse]:
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        return await _list_api_token_summaries(db_manager, principal)
+
+    @app.post("/api-tokens")
+    async def create_api_token(request: Request, token_request: ApiTokenCreateRequest) -> ApiTokenCreateResponse:
+        settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        return await _create_api_token(db_manager, settings, token_request, principal, request)
 
     @app.delete("/api-tokens/{token_id}")
-    async def revoke_api_token(token_id: str) -> ApiTokenSummaryResponse:
+    async def revoke_api_token(request: Request, token_id: str) -> ApiTokenSummaryResponse:
         db_manager: DatabaseManager = app.state.db_manager
-        return await _revoke_api_token(db_manager, token_id)
+        principal = await _resolve_console_principal(request, db_manager)
+        return await _revoke_api_token(db_manager, token_id, principal, request)
+
+    @app.get("/api-tokens/{token_id}/runs")
+    async def list_api_token_runs(request: Request, token_id: str, limit: int = 50) -> list[AgentRunLogResponse]:
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        return await _list_api_token_runs(db_manager, token_id, principal, limit=limit)
+
+    @app.get("/audit-logs")
+    async def list_audit_logs(
+        request: Request,
+        limit: int = 100,
+        action: str | None = None,
+        outcome: str | None = None,
+        actor_user_id: str | None = None,
+        actor_token_id: str | None = None,
+        target_type: str | None = None,
+    ) -> list[AuditLogResponse]:
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        return await _list_audit_logs(
+            db_manager,
+            principal,
+            limit=limit,
+            action=action,
+            outcome=outcome,
+            actor_user_id=actor_user_id,
+            actor_token_id=actor_token_id,
+            target_type=target_type,
+        )
 
     @app.post("/v1/agent/invoke", response_model=None)
     async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvokeRequest) -> PublicAgentInvokeResponse | StreamingResponse:
@@ -365,20 +521,48 @@ def create_app() -> FastAPI:
         registry: FrameworkRegistry = app.state.registry
         runtime: ReactAgentRuntime = app.state.runtime
 
-        principal = await authenticate_api_token(
-            request,
-            settings=settings,
-            session_factory=db_manager.session_factory,
-        )
         memory_mode = invoke_request.memory.mode
         trace_level = invoke_request.trace.level
-        require_scope(principal, "agent:invoke")
-        require_agent_allowed(principal, invoke_request.agent)
-        require_memory_mode_allowed(principal, memory_mode)
-        require_trace_level_allowed(principal, trace_level)
+        try:
+            principal = await authenticate_api_token(
+                request,
+                settings=settings,
+                session_factory=db_manager.session_factory,
+            )
+        except HTTPException as exc:
+            await _record_denied_public_agent_invoke(
+                db_manager,
+                principal=None,
+                agent_name=invoke_request.agent,
+                memory_mode=memory_mode,
+                request=request,
+                reason=str(exc.detail),
+                status_code=exc.status_code,
+            )
+            raise
+        resolved_agent_name = invoke_request.agent
+        try:
+            require_scope(principal, "agent:invoke")
+            require_agent_allowed(principal, invoke_request.agent)
+            require_memory_mode_allowed(principal, memory_mode)
+            require_trace_level_allowed(principal, trace_level)
+            resolved_agent_name = await _resolve_api_agent_name(db_manager, principal, invoke_request.agent)
+            await _ensure_api_principal_can_invoke_agent(db_manager, principal, resolved_agent_name)
+            await _enforce_api_token_policy_limits(db_manager, principal, agent_name=resolved_agent_name)
+        except HTTPException as exc:
+            await _record_denied_public_agent_invoke(
+                db_manager,
+                principal=principal,
+                agent_name=resolved_agent_name,
+                memory_mode=memory_mode,
+                request=request,
+                reason=str(exc.detail),
+                status_code=exc.status_code,
+            )
+            raise
 
         try:
-            agent = registry.get_agent(invoke_request.agent)
+            agent = registry.get_agent(resolved_agent_name)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown agent: {invoke_request.agent}") from exc
 
@@ -532,14 +716,16 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/providers/{provider_name}/models")
-    async def list_provider_models(provider_name: str) -> list[str]:
+    async def list_provider_models(request: Request, provider_name: str) -> list[str]:
         """Fetch available models from an OpenAI-compatible provider."""
         settings: AppSettings = app.state.settings
         config_store: ConfigStore = app.state.config_store
-        providers = await config_store.get_document("providers")
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        providers = await config_store.get_document("providers", principal.config)
         target = None
         for p in providers:
-            if p.get("name") == provider_name:
+            if p.get("name") == provider_name or p.get("internal_name") == provider_name:
                 target = p
                 break
         if target is None:
@@ -562,31 +748,49 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail=f"Failed to fetch models: {exc}") from exc
 
     @app.get("/sessions")
-    async def list_sessions() -> list[ChatSessionSummaryResponse]:
+    async def list_sessions(request: Request) -> list[ChatSessionSummaryResponse]:
+        db_manager: DatabaseManager = app.state.db_manager
         session_store: SessionStore = app.state.session_store
-        return [to_chat_session_summary_response(record) for record in await session_store.list_sessions()]
+        principal = await _resolve_console_principal(request, db_manager)
+        filters = {} if principal.is_admin else {"owner_user_id": principal.user_id, "workspace_id": principal.workspace_id}
+        return [to_chat_session_summary_response(record) for record in await session_store.list_sessions(**filters)]
 
     @app.get("/sessions/{session_id}")
-    async def get_session(session_id: str) -> ChatSessionResponse:
+    async def get_session(request: Request, session_id: str) -> ChatSessionResponse:
+        db_manager: DatabaseManager = app.state.db_manager
         session_store: SessionStore = app.state.session_store
+        principal = await _resolve_console_principal(request, db_manager)
         record = await session_store.get_session(session_id)
         if record is None:
             raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
+        _ensure_console_principal_can_access_session(principal, record)
         return to_chat_session_response(record)
 
     @app.patch("/sessions/{session_id}")
-    async def rename_session(session_id: str, request: ChatSessionUpdateRequest) -> ChatSessionResponse:
+    async def rename_session(request: Request, session_id: str, update_request: ChatSessionUpdateRequest) -> ChatSessionResponse:
+        db_manager: DatabaseManager = app.state.db_manager
         session_store: SessionStore = app.state.session_store
+        principal = await _resolve_console_principal(request, db_manager)
+        existing = await session_store.get_session(session_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
+        _ensure_console_principal_can_access_session(principal, existing)
         try:
-            record = await session_store.update_title(session_id, request.title.strip(), "manual")
+            record = await session_store.update_title(session_id, update_request.title.strip(), "manual")
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}") from exc
         return to_chat_session_response(record)
 
     @app.delete("/sessions/{session_id}")
-    async def delete_session(session_id: str) -> dict[str, str]:
+    async def delete_session(request: Request, session_id: str) -> dict[str, str]:
         settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
         session_store: SessionStore = app.state.session_store
+        principal = await _resolve_console_principal(request, db_manager)
+        existing = await session_store.get_session(session_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
+        _ensure_console_principal_can_access_session(principal, existing)
         if not await session_store.delete_session(session_id):
             raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
         shutil.rmtree(_attachment_session_dir(settings.workspace_root(), session_id), ignore_errors=True)
@@ -598,12 +802,19 @@ def create_app() -> FastAPI:
 
     @app.post("/attachments/upload")
     async def upload_attachments(
+        request: Request,
         session_id: str = Form(...),
         delivery_mode: Literal["parse", "workspace"] = Form("parse"),
         metadata_json: str = Form("[]"),
         files: list[UploadFile] = File(...),
     ) -> AttachmentUploadResponse:
         settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
+        session_store: SessionStore = app.state.session_store
+        principal = await _resolve_console_principal(request, db_manager)
+        existing_session = await session_store.get_session(session_id)
+        if existing_session is not None:
+            _ensure_console_principal_can_access_session(principal, existing_session)
         if not files:
             raise HTTPException(status_code=400, detail="At least one attachment is required")
         try:
@@ -662,8 +873,15 @@ def create_app() -> FastAPI:
         return AttachmentUploadResponse(session_id=session_id, files=uploaded_files)
 
     @app.get("/downloads/{session_id}/{file_name}")
-    async def download_published_file(session_id: str, file_name: str) -> FileResponse:
+    async def download_published_file(request: Request, session_id: str, file_name: str) -> FileResponse:
         settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
+        session_store: SessionStore = app.state.session_store
+        principal = await _resolve_console_principal(request, db_manager)
+        existing_session = await session_store.get_session(session_id)
+        if existing_session is None:
+            raise HTTPException(status_code=404, detail="Unknown download")
+        _ensure_console_principal_can_access_session(principal, existing_session)
         normalized_name = Path(file_name).name
         if not normalized_name or normalized_name != file_name:
             raise HTTPException(status_code=404, detail="Unknown download")
@@ -676,9 +894,16 @@ def create_app() -> FastAPI:
         return FileResponse(target_path, media_type=media_type, filename=target_path.name)
 
     @app.get("/agents")
-    async def list_agents() -> list[dict[str, str]]:
-        registry: FrameworkRegistry = app.state.registry
-        return [{"name": agent.name, "description": agent.description} for agent in registry.agents.values()]
+    async def list_agents(request: Request) -> list[dict[str, str]]:
+        config_store: ConfigStore = app.state.config_store
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        agents = await config_store.get_document("agents", principal.config)
+        return [
+            {"name": str(agent.get("name") or ""), "description": str(agent.get("description") or "")}
+            for agent in agents
+            if str(agent.get("name") or "")
+        ]
 
     @app.get("/local-tools")
     async def list_local_tools() -> list[LocalToolSummaryResponse]:
@@ -687,28 +912,37 @@ def create_app() -> FastAPI:
         return _available_local_tool_summaries(registry, settings)
 
     @app.get("/agents/{agent_name}")
-    async def get_agent(agent_name: str) -> AgentSummaryResponse:
+    async def get_agent(request: Request, agent_name: str) -> AgentSummaryResponse:
+        db_manager: DatabaseManager = app.state.db_manager
         registry: FrameworkRegistry = app.state.registry
+        principal = await _resolve_console_principal(request, db_manager)
+        resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
+        await _ensure_console_principal_can_access_agent(db_manager, principal, resolved_agent_name)
         try:
-            return to_agent_summary(registry.get_agent(agent_name))
+            summary = to_agent_summary(registry.get_agent(resolved_agent_name))
+            return summary.model_copy(update={"name": agent_name})
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}") from exc
 
     @app.post("/agents/{agent_name}/run")
-    async def run_agent(agent_name: str, request: AgentRunRequest) -> AgentRunResponse:
+    async def run_agent(request: Request, agent_name: str, run_request: AgentRunRequest) -> AgentRunResponse:
+        db_manager: DatabaseManager = app.state.db_manager
         registry: FrameworkRegistry = app.state.registry
         runtime: ReactAgentRuntime = app.state.runtime
-        session_id = request.session_id or _new_chat_item_id("session")
+        principal = await _resolve_console_principal(request, db_manager)
+        resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
+        await _ensure_console_principal_can_access_agent(db_manager, principal, resolved_agent_name)
+        session_id = run_request.session_id or _new_chat_item_id("session")
         try:
-            agent = registry.get_agent(agent_name)
+            agent = registry.get_agent(resolved_agent_name)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}") from exc
 
         try:
             result = await runtime.run(
                 agent,
-                request.input,
-                RunContext(agent_name=agent_name, session_id=session_id, metadata=request.metadata),
+                run_request.input,
+                RunContext(agent_name=resolved_agent_name, session_id=session_id, metadata=run_request.metadata),
             )
         except ModelProviderError as exc:
             status_code = 502 if exc.status_code is None else min(max(exc.status_code, 400), 599)
@@ -723,19 +957,25 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/agents/{agent_name}/stream")
-    async def stream_agent(agent_name: str, request: AgentRunRequest) -> StreamingResponse:
+    async def stream_agent(request: Request, agent_name: str, run_request: AgentRunRequest) -> StreamingResponse:
+        db_manager: DatabaseManager = app.state.db_manager
         registry: FrameworkRegistry = app.state.registry
         runtime: ReactAgentRuntime = app.state.runtime
         session_store: SessionStore = app.state.session_store
-        session_id = request.session_id or _new_chat_item_id("session")
+        principal = await _resolve_console_principal(request, db_manager)
+        resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
+        await _ensure_console_principal_can_access_agent(db_manager, principal, resolved_agent_name)
+        session_id = run_request.session_id or _new_chat_item_id("session")
         try:
-            agent = registry.get_agent(agent_name)
+            agent = registry.get_agent(resolved_agent_name)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}") from exc
 
         existing = await session_store.get_session(session_id)
+        if existing is not None:
+            _ensure_console_principal_can_access_session(principal, existing)
         pending_input = _extract_pending_user_input(existing.activity) if existing else None
-        resume_tool_result = _build_resume_tool_result(request, pending_input)
+        resume_tool_result = _build_resume_tool_result(run_request, pending_input)
         if pending_input is not None and resume_tool_result is None:
             raise HTTPException(
                 status_code=409,
@@ -748,15 +988,10 @@ def create_app() -> FastAPI:
         async def event_stream():
             transcript_messages = [message.model_copy(deep=True) for message in existing.messages] if existing else []
             activity = [item.model_copy(deep=True) for item in existing.activity] if existing else []
-            user_transcript = _build_user_transcript_message(request)
+            user_transcript = _build_user_transcript_message(run_request)
             transcript_messages.append(user_transcript)
             assistant_message_id = _new_chat_item_id("assistant")
-            runtime_metadata = dict(request.metadata or {})
-            runtime_metadata["defer_session_persist"] = True
-            if existing is not None:
-                runtime_metadata["preloaded_memory_messages"] = [
-                    message.model_dump(mode="json") for message in existing.memory_messages
-                ]
+            runtime_metadata = dict(run_request.metadata or {})
             if resume_tool_result is not None:
                 runtime_metadata["resume_tool_result"] = resume_tool_result.model_dump(mode="json")
                 activity.append(
@@ -771,12 +1006,11 @@ def create_app() -> FastAPI:
                     )
                 )
 
-            run_context = RunContext(agent_name=agent_name, session_id=session_id, metadata=runtime_metadata)
             try:
                 async for event in runtime.stream_events(
                     agent,
-                    request.input,
-                    run_context,
+                    run_request.input,
+                    RunContext(agent_name=resolved_agent_name, session_id=session_id, metadata=runtime_metadata),
                 ):
                     event_name = event["event"]
                     payload = event["payload"]
@@ -809,11 +1043,7 @@ def create_app() -> FastAPI:
                 activity.append(ChatActivityItem(id=_new_chat_item_id(SSE_EVENT_ERROR), title=SSE_EVENT_ERROR, payload=payload))
                 yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
             finally:
-                raw_memory_messages = run_context.metadata.get("persisted_memory_messages")
-                if isinstance(raw_memory_messages, list):
-                    memory_messages = [Message.model_validate(item) for item in raw_memory_messages]
-                else:
-                    memory_messages = [message.model_copy(deep=True) for message in existing.memory_messages] if existing else []
+                memory_messages = await session_store.load_messages(session_id)
                 now = datetime.now(UTC)
                 title_source = existing.title_source if existing else "auto"
                 title = existing.title if existing else "New conversation"
@@ -830,6 +1060,8 @@ def create_app() -> FastAPI:
                         title=resolved_title,
                         title_source=title_source,
                         agent_name=agent.name,
+                        owner_user_id=principal.user_id,
+                        workspace_id=principal.workspace_id,
                         preview_text=_build_session_preview(transcript_messages),
                         created_at=existing.created_at if existing else now,
                         updated_at=existing.updated_at if existing else now,
@@ -863,20 +1095,24 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/config/{kind}")
-    async def get_config(kind: str) -> ConfigDocumentResponse:
+    async def get_config(request: Request, kind: str) -> ConfigDocumentResponse:
         settings: AppSettings = app.state.settings
         config_store: ConfigStore = app.state.config_store
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
         normalized = _normalize_config_kind(kind)
-        payload = await config_store.get_document(normalized)
+        payload = await config_store.get_document(normalized, principal.config)
         return _config_document_response(normalized, payload, settings)
 
     @app.put("/config/{kind}")
-    async def put_config(kind: str, request: ConfigDocumentUpdateRequest) -> ConfigDocumentResponse:
+    async def put_config(request: Request, kind: str, update_request: ConfigDocumentUpdateRequest) -> ConfigDocumentResponse:
         settings: AppSettings = app.state.settings
         config_store: ConfigStore = app.state.config_store
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
         normalized = _normalize_config_kind(kind)
         try:
-            raw_payload = json.loads(request.raw)
+            raw_payload = json.loads(update_request.raw)
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}") from exc
 
@@ -887,16 +1123,42 @@ def create_app() -> FastAPI:
             validated = _validate_config_payload(normalized, raw_payload)
         except ValidationError as exc:
             raise HTTPException(status_code=400, detail=exc.errors()) from exc
-        agent_renames = _extract_agent_renames(request.metadata) if normalized == "agents" else None
-        payload = await config_store.save_document(normalized, validated, agent_renames=agent_renames)
-        await _apply_runtime_config(app, normalized, payload)
+        agent_renames = _extract_agent_renames(update_request.metadata) if normalized == "agents" else None
+        payload = await config_store.save_document(normalized, validated, principal=principal.config, agent_renames=agent_renames)
+        global_payload = await config_store.get_document(normalized)
+        await _apply_runtime_config(app, normalized, global_payload)
         return _config_document_response(normalized, payload, settings)
 
+    @app.post("/config/{kind}/{resource_name}/publish-request")
+    async def request_config_publication(request: Request, kind: str, resource_name: str) -> PublicationRequestResponse:
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        normalized = _normalize_config_kind(kind)
+        return await _request_resource_publication(db_manager, principal, normalized, resource_name, request)
+
+    @app.post("/config/{kind}/{resource_name}/publication-review")
+    async def review_config_publication(
+        request: Request,
+        kind: str,
+        resource_name: str,
+        review: PublicationReviewRequest,
+    ) -> PublicationRequestResponse:
+        config_store: ConfigStore = app.state.config_store
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        normalized = _normalize_config_kind(kind)
+        response = await _review_resource_publication(db_manager, principal, normalized, resource_name, review.status, request)
+        global_payload = await config_store.get_document(normalized)
+        await _apply_runtime_config(app, normalized, global_payload)
+        return response
+
     @app.get("/management/{kind}/export")
-    async def export_management_config(kind: str, format: str = "yaml") -> ManagementExportResponse:
+    async def export_management_config(request: Request, kind: str, format: str = "yaml") -> ManagementExportResponse:
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
         normalized_kind = _normalize_management_kind(kind)
         normalized_format = _normalize_management_export_format(format)
-        payload, item_count = await _build_management_export_payload(app, normalized_kind)
+        payload, item_count = await _build_management_export_payload(app, normalized_kind, principal)
         content = _serialize_management_export_payload(payload, normalized_format)
         extension = "yaml" if normalized_format == "yaml" else "json"
         content_type = "application/x-yaml" if normalized_format == "yaml" else "application/json"
@@ -910,8 +1172,10 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/management/{kind}/import")
-    async def import_management_config(kind: str, file: UploadFile = File(...)) -> ManagementImportResponse:
+    async def import_management_config(request: Request, kind: str, file: UploadFile = File(...)) -> ManagementImportResponse:
         settings: AppSettings = app.state.settings
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
         normalized_kind = _normalize_management_kind(kind)
         raw = await file.read()
         if len(raw) > settings.max_upload_bytes:
@@ -923,81 +1187,57 @@ def create_app() -> FastAPI:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise HTTPException(status_code=400, detail="Imported file must be UTF-8 encoded text") from exc
-        return await _import_management_payload(app, normalized_kind, text, file.filename)
+        return await _import_management_payload(app, normalized_kind, text, file.filename, principal, request)
 
     @app.get("/skills")
-    async def list_skills() -> list[SkillSummaryResponse]:
+    async def list_skills(request: Request) -> list[SkillSummaryResponse]:
         registry: FrameworkRegistry = app.state.registry
         settings: AppSettings = app.state.settings
+        config_store: ConfigStore = app.state.config_store
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        visible_sources = await config_store.get_document("skill_sources", principal.config)
         results: list[SkillSummaryResponse] = []
         for name, spec in registry.manifest_skills.items():
-            results.append(
-                SkillSummaryResponse(
-                    name=spec.name,
-                    version=spec.version,
-                    description=spec.description,
-                    source_type=spec.source_type,
-                    category=_skill_category(spec, settings),
-                    source_dir=spec.source_dir,
-                    runtime_type=spec.runtime.type if spec.runtime else None,
-                    tools=[t.name for t in spec.tools],
-                    references=spec.references,
-                    enabled=registry.is_skill_enabled(name),
-                )
-            )
+            source_payload = _visible_skill_source_payload_for_spec(spec, visible_sources)
+            if not _can_access_manifest_skill(spec, settings, source_payload):
+                continue
+            results.append(_manifest_skill_summary_response(registry, settings, spec, source_payload))
         for name, spec in registry.skills.items():
             if name not in registry.manifest_skills:
-                results.append(
-                    SkillSummaryResponse(
-                        name=spec.name,
-                        version=spec.metadata.get("version", "0.0.0"),
-                        description=spec.description,
-                        source_type="local",
-                        runtime_type="python",
-                        tools=spec.tools,
-                        references=[],
-                        enabled=registry.is_skill_enabled(name),
-                    )
-                )
+                results.append(_inline_skill_summary_response(registry, spec))
         return results
 
     @app.get("/skills/{skill_name}")
-    async def get_skill(skill_name: str) -> SkillSummaryResponse:
+    async def get_skill(request: Request, skill_name: str) -> SkillSummaryResponse:
         registry: FrameworkRegistry = app.state.registry
+        settings: AppSettings = app.state.settings
+        config_store: ConfigStore = app.state.config_store
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
         manifest = registry.manifest_skills.get(skill_name)
         if manifest:
-            return SkillSummaryResponse(
-                name=manifest.name,
-                version=manifest.version,
-                description=manifest.description,
-                source_type=manifest.source_type,
-                category=_skill_category(manifest, app.state.settings),
-                source_dir=manifest.source_dir,
-                runtime_type=manifest.runtime.type if manifest.runtime else None,
-                tools=[t.name for t in manifest.tools],
-                references=manifest.references,
-                enabled=registry.is_skill_enabled(skill_name),
-            )
+            source_payload = _visible_skill_source_payload_for_spec(manifest, await config_store.get_document("skill_sources", principal.config))
+            if not _can_access_manifest_skill(manifest, settings, source_payload):
+                raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
+            return _manifest_skill_summary_response(registry, settings, manifest, source_payload)
         spec = registry.skills.get(skill_name)
         if spec:
-            return SkillSummaryResponse(
-                name=spec.name,
-                version=spec.metadata.get("version", "0.0.0"),
-                description=spec.description,
-                source_type="local",
-                runtime_type="python",
-                tools=spec.tools,
-                references=[],
-                enabled=registry.is_skill_enabled(skill_name),
-            )
+            return _inline_skill_summary_response(registry, spec)
         raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
 
     @app.get("/skills/{skill_name}/preview")
-    async def preview_skill(skill_name: str) -> SkillPreviewResponse:
+    async def preview_skill(request: Request, skill_name: str) -> SkillPreviewResponse:
         registry: FrameworkRegistry = app.state.registry
         settings: AppSettings = app.state.settings
+        config_store: ConfigStore = app.state.config_store
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
         manifest = registry.manifest_skills.get(skill_name)
         if manifest:
+            source_payload = _visible_skill_source_payload_for_spec(manifest, await config_store.get_document("skill_sources", principal.config))
+            if not _can_access_manifest_skill(manifest, settings, source_payload):
+                raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
             preview_root, preview_path_base = _resolve_skill_preview_paths(manifest, settings)
             files = _collect_skill_preview_files(preview_root, preview_path_base) if preview_root is not None else []
             return SkillPreviewResponse(name=manifest.name, source_dir=manifest.source_dir, files=files)
@@ -1018,17 +1258,19 @@ def create_app() -> FastAPI:
         raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
 
     @app.post("/skills/install")
-    async def install_skill(request: SkillInstallRequest) -> SkillInstallResponse:
+    async def install_skill(request: Request, install_request: SkillInstallRequest) -> SkillInstallResponse:
         registry: FrameworkRegistry = app.state.registry
         loader: SkillLoader = app.state.skill_loader
         settings: AppSettings = app.state.settings
         config_store: ConfigStore = app.state.config_store
-        source_type = request.source_type or _infer_skill_install_source_type(settings, request.source)
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        source_type = install_request.source_type or _infer_skill_install_source_type(settings, install_request.source)
 
         if source_type == "directory":
-            source_dir = loader.settings.resolve_path(request.source)
+            source_dir = loader.settings.resolve_path(install_request.source)
             if source_dir is None or not source_dir.is_dir():
-                raise HTTPException(status_code=400, detail=f"Source path does not exist or is not a directory: {request.source}")
+                raise HTTPException(status_code=400, detail=f"Source path does not exist or is not a directory: {install_request.source}")
 
             from agent_framework.skills.exceptions import SkillLoadError
 
@@ -1037,10 +1279,10 @@ def create_app() -> FastAPI:
             except SkillLoadError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-            if request.category == "github_synced":
+            if install_request.category == "github_synced":
                 raise HTTPException(status_code=400, detail="Directory installs must use built_in, uploaded, or authored categories")
 
-            target_dir = settings.managed_skill_directory(request.category) / spec.name
+            target_dir = settings.managed_skill_directory(install_request.category) / spec.name
             if target_dir.exists():
                 status = "already_exists"
             else:
@@ -1061,16 +1303,16 @@ def create_app() -> FastAPI:
             {
                 "source_type": "git",
                 "category": "github_synced",
-                "name": request.name,
-                "url": request.source,
-                "ref": request.ref,
-                "subdir": request.subdir,
+                "name": install_request.name,
+                "url": install_request.source,
+                "ref": install_request.ref,
+                "subdir": install_request.subdir,
             }
         )
         if normalized_source is None:
             raise HTTPException(status_code=400, detail="Invalid git skill source")
 
-        existing_sources = await config_store.get_document("skill_sources")
+        existing_sources = await config_store.get_document("skill_sources", principal.config)
         normalized_payload = PersistedSkillSourceConfig.model_validate(normalized_source).model_dump(mode="json")
         already_exists = any(
             PersistedSkillSourceConfig.model_validate(item).model_dump(mode="json") == normalized_payload
@@ -1078,12 +1320,21 @@ def create_app() -> FastAPI:
         )
         if not already_exists:
             existing_sources.append(normalized_payload)
-            existing_sources = await config_store.save_document("skill_sources", existing_sources)
-        await _apply_runtime_config(app, "skill_sources", existing_sources)
+            existing_sources = await config_store.save_document("skill_sources", existing_sources, principal=principal.config)
+        global_sources = await config_store.get_document("skill_sources")
+        await _apply_runtime_config(app, "skill_sources", global_sources)
 
         installed_spec = _find_matching_git_skill(registry, normalized_payload)
         if installed_spec is None:
             raise HTTPException(status_code=500, detail="Git skill source synced, but no loadable skill was discovered")
+        if not normalized_payload.get("name"):
+            normalized_payload["name"] = installed_spec.name
+            patched_sources = [
+                normalized_payload if PersistedSkillSourceConfig.model_validate(item).url == normalized_payload.get("url") else item
+                for item in existing_sources
+            ]
+            await config_store.save_document("skill_sources", patched_sources, principal=principal.config)
+            await _apply_runtime_config(app, "skill_sources", await config_store.get_document("skill_sources"))
 
         return SkillInstallResponse(
             name=installed_spec.name,
@@ -1094,6 +1345,7 @@ def create_app() -> FastAPI:
 
     @app.post("/skills/upload")
     async def upload_skill(
+        request: Request,
         file: UploadFile = File(...),
         category: str = Form("uploaded"),
     ) -> SkillInstallResponse:
@@ -1126,6 +1378,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail="Uploaded archive must contain exactly one skill bundle")
 
             return await install_skill(
+                request,
                 SkillInstallRequest(
                     source=str(source_dir),
                     source_type="directory",
@@ -1134,12 +1387,15 @@ def create_app() -> FastAPI:
             )
 
     @app.delete("/skills/{skill_name}")
-    async def uninstall_skill(skill_name: str) -> dict[str, str]:
+    async def uninstall_skill(request: Request, skill_name: str) -> dict[str, str]:
         registry: FrameworkRegistry = app.state.registry
         settings: AppSettings = app.state.settings
         config_store: ConfigStore = app.state.config_store
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
         if skill_name not in registry.manifest_skills and skill_name not in registry.skills:
             raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
+        await _ensure_skill_access(app, skill_name, principal)
 
         if registry.skill_process_manager:
             await registry.skill_process_manager.stop_skill(skill_name)
@@ -1156,15 +1412,20 @@ def create_app() -> FastAPI:
             category = _skill_category(spec, settings)
             source_dir = Path(spec.source_dir) if spec.source_dir else None
             if spec.source_type == "git":
-                existing_sources = await config_store.get_document("skill_sources")
+                existing_sources = await config_store.get_document("skill_sources", principal.config)
                 remaining_sources = [
                     item
                     for item in existing_sources
                     if not _matches_skill_source(spec, PersistedSkillSourceConfig.model_validate(item).model_dump(mode="json"))
                 ]
                 if len(remaining_sources) != len(existing_sources):
-                    await config_store.save_document("skill_sources", remaining_sources)
-                if source_dir and source_dir.exists():
+                    await config_store.save_document("skill_sources", remaining_sources, principal=principal.config)
+                    await _apply_runtime_config(app, "skill_sources", await config_store.get_document("skill_sources"))
+                still_referenced = any(
+                    _matches_skill_source(spec, PersistedSkillSourceConfig.model_validate(item).model_dump(mode="json"))
+                    for item in await config_store.get_document("skill_sources")
+                )
+                if source_dir and source_dir.exists() and not still_referenced:
                     repo_root = settings.managed_skill_directory("github_synced")
                     for candidate in [source_dir, *source_dir.parents]:
                         if candidate.parent == repo_root:
@@ -1176,8 +1437,11 @@ def create_app() -> FastAPI:
         return {"status": "uninstalled", "skill": skill_name}
 
     @app.get("/skills/{skill_name}/export")
-    async def export_skill(skill_name: str) -> FileResponse:
+    async def export_skill(request: Request, skill_name: str) -> FileResponse:
         registry: FrameworkRegistry = app.state.registry
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        await _ensure_skill_access(app, skill_name, principal)
         manifest = registry.manifest_skills.get(skill_name)
         if not manifest:
             raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
@@ -1208,17 +1472,25 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/skills/{skill_name}/enable")
-    async def enable_skill(skill_name: str) -> dict[str, str]:
+    async def enable_skill(request: Request, skill_name: str) -> dict[str, str]:
+        principal = await _resolve_console_principal(request, app.state.db_manager)
+        await _ensure_skill_access(app, skill_name, principal)
+        await _ensure_skill_state_mutation_allowed(app, skill_name, principal)
         await _set_skill_enabled(app, skill_name, True)
         return {"status": "enabled", "skill": skill_name}
 
     @app.post("/skills/{skill_name}/disable")
-    async def disable_skill(skill_name: str) -> dict[str, str]:
+    async def disable_skill(request: Request, skill_name: str) -> dict[str, str]:
+        principal = await _resolve_console_principal(request, app.state.db_manager)
+        await _ensure_skill_access(app, skill_name, principal)
+        await _ensure_skill_state_mutation_allowed(app, skill_name, principal)
         await _set_skill_enabled(app, skill_name, False)
         return {"status": "disabled", "skill": skill_name}
 
     @app.post("/skills/{skill_name}/start")
-    async def start_skill(skill_name: str) -> dict[str, Any]:
+    async def start_skill(request: Request, skill_name: str) -> dict[str, Any]:
+        principal = await _resolve_console_principal(request, app.state.db_manager)
+        await _ensure_skill_access(app, skill_name, principal)
         registry: FrameworkRegistry = app.state.registry
         manifest = registry.manifest_skills.get(skill_name)
         if not manifest:
@@ -1235,7 +1507,9 @@ def create_app() -> FastAPI:
         return {"status": "started", "skill": skill_name}
 
     @app.post("/skills/{skill_name}/stop")
-    async def stop_skill(skill_name: str) -> dict[str, str]:
+    async def stop_skill(request: Request, skill_name: str) -> dict[str, str]:
+        principal = await _resolve_console_principal(request, app.state.db_manager)
+        await _ensure_skill_access(app, skill_name, principal)
         registry: FrameworkRegistry = app.state.registry
         if not registry.skill_process_manager:
             return {"status": "stopped", "skill": skill_name}
@@ -1244,7 +1518,9 @@ def create_app() -> FastAPI:
         return {"status": "stopped", "skill": skill_name}
 
     @app.get("/skills/{skill_name}/health")
-    async def skill_health(skill_name: str) -> dict[str, Any]:
+    async def skill_health(request: Request, skill_name: str) -> dict[str, Any]:
+        principal = await _resolve_console_principal(request, app.state.db_manager)
+        await _ensure_skill_access(app, skill_name, principal)
         registry: FrameworkRegistry = app.state.registry
         manifest = registry.manifest_skills.get(skill_name)
         if manifest is None:
@@ -1259,15 +1535,18 @@ def create_app() -> FastAPI:
         return {"status": "running", "pools": registry.skill_process_manager.pool_status(skill_name)}
 
     @app.post("/mcp/inspect")
-    async def inspect_mcp_server(request: McpInspectRequest) -> McpInspectResponse:
+    async def inspect_mcp_server(request: Request, inspect_request: McpInspectRequest) -> McpInspectResponse:
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        await _ensure_console_principal_can_access_mcp_server(db_manager, principal, inspect_request.server.name)
         client = McpSdkClient()
         try:
-            tools = await client.list_tools(request.server)
+            tools = await client.list_tools(inspect_request.server)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return McpInspectResponse(
-            server=request.server,
+            server=inspect_request.server,
             tools=[
                 McpToolSummaryResponse(
                     name=tool.tool_name,
@@ -1279,10 +1558,13 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/mcp/call")
-    async def call_mcp_tool(request: McpToolCallRequest) -> McpToolCallResponse:
+    async def call_mcp_tool(request: Request, call_request: McpToolCallRequest) -> McpToolCallResponse:
+        db_manager: DatabaseManager = app.state.db_manager
+        principal = await _resolve_console_principal(request, db_manager)
+        await _ensure_console_principal_can_access_mcp_server(db_manager, principal, call_request.server.name)
         client = McpSdkClient()
         try:
-            result = await client.call_tool(request.server, request.tool_name, request.arguments)
+            result = await client.call_tool(call_request.server, call_request.tool_name, call_request.arguments)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1422,23 +1704,568 @@ def _normalize_token_policy(policy: dict[str, Any]) -> dict[str, Any]:
         normalized["allowed_memory_modes"] = _dedupe_strings(allowed_modes)
     if str(normalized.get("max_trace_level") or "") not in {"none", "steps", "debug"}:
         normalized.pop("max_trace_level", None)
+    for key in ("max_requests_per_minute", "max_requests_per_day", "max_tokens_per_day"):
+        if key not in normalized:
+            continue
+        value = _coerce_positive_int(normalized[key])
+        if value is None:
+            normalized.pop(key, None)
+        else:
+            normalized[key] = value
     return normalized
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        return int(value) if value > 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        return parsed if parsed > 0 else None
+    return None
+
+
+@dataclass(frozen=True)
+class ConsolePrincipalContext:
+    user_id: str
+    email: str
+    display_name: str
+    role: str
+    workspace_id: str
+    workspace_name: str
+    workspace_slug: str
+    workspace_role: str
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
+
+    @property
+    def config(self) -> ConfigPrincipal:
+        return ConfigPrincipal(user_id=self.user_id, workspace_id=self.workspace_id, role=self.role)
+
+
+def _console_user_response(principal: ConsolePrincipalContext) -> ConsoleUserResponse:
+    return ConsoleUserResponse(
+        user_id=principal.user_id,
+        email=principal.email,
+        display_name=principal.display_name,
+        role=principal.role,
+        workspace_id=principal.workspace_id,
+        workspace_name=principal.workspace_name,
+        workspace_role=principal.workspace_role,
+    )
+
+
+def _console_user_summary_response(
+    user: UserRow,
+    workspace: WorkspaceRow | None = None,
+    member: WorkspaceMemberRow | None = None,
+) -> ConsoleUserSummaryResponse:
+    return ConsoleUserSummaryResponse(
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        role=user.role,
+        status=user.status,
+        workspace_id=workspace.id if workspace is not None else None,
+        workspace_name=workspace.name if workspace is not None else None,
+        workspace_role=member.role if member is not None else None,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+    )
+
+
+def _console_session_secret(settings: AppSettings) -> str:
+    secret = (settings.console_session_secret or "").strip()
+    if not secret:
+        raise HTTPException(status_code=500, detail="Console session auth is not configured")
+    return secret
+
+
+def _console_session_max_age(settings: AppSettings) -> int:
+    return max(int(settings.console_session_max_age_seconds or 0), 60)
+
+
+def _make_console_session_token(settings: AppSettings, principal: ConsolePrincipalContext) -> str:
+    now = datetime.now(UTC)
+    max_age = _console_session_max_age(settings)
+    return jwt.encode(
+        {
+            "sub": principal.user_id,
+            "email": principal.email,
+            "name": principal.display_name,
+            "role": principal.role,
+            "workspace_id": principal.workspace_id,
+            "workspace_name": principal.workspace_name,
+            "workspace_slug": principal.workspace_slug,
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(seconds=max_age)).timestamp()),
+            "jti": secrets.token_urlsafe(12),
+        },
+        _console_session_secret(settings),
+        algorithm="HS256",
+    )
+
+
+def _set_console_session_cookie(response: Response, settings: AppSettings, principal: ConsolePrincipalContext) -> None:
+    response.set_cookie(
+        key=settings.console_session_cookie_name,
+        value=_make_console_session_token(settings, principal),
+        max_age=_console_session_max_age(settings),
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
+
+
+def _clear_console_session_cookie(response: Response, settings: AppSettings) -> None:
+    response.delete_cookie(
+        key=settings.console_session_cookie_name,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
+
+
+async def _resolve_console_principal(request: Request, db_manager: DatabaseManager) -> ConsolePrincipalContext:
+    settings = _console_settings_from_request(request)
+    identity = _resolve_console_identity(request, settings)
+    header_user_id = identity["user_id"]
+    header_email = identity["email"]
+    header_display_name = identity["display_name"]
+    header_role = identity["role"]
+    header_workspace_id = identity["workspace_id"]
+    header_workspace_name = identity["workspace_name"]
+    header_workspace_slug = identity["workspace_slug"]
+
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            existing_user_count = await session.scalar(select(func.count(UserRow.id)))
+            default_admin = not header_user_id and not header_email and int(existing_user_count or 0) == 0
+            fallback_email = header_email or "admin@local"
+            fallback_display_name = header_display_name or "Local Admin"
+
+            user: UserRow | None = await session.get(UserRow, header_user_id) if header_user_id else None
+            if user is None:
+                user = await session.scalar(select(UserRow).where(UserRow.email == fallback_email))
+
+            if user is None:
+                user = UserRow(
+                    id=header_user_id or _new_chat_item_id("user"),
+                    email=fallback_email,
+                    display_name=fallback_display_name,
+                    role="admin" if default_admin or header_role == "admin" else "member",
+                    status="active",
+                )
+                session.add(user)
+            else:
+                if header_display_name:
+                    user.display_name = header_display_name
+                if header_role == "admin" and not user.role:
+                    user.role = "admin"
+                if user.status != "active":
+                    raise HTTPException(status_code=403, detail="Current user is not active")
+
+            workspace: WorkspaceRow | None = await session.get(WorkspaceRow, header_workspace_id) if header_workspace_id else None
+            if workspace is None:
+                workspace = await session.scalar(select(WorkspaceRow).where(WorkspaceRow.slug == header_workspace_slug))
+            if workspace is None:
+                workspace = WorkspaceRow(
+                    id=header_workspace_id or _new_chat_item_id("workspace"),
+                    name=header_workspace_name or "Default workspace",
+                    slug=header_workspace_slug,
+                )
+                session.add(workspace)
+
+            await session.flush()
+            member = await session.get(WorkspaceMemberRow, (workspace.id, user.id))
+            if member is None:
+                member = WorkspaceMemberRow(
+                    workspace_id=workspace.id,
+                    user_id=user.id,
+                    role="admin" if user.role == "admin" else "member",
+                )
+                session.add(member)
+
+            return ConsolePrincipalContext(
+                user_id=user.id,
+                email=user.email,
+                display_name=user.display_name,
+                role=user.role,
+                workspace_id=workspace.id,
+                workspace_name=workspace.name,
+                workspace_slug=workspace.slug,
+                workspace_role=member.role,
+            )
+
+
+def _console_settings_from_request(request: Request) -> AppSettings:
+    try:
+        settings = request.app.state.settings
+    except Exception:
+        return AppSettings()
+    return settings if isinstance(settings, AppSettings) else AppSettings()
+
+
+def _resolve_console_identity(request: Request, settings: AppSettings) -> dict[str, str]:
+    mode = (settings.console_auth_mode or "local").strip().lower()
+    if mode in {"local", "session", "password"}:
+        return _console_identity_from_session_cookie(request, settings)
+    if mode == "dev":
+        return _console_identity_from_headers(request, require_identity=False)
+    if mode in {"trusted_header", "trusted-headers", "headers"}:
+        return _console_identity_from_headers(request, require_identity=True)
+    if mode == "jwt":
+        return _console_identity_from_jwt(request, settings)
+    raise HTTPException(status_code=500, detail=f"Unsupported console auth mode: {settings.console_auth_mode}")
+
+
+def _console_identity_from_headers(request: Request, *, require_identity: bool) -> dict[str, str]:
+    user_id = (request.headers.get("x-covalent-user-id") or "").strip()
+    email = (request.headers.get("x-covalent-user-email") or "").strip().lower()
+    if require_identity and not user_id and not email:
+        raise HTTPException(status_code=401, detail="Missing console identity headers")
+    return {
+        "user_id": user_id,
+        "email": email,
+        "display_name": (request.headers.get("x-covalent-user-name") or "").strip(),
+        "role": (request.headers.get("x-covalent-user-role") or "").strip().lower(),
+        "workspace_id": (request.headers.get("x-covalent-workspace-id") or "").strip(),
+        "workspace_name": (request.headers.get("x-covalent-workspace-name") or "").strip(),
+        "workspace_slug": _safe_storage_component(request.headers.get("x-covalent-workspace-slug") or "default", "default"),
+    }
+
+
+def _console_identity_from_session_cookie(request: Request, settings: AppSettings) -> dict[str, str]:
+    token = (request.cookies.get(settings.console_session_cookie_name) or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing console session")
+    try:
+        payload = jwt.decode(
+            token,
+            _console_session_secret(settings),
+            algorithms=["HS256"],
+            options={"require": ["sub", "email"]},
+        )
+    except PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid console session") from exc
+
+    subject = str(payload.get("sub") or "").strip()
+    email = str(payload.get("email") or "").strip().lower()
+    if not subject or not email:
+        raise HTTPException(status_code=401, detail="Console session is missing subject or email")
+    return {
+        "user_id": subject,
+        "email": email,
+        "display_name": str(payload.get("name") or payload.get("display_name") or email).strip(),
+        "role": str(payload.get("role") or "member").strip().lower(),
+        "workspace_id": str(payload.get("workspace_id") or "").strip(),
+        "workspace_name": str(payload.get("workspace_name") or "Default workspace").strip(),
+        "workspace_slug": _safe_storage_component(str(payload.get("workspace_slug") or "default"), "default"),
+    }
+
+
+def _console_identity_from_jwt(request: Request, settings: AppSettings) -> dict[str, str]:
+    if not settings.console_auth_jwt_secret:
+        raise HTTPException(status_code=500, detail="Console JWT auth is not configured")
+    header = request.headers.get("authorization") or ""
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="Missing console bearer token")
+
+    options = {
+        "require": ["sub", "email"],
+        "verify_aud": bool(settings.console_auth_jwt_audience),
+    }
+    try:
+        payload = jwt.decode(
+            token.strip(),
+            settings.console_auth_jwt_secret,
+            algorithms=["HS256"],
+            issuer=settings.console_auth_jwt_issuer or None,
+            audience=settings.console_auth_jwt_audience or None,
+            options=options,
+        )
+    except PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid console bearer token") from exc
+
+    subject = str(payload.get("sub") or "").strip()
+    email = str(payload.get("email") or "").strip().lower()
+    if not subject or not email:
+        raise HTTPException(status_code=401, detail="Console bearer token is missing subject or email")
+    workspace_slug = _safe_storage_component(str(payload.get("workspace_slug") or "default"), "default")
+    return {
+        "user_id": str(payload.get("user_id") or subject).strip(),
+        "email": email,
+        "display_name": str(payload.get("name") or payload.get("display_name") or email).strip(),
+        "role": str(payload.get("role") or "member").strip().lower(),
+        "workspace_id": str(payload.get("workspace_id") or "").strip(),
+        "workspace_name": str(payload.get("workspace_name") or "Default workspace").strip(),
+        "workspace_slug": workspace_slug,
+    }
+
+
+async def _principal_for_user(
+    session: AsyncSession,
+    user: UserRow,
+    *,
+    workspace_name: str = "Default workspace",
+    workspace_slug: str = "default",
+) -> ConsolePrincipalContext:
+    if user.status != "active":
+        raise HTTPException(status_code=403, detail="Current user is not active")
+
+    member = await session.scalar(select(WorkspaceMemberRow).where(WorkspaceMemberRow.user_id == user.id))
+    workspace: WorkspaceRow | None = None
+    if member is not None:
+        workspace = await session.get(WorkspaceRow, member.workspace_id)
+        if workspace is None:
+            # Orphan membership: workspace row is gone but membership remains.
+            await session.delete(member)
+            await session.flush()
+            member = None
+
+    if workspace is None:
+        existing_workspace_count = await session.scalar(select(func.count(WorkspaceRow.id)))
+        safe_slug = _safe_storage_component(workspace_slug or "default", "default")
+        if int(existing_workspace_count or 0) == 0:
+            workspace = WorkspaceRow(
+                id=_new_chat_item_id("workspace"),
+                name=workspace_name.strip() or "Default workspace",
+                slug=safe_slug,
+            )
+            session.add(workspace)
+        else:
+            workspace = await session.scalar(select(WorkspaceRow).where(WorkspaceRow.slug == safe_slug))
+            if workspace is None:
+                workspace = WorkspaceRow(
+                    id=_new_chat_item_id("workspace"),
+                    name=workspace_name.strip() or "Default workspace",
+                    slug=safe_slug,
+                )
+                session.add(workspace)
+        # Flush parents first so workspace_members FK inserts cannot race ahead of workspaces.
+        await session.flush()
+        member = WorkspaceMemberRow(
+            workspace_id=workspace.id,
+            user_id=user.id,
+            role="admin" if user.role == "admin" else "member",
+        )
+        session.add(member)
+
+    return ConsolePrincipalContext(
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        role=user.role,
+        workspace_id=workspace.id,
+        workspace_name=workspace.name,
+        workspace_slug=workspace.slug,
+        workspace_role=member.role,
+    )
+
+
+async def _register_console_user(
+    db_manager: DatabaseManager,
+    settings: AppSettings,
+    request: ConsoleRegisterRequest,
+) -> ConsolePrincipalContext:
+    if not settings.console_signup_enabled:
+        raise HTTPException(status_code=403, detail="Console sign up is disabled")
+    email = request.email.strip().lower()
+    display_name = request.display_name.strip() or email.split("@", 1)[0]
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            existing = await session.scalar(select(UserRow).where(UserRow.email == email))
+            if existing is not None:
+                raise HTTPException(status_code=409, detail="A user with this email already exists")
+            existing_user_count = await session.scalar(select(func.count(UserRow.id)))
+            user = UserRow(
+                id=_new_chat_item_id("user"),
+                email=email,
+                display_name=display_name,
+                password_hash=hash_password(request.password),
+                role="admin" if int(existing_user_count or 0) == 0 else "member",
+                status="active",
+            )
+            session.add(user)
+            return await _principal_for_user(
+                session,
+                user,
+                workspace_name=request.workspace_name,
+                workspace_slug=_safe_storage_component(request.workspace_name or "default", "default"),
+            )
+
+
+async def _authenticate_console_password(
+    db_manager: DatabaseManager,
+    request: ConsoleLoginRequest,
+) -> ConsolePrincipalContext:
+    email = request.email.strip().lower()
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            user = await session.scalar(select(UserRow).where(UserRow.email == email))
+            if user is None or not verify_password(request.password, user.password_hash):
+                raise HTTPException(status_code=401, detail="Invalid email or password")
+            return await _principal_for_user(session, user)
+
+
+async def _seed_initial_admin_user(db_manager: DatabaseManager, settings: AppSettings) -> None:
+    if not settings.console_seed_admin_enabled:
+        return
+    username = settings.console_seed_admin_username.strip().lower()
+    password = settings.console_seed_admin_password
+    if not username or not password:
+        return
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            user = await session.scalar(select(UserRow).where(UserRow.email == username))
+            if user is None:
+                user = UserRow(
+                    id=_new_chat_item_id("user"),
+                    email=username,
+                    display_name=settings.console_seed_admin_display_name.strip() or username,
+                    password_hash=hash_password(password),
+                    role="admin",
+                    status="active",
+                )
+                session.add(user)
+            else:
+                if not user.password_hash:
+                    user.password_hash = hash_password(password)
+                if not user.display_name.strip():
+                    user.display_name = settings.console_seed_admin_display_name.strip() or username
+                user.role = "admin"
+                user.status = "active"
+
+            await _principal_for_user(
+                session,
+                user,
+                workspace_name=settings.console_seed_admin_workspace_name,
+                workspace_slug=_safe_storage_component(settings.console_seed_admin_workspace_name or "default", "default"),
+            )
+
+
+async def _list_console_users(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+) -> list[ConsoleUserSummaryResponse]:
+    if not principal.is_admin:
+        raise HTTPException(status_code=403, detail="Only admins can list users")
+    async with db_manager.session_factory() as session:
+        rows = (
+            await session.execute(
+                select(UserRow, WorkspaceRow, WorkspaceMemberRow)
+                .outerjoin(WorkspaceMemberRow, WorkspaceMemberRow.user_id == UserRow.id)
+                .outerjoin(WorkspaceRow, WorkspaceRow.id == WorkspaceMemberRow.workspace_id)
+                .order_by(UserRow.created_at.desc(), UserRow.email.asc())
+            )
+        ).all()
+        return [_console_user_summary_response(user, workspace, member) for user, workspace, member in rows]
+
+
+async def _update_console_user(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    user_id: str,
+    request: ConsoleUserUpdateRequest,
+) -> ConsoleUserSummaryResponse:
+    if not principal.is_admin:
+        raise HTTPException(status_code=403, detail="Only admins can update users")
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            user = await session.get(UserRow, user_id)
+            if user is None:
+                raise HTTPException(status_code=404, detail=f"Unknown user: {user_id}")
+            if request.display_name is not None:
+                user.display_name = request.display_name.strip()
+            if request.role is not None:
+                user.role = request.role
+            if request.status is not None:
+                user.status = request.status
+
+            member = await session.scalar(select(WorkspaceMemberRow).where(WorkspaceMemberRow.user_id == user.id))
+            workspace: WorkspaceRow | None = None
+            if member is not None:
+                if request.workspace_role is not None:
+                    member.role = request.workspace_role
+                workspace = await session.get(WorkspaceRow, member.workspace_id)
+
+            return _console_user_summary_response(user, workspace, member)
+
+
+def _audit_request_metadata(request: Request | None) -> dict[str, str | None]:
+    if request is None:
+        return {"request_id": None, "ip_address": None, "user_agent": None}
+    forwarded_for = request.headers.get("x-forwarded-for")
+    client_host = request.client.host if request.client else None
+    return {
+        "request_id": request.headers.get("x-request-id") or request.headers.get("x-correlation-id"),
+        "ip_address": (forwarded_for.split(",", 1)[0].strip() if forwarded_for else client_host),
+        "user_agent": request.headers.get("user-agent"),
+    }
+
+
+async def _record_audit_log(
+    db_manager: DatabaseManager,
+    *,
+    action: str,
+    target_type: str,
+    target_id: str | None = None,
+    outcome: str = "success",
+    principal: ConsolePrincipalContext | None = None,
+    api_principal: ApiPrincipal | None = None,
+    request: Request | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    request_metadata = _audit_request_metadata(request)
+    actor_user_id = principal.user_id if principal is not None else api_principal.user_id if api_principal is not None else None
+    actor_token_id = api_principal.token_id if api_principal is not None else None
+    workspace_id = principal.workspace_id if principal is not None else api_principal.workspace_id if api_principal is not None else None
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            session.add(
+                AuditLogRow(
+                    id=_new_chat_item_id("audit"),
+                    actor_user_id=actor_user_id,
+                    actor_token_id=actor_token_id,
+                    workspace_id=workspace_id,
+                    action=action,
+                    target_type=target_type,
+                    target_id=target_id,
+                    outcome=outcome,
+                    request_id=request_metadata["request_id"],
+                    ip_address=request_metadata["ip_address"],
+                    user_agent=request_metadata["user_agent"],
+                    metadata_json=dict(metadata or {}),
+                )
+            )
 
 
 async def _ensure_token_owner_workspace(
     session: AsyncSession,
     request: ApiTokenCreateRequest,
+    principal: ConsolePrincipalContext,
 ) -> tuple[UserRow, WorkspaceRow]:
-    user_id = (request.user_id or "").strip()
+    user_id = (request.user_id or "").strip() if principal.is_admin else principal.user_id
     user: UserRow | None = await session.get(UserRow, user_id) if user_id else None
-    if user is None:
+    if user is None and principal.is_admin:
         user = await session.scalar(select(UserRow).where(UserRow.email == request.user_email.strip()))
     if user is None:
         user = UserRow(
-            id=user_id or _new_chat_item_id("user"),
-            email=request.user_email.strip() or "admin@local",
-            display_name=request.user_display_name.strip() or "Local Admin",
-            role="admin",
+            id=user_id or principal.user_id,
+            email=(request.user_email.strip() if principal.is_admin else principal.email) or "admin@local",
+            display_name=(request.user_display_name.strip() if principal.is_admin else principal.display_name) or "Local Admin",
+            role="admin" if principal.is_admin and request.user_email.strip() == "admin@local" else principal.role,
             status="active",
         )
         session.add(user)
@@ -1448,22 +2275,23 @@ async def _ensure_token_owner_workspace(
         if user.status != "active":
             user.status = "active"
 
-    workspace_id = (request.workspace_id or "").strip()
+    workspace_id = (request.workspace_id or "").strip() if principal.is_admin else principal.workspace_id
     workspace: WorkspaceRow | None = await session.get(WorkspaceRow, workspace_id) if workspace_id else None
-    workspace_slug = _safe_storage_component(request.workspace_slug, "default")
+    workspace_slug = _safe_storage_component(request.workspace_slug if principal.is_admin else principal.workspace_slug, "default")
     if workspace is None:
         workspace = await session.scalar(select(WorkspaceRow).where(WorkspaceRow.slug == workspace_slug))
     if workspace is None:
         workspace = WorkspaceRow(
-            id=workspace_id or _new_chat_item_id("workspace"),
-            name=request.workspace_name.strip() or "Default workspace",
+            id=workspace_id or principal.workspace_id,
+            name=(request.workspace_name.strip() if principal.is_admin else principal.workspace_name) or "Default workspace",
             slug=workspace_slug,
         )
         session.add(workspace)
 
+    await session.flush()
     member = await session.get(WorkspaceMemberRow, (workspace.id, user.id))
     if member is None:
-        session.add(WorkspaceMemberRow(workspace_id=workspace.id, user_id=user.id, role="admin"))
+        session.add(WorkspaceMemberRow(workspace_id=workspace.id, user_id=user.id, role="admin" if user.role == "admin" else "member"))
 
     return user, workspace
 
@@ -1491,15 +2319,24 @@ def _api_token_summary_response(
     )
 
 
-async def _list_api_token_summaries(db_manager: DatabaseManager) -> list[ApiTokenSummaryResponse]:
+async def _list_api_token_summaries(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+) -> list[ApiTokenSummaryResponse]:
     async with db_manager.session_factory() as session:
-        rows = (
-            await session.execute(
-                select(ApiTokenRow, UserRow, WorkspaceRow)
-                .join(UserRow, ApiTokenRow.user_id == UserRow.id)
-                .join(WorkspaceRow, ApiTokenRow.workspace_id == WorkspaceRow.id)
-                .order_by(ApiTokenRow.created_at.desc())
+        stmt = (
+            select(ApiTokenRow, UserRow, WorkspaceRow)
+            .join(UserRow, ApiTokenRow.user_id == UserRow.id)
+            .join(WorkspaceRow, ApiTokenRow.workspace_id == WorkspaceRow.id)
+            .order_by(ApiTokenRow.created_at.desc())
+        )
+        if not principal.is_admin:
+            stmt = stmt.where(
+                ApiTokenRow.user_id == principal.user_id,
+                ApiTokenRow.workspace_id == principal.workspace_id,
             )
+        rows = (
+            await session.execute(stmt)
         ).all()
         return [_api_token_summary_response(token, user, workspace) for token, user, workspace in rows]
 
@@ -1508,12 +2345,14 @@ async def _create_api_token(
     db_manager: DatabaseManager,
     settings: AppSettings,
     request: ApiTokenCreateRequest,
+    principal: ConsolePrincipalContext,
+    http_request: Request | None = None,
 ) -> ApiTokenCreateResponse:
     token, token_prefix = generate_api_token()
     token_hash = hash_api_token(token, settings.api_token_hash_pepper)
     async with db_manager.session_factory() as session:
         async with session.begin():
-            user, workspace = await _ensure_token_owner_workspace(session, request)
+            user, workspace = await _ensure_token_owner_workspace(session, request, principal)
             row = ApiTokenRow(
                 id=_new_chat_item_id("token"),
                 user_id=user.id,
@@ -1535,14 +2374,30 @@ async def _create_api_token(
             if user is None or workspace is None:
                 raise HTTPException(status_code=500, detail="API token owner was not saved")
             summary = _api_token_summary_response(saved, user, workspace)
+    await _record_audit_log(
+        db_manager,
+        action="api_token.created",
+        target_type="api_token",
+        target_id=summary.id,
+        principal=principal,
+        request=http_request,
+        metadata={"token_prefix": summary.token_prefix, "token_user_id": summary.user_id, "scopes": summary.scopes},
+    )
     return ApiTokenCreateResponse(**summary.model_dump(), token=token)
 
 
-async def _revoke_api_token(db_manager: DatabaseManager, token_id: str) -> ApiTokenSummaryResponse:
+async def _revoke_api_token(
+    db_manager: DatabaseManager,
+    token_id: str,
+    principal: ConsolePrincipalContext,
+    http_request: Request | None = None,
+) -> ApiTokenSummaryResponse:
     async with db_manager.session_factory() as session:
         async with session.begin():
             row = await session.get(ApiTokenRow, token_id)
             if row is None:
+                raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+            if not principal.is_admin and (row.user_id != principal.user_id or row.workspace_id != principal.workspace_id):
                 raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
             if row.revoked_at is None:
                 row.revoked_at = datetime.now(UTC)
@@ -1554,7 +2409,410 @@ async def _revoke_api_token(db_manager: DatabaseManager, token_id: str) -> ApiTo
             workspace = await session.get(WorkspaceRow, saved.workspace_id)
             if user is None or workspace is None:
                 raise HTTPException(status_code=500, detail="API token owner is missing")
-            return _api_token_summary_response(saved, user, workspace)
+            summary = _api_token_summary_response(saved, user, workspace)
+    await _record_audit_log(
+        db_manager,
+        action="api_token.revoked",
+        target_type="api_token",
+        target_id=summary.id,
+        principal=principal,
+        request=http_request,
+        metadata={"token_prefix": summary.token_prefix, "token_user_id": summary.user_id},
+    )
+    return summary
+
+
+def _agent_run_log_response(row: AgentRunLogRow) -> AgentRunLogResponse:
+    return AgentRunLogResponse(
+        id=row.id,
+        user_id=row.user_id,
+        token_id=row.token_id,
+        workspace_id=row.workspace_id,
+        agent_name=row.agent_name,
+        memory_mode=row.memory_mode,
+        session_id=row.session_id,
+        status=row.status,
+        latency_ms=row.latency_ms,
+        provider=row.provider,
+        model=row.model,
+        usage=dict(row.usage_json or {}),
+        error=dict(row.error_json or {}),
+        metadata=dict(row.metadata_json or {}),
+        created_at=row.created_at,
+    )
+
+
+def _audit_log_response(row: AuditLogRow) -> AuditLogResponse:
+    return AuditLogResponse(
+        id=row.id,
+        actor_user_id=row.actor_user_id,
+        actor_token_id=row.actor_token_id,
+        workspace_id=row.workspace_id,
+        action=row.action,
+        target_type=row.target_type,
+        target_id=row.target_id,
+        outcome=row.outcome,
+        request_id=row.request_id,
+        ip_address=row.ip_address,
+        user_agent=row.user_agent,
+        metadata=dict(row.metadata_json or {}),
+        created_at=row.created_at,
+    )
+
+
+async def _list_api_token_runs(
+    db_manager: DatabaseManager,
+    token_id: str,
+    principal: ConsolePrincipalContext,
+    *,
+    limit: int = 50,
+) -> list[AgentRunLogResponse]:
+    bounded_limit = min(max(limit, 1), 200)
+    async with db_manager.session_factory() as session:
+        token = await session.get(ApiTokenRow, token_id)
+        if token is None:
+            raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+        if not principal.is_admin and (token.user_id != principal.user_id or token.workspace_id != principal.workspace_id):
+            raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+        rows = (
+            await session.execute(
+                select(AgentRunLogRow)
+                .where(AgentRunLogRow.token_id == token_id)
+                .order_by(AgentRunLogRow.created_at.desc())
+                .limit(bounded_limit)
+            )
+        ).scalars()
+        return [_agent_run_log_response(row) for row in rows]
+
+
+async def _list_audit_logs(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    *,
+    limit: int = 100,
+    action: str | None = None,
+    outcome: str | None = None,
+    actor_user_id: str | None = None,
+    actor_token_id: str | None = None,
+    target_type: str | None = None,
+) -> list[AuditLogResponse]:
+    bounded_limit = min(max(limit, 1), 500)
+    async with db_manager.session_factory() as session:
+        stmt = select(AuditLogRow).order_by(AuditLogRow.created_at.desc()).limit(bounded_limit)
+        if not principal.is_admin:
+            stmt = stmt.where(
+                AuditLogRow.actor_user_id == principal.user_id,
+                AuditLogRow.workspace_id == principal.workspace_id,
+            )
+        elif actor_user_id:
+            stmt = stmt.where(AuditLogRow.actor_user_id == actor_user_id)
+        if action:
+            stmt = stmt.where(AuditLogRow.action == action)
+        if outcome:
+            stmt = stmt.where(AuditLogRow.outcome == outcome)
+        if actor_token_id:
+            stmt = stmt.where(AuditLogRow.actor_token_id == actor_token_id)
+        if target_type:
+            stmt = stmt.where(AuditLogRow.target_type == target_type)
+        rows = (await session.execute(stmt)).scalars()
+        return [_audit_log_response(row) for row in rows]
+
+
+async def _ensure_api_principal_can_invoke_agent(
+    db_manager: DatabaseManager,
+    principal: ApiPrincipal,
+    agent_name: str,
+) -> None:
+    async with db_manager.session_factory() as session:
+        row = await session.get(AgentRow, agent_name)
+        if row is None:
+            return
+        if row.owner_user_id in {None, "", principal.user_id}:
+            return
+        if row.visibility == "public" and row.publication_status == "approved":
+            return
+    raise HTTPException(status_code=403, detail=f"Token is not allowed to invoke agent: {agent_name}")
+
+
+def _resource_display_name(row: object) -> str:
+    return str(getattr(row, "display_name", None) or getattr(row, "name"))
+
+
+def _pick_agent_row_for_principal(
+    rows: list[AgentRow],
+    *,
+    user_id: str,
+    workspace_id: str | None = None,
+) -> AgentRow | None:
+    for row in rows:
+        if row.owner_user_id == user_id and (workspace_id is None or row.workspace_id == workspace_id):
+            return row
+    for row in rows:
+        if row.owner_user_id in {None, ""} and row.visibility == "public" and row.publication_status == "approved":
+            return row
+    for row in rows:
+        if row.visibility == "public" and row.publication_status == "approved":
+            return row
+    return None
+
+
+async def _resolve_api_agent_name(
+    db_manager: DatabaseManager,
+    principal: ApiPrincipal,
+    agent_name: str,
+) -> str:
+    async with db_manager.session_factory() as session:
+        row = await session.get(AgentRow, agent_name)
+        if row is None:
+            rows = list(await session.scalars(
+                select(AgentRow).where(
+                    AgentRow.display_name == agent_name,
+                    (
+                        (AgentRow.owner_user_id == principal.user_id)
+                        | ((AgentRow.visibility == "public") & (AgentRow.publication_status == "approved"))
+                    ),
+                )
+            ))
+            row = _pick_agent_row_for_principal(rows, user_id=principal.user_id, workspace_id=principal.workspace_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
+        return row.name
+
+
+def _ensure_console_principal_can_access_session(
+    principal: ConsolePrincipalContext,
+    record: ChatSessionRecord,
+) -> None:
+    if principal.is_admin:
+        return
+    if record.owner_user_id == principal.user_id and record.workspace_id == principal.workspace_id:
+        return
+    raise HTTPException(status_code=404, detail=f"Unknown session: {record.id}")
+
+
+async def _resolve_console_agent_name(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    agent_name: str,
+) -> str:
+    async with db_manager.session_factory() as session:
+        row = await session.get(AgentRow, agent_name)
+        if row is None:
+            rows = list(await session.scalars(
+                select(AgentRow).where(
+                    AgentRow.display_name == agent_name,
+                    (
+                        (AgentRow.owner_user_id == principal.user_id)
+                        | ((AgentRow.visibility == "public") & (AgentRow.publication_status == "approved"))
+                    ),
+                )
+            ))
+            row = _pick_agent_row_for_principal(rows, user_id=principal.user_id, workspace_id=principal.workspace_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
+        return row.name
+
+
+async def _ensure_console_principal_can_access_agent(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    agent_name: str,
+) -> None:
+    if principal.is_admin:
+        return
+
+    async with db_manager.session_factory() as session:
+        row = await session.get(AgentRow, agent_name)
+        if row is None:
+            return
+        if row.owner_user_id == principal.user_id and row.workspace_id == principal.workspace_id:
+            return
+        if row.owner_user_id in {None, ""} and row.visibility == "public" and row.publication_status == "approved":
+            return
+        if row.visibility == "public" and row.publication_status == "approved":
+            return
+    raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
+
+
+async def _ensure_console_principal_can_access_mcp_server(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    server_name: str,
+) -> None:
+    if principal.is_admin:
+        return
+
+    async with db_manager.session_factory() as session:
+        row = await session.get(McpServerRow, server_name)
+        if row is None:
+            rows = list(
+                await session.scalars(
+                    select(McpServerRow).where(
+                        McpServerRow.display_name == server_name,
+                        (
+                            (McpServerRow.owner_user_id == principal.user_id)
+                            | ((McpServerRow.visibility == "public") & (McpServerRow.publication_status == "approved"))
+                        ),
+                    )
+                )
+            )
+            row = _pick_resource_row_for_principal(rows, principal)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Unknown MCP server: {server_name}")
+        if row.owner_user_id == principal.user_id and row.workspace_id == principal.workspace_id:
+            return
+        if row.owner_user_id in {None, ""} and row.visibility == "public" and row.publication_status == "approved":
+            return
+        if row.visibility == "public" and row.publication_status == "approved":
+            return
+    raise HTTPException(status_code=404, detail=f"Unknown MCP server: {server_name}")
+
+
+def _publication_response(kind: ConfigKind, row: object, name: str) -> PublicationRequestResponse:
+    return PublicationRequestResponse(
+        kind=kind,
+        name=name,
+        visibility=str(getattr(row, "visibility", "private") or "private"),
+        publication_status=str(getattr(row, "publication_status", "draft") or "draft"),
+    )
+
+
+def _pick_resource_row_for_principal(
+    rows: list[object],
+    principal: ConsolePrincipalContext | None,
+) -> object | None:
+    if not rows:
+        return None
+    if principal is not None and not principal.is_admin:
+        for row in rows:
+            if getattr(row, "owner_user_id", None) == principal.user_id and getattr(row, "workspace_id", None) == principal.workspace_id:
+                return row
+    for row in rows:
+        if getattr(row, "publication_status", None) == "pending":
+            return row
+    for row in rows:
+        if getattr(row, "visibility", None) == "public" and getattr(row, "publication_status", None) == "approved":
+            return row
+    return rows[0]
+
+
+async def _find_resource_row(
+    session: AsyncSession,
+    kind: ConfigKind,
+    resource_name: str,
+    principal: ConsolePrincipalContext | None = None,
+) -> tuple[object, str]:
+    if kind == "agents":
+        row = await session.get(AgentRow, resource_name)
+        if row is None:
+            rows = list(await session.scalars(select(AgentRow).where(AgentRow.display_name == resource_name)))
+            row = _pick_resource_row_for_principal(rows, principal)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Unknown agent: {resource_name}")
+        return row, _resource_display_name(row)
+
+    if kind == "mcp":
+        row = await session.get(McpServerRow, resource_name)
+        if row is None:
+            rows = list(await session.scalars(select(McpServerRow).where(McpServerRow.display_name == resource_name)))
+            row = _pick_resource_row_for_principal(rows, principal)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Unknown MCP server: {resource_name}")
+        return row, _resource_display_name(row)
+
+    if kind == "providers":
+        row = await session.scalar(select(ProviderRow).where(ProviderRow.name == resource_name))
+        if row is None:
+            rows = list(await session.scalars(select(ProviderRow).where(ProviderRow.display_name == resource_name)))
+            row = _pick_resource_row_for_principal(rows, principal)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Unknown provider: {resource_name}")
+        return row, _resource_display_name(row)
+
+    row = await session.scalar(select(SkillSourceRow).where(SkillSourceRow.name == resource_name))
+    if row is None and resource_name.isdigit():
+        row = await session.get(SkillSourceRow, int(resource_name))
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Unknown skill source: {resource_name}")
+    return row, row.name or str(row.id)
+
+
+def _ensure_console_principal_owns_resource(principal: ConsolePrincipalContext, row: object, resource_name: str) -> None:
+    if principal.is_admin:
+        return
+    owner_user_id = getattr(row, "owner_user_id", None)
+    workspace_id = getattr(row, "workspace_id", None)
+    if owner_user_id == principal.user_id and workspace_id == principal.workspace_id:
+        return
+    raise HTTPException(status_code=404, detail=f"Unknown resource: {resource_name}")
+
+
+async def _request_resource_publication(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    kind: ConfigKind,
+    resource_name: str,
+    http_request: Request | None = None,
+) -> PublicationRequestResponse:
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            row, display_name = await _find_resource_row(session, kind, resource_name, principal)
+            _ensure_console_principal_owns_resource(principal, row, resource_name)
+            if getattr(row, "owner_user_id", None) in {None, ""}:
+                setattr(row, "owner_user_id", principal.user_id)
+            if getattr(row, "workspace_id", None) in {None, ""}:
+                setattr(row, "workspace_id", principal.workspace_id)
+            setattr(row, "visibility", "private")
+            setattr(row, "publication_status", "pending")
+            setattr(row, "publication_requested_at", datetime.now(UTC))
+            setattr(row, "publication_reviewed_at", None)
+            setattr(row, "publication_reviewed_by_user_id", None)
+            response = _publication_response(kind, row, display_name)
+    await _record_audit_log(
+        db_manager,
+        action="publication.requested",
+        target_type=kind,
+        target_id=response.name,
+        principal=principal,
+        request=http_request,
+        metadata={"visibility": response.visibility, "publication_status": response.publication_status},
+    )
+    return response
+
+
+async def _review_resource_publication(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    kind: ConfigKind,
+    resource_name: str,
+    status: Literal["approved", "rejected"],
+    http_request: Request | None = None,
+) -> PublicationRequestResponse:
+    if not principal.is_admin:
+        raise HTTPException(status_code=403, detail="Only admins can review publication requests")
+
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            row, display_name = await _find_resource_row(session, kind, resource_name, principal)
+            if status == "approved":
+                setattr(row, "visibility", "public")
+                setattr(row, "publication_status", "approved")
+            else:
+                setattr(row, "visibility", "private")
+                setattr(row, "publication_status", "rejected")
+            setattr(row, "publication_reviewed_at", datetime.now(UTC))
+            setattr(row, "publication_reviewed_by_user_id", principal.user_id)
+            response = _publication_response(kind, row, display_name)
+    await _record_audit_log(
+        db_manager,
+        action=f"publication.{status}",
+        target_type=kind,
+        target_id=response.name,
+        principal=principal,
+        request=http_request,
+        metadata={"visibility": response.visibility, "publication_status": response.publication_status},
+    )
+    return response
 
 
 async def _resolve_public_invoke_session_id(
@@ -1760,6 +3018,110 @@ async def _record_public_agent_run(
                     metadata_json=dict(metadata or {}),
                 )
             )
+            session.add(
+                AuditLogRow(
+                    id=_new_chat_item_id("audit"),
+                    actor_user_id=principal.user_id,
+                    actor_token_id=principal.token_id,
+                    workspace_id=principal.workspace_id,
+                    action="agent.invoke",
+                    target_type="agent",
+                    target_id=agent_name,
+                    outcome=status,
+                    metadata_json={
+                        "run_id": run_id,
+                        "memory_mode": memory_mode,
+                        "session_id": session_id,
+                        "latency_ms": latency_ms,
+                        "provider": provider,
+                        "model": model,
+                        "usage": dict(usage or {}),
+                        "error": dict(error or {}),
+                    },
+                )
+            )
+
+
+async def _enforce_api_token_policy_limits(
+    db_manager: DatabaseManager,
+    principal: ApiPrincipal,
+    *,
+    agent_name: str,
+) -> None:
+    policy = principal.policy or {}
+    max_requests_per_minute = _coerce_positive_int(policy.get("max_requests_per_minute"))
+    max_requests_per_day = _coerce_positive_int(policy.get("max_requests_per_day"))
+    max_tokens_per_day = _coerce_positive_int(policy.get("max_tokens_per_day"))
+    if max_requests_per_minute is None and max_requests_per_day is None and max_tokens_per_day is None:
+        return
+
+    now = datetime.now(UTC)
+    minute_start = now - timedelta(minutes=1)
+    day_start = now - timedelta(days=1)
+    async with db_manager.session_factory() as session:
+        if max_requests_per_minute is not None:
+            minute_count = await session.scalar(
+                select(func.count(AgentRunLogRow.id)).where(
+                    AgentRunLogRow.token_id == principal.token_id,
+                    AgentRunLogRow.created_at >= minute_start,
+                )
+            )
+            if int(minute_count or 0) >= max_requests_per_minute:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"API token request rate limit exceeded for agent '{agent_name}'",
+                )
+
+        daily_rows = None
+        if max_requests_per_day is not None or max_tokens_per_day is not None:
+            daily_rows = list(
+                await session.scalars(
+                    select(AgentRunLogRow).where(
+                        AgentRunLogRow.token_id == principal.token_id,
+                        AgentRunLogRow.created_at >= day_start,
+                    )
+                )
+            )
+
+        if max_requests_per_day is not None and daily_rows is not None and len(daily_rows) >= max_requests_per_day:
+            raise HTTPException(
+                status_code=429,
+                detail=f"API token daily request quota exceeded for agent '{agent_name}'",
+            )
+
+        if max_tokens_per_day is not None and daily_rows is not None:
+            used_tokens = sum(_coerce_int((row.usage_json or {}).get("total_tokens")) for row in daily_rows)
+            if used_tokens >= max_tokens_per_day:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"API token daily token quota exceeded for agent '{agent_name}'",
+                )
+
+
+async def _record_denied_public_agent_invoke(
+    db_manager: DatabaseManager,
+    *,
+    principal: ApiPrincipal | None,
+    agent_name: str,
+    memory_mode: Literal["none", "session"],
+    request: Request | None,
+    reason: str,
+    status_code: int,
+) -> None:
+    await _record_audit_log(
+        db_manager,
+        action="agent.invoke.denied",
+        target_type="agent",
+        target_id=agent_name,
+        outcome="denied",
+        api_principal=principal,
+        request=request,
+        metadata={
+            "memory_mode": memory_mode,
+            "reason": reason,
+            "status_code": status_code,
+        },
+    )
 
 
 def _new_chat_item_id(prefix: str) -> str:
@@ -2146,7 +3508,7 @@ async def _apply_runtime_config(app: FastAPI, kind: ConfigKind, payload: list[di
         provider_config = await _resolve_default_provider(settings, config_store, payload)
         registry.agents = {
             agent.name: agent
-            for agent in _build_agent_specs(agent_payload, provider_config, _parse_mcp_servers(mcp_payload), settings)
+            for agent in _build_agent_specs(agent_payload, provider_config, _parse_mcp_servers(mcp_payload), settings, mcp_payload=mcp_payload)
         }
         return
 
@@ -2160,7 +3522,7 @@ async def _apply_runtime_config(app: FastAPI, kind: ConfigKind, payload: list[di
         provider_config = await _resolve_default_provider(settings, config_store)
         registry.agents = {
             agent.name: agent
-            for agent in _build_agent_specs(agent_payload, provider_config, _parse_mcp_servers(payload), settings)
+            for agent in _build_agent_specs(agent_payload, provider_config, _parse_mcp_servers(payload), settings, mcp_payload=payload)
         }
         return
 
@@ -2173,7 +3535,7 @@ async def _apply_runtime_config(app: FastAPI, kind: ConfigKind, payload: list[di
         provider_config = await _resolve_default_provider(settings, config_store)
         registry.agents = {
             agent.name: agent
-            for agent in _build_agent_specs(payload, provider_config, _parse_mcp_servers(mcp_payload), settings)
+            for agent in _build_agent_specs(payload, provider_config, _parse_mcp_servers(mcp_payload), settings, mcp_payload=mcp_payload)
         }
         return
 
@@ -2194,13 +3556,14 @@ def _normalize_management_export_format(value: str) -> ManagementExportFormat:
 async def _build_management_export_payload(
     app: FastAPI,
     kind: ManagementKind,
+    principal: ConsolePrincipalContext,
 ) -> tuple[dict[str, Any], int]:
     settings: AppSettings = app.state.settings
     config_store: ConfigStore = app.state.config_store
     exported_at = datetime.now(UTC).isoformat()
 
     if kind in {"agents", "mcp"}:
-        raw_items = await config_store.get_document(kind)
+        raw_items = await config_store.get_document(kind, principal.config)
         items = [
             _normalize_agent_payload_item(item, settings) if kind == "agents" else item
             for item in raw_items
@@ -2212,15 +3575,15 @@ async def _build_management_export_payload(
             "items": items,
         }, len(items)
 
-    payload = await _build_skill_management_export_payload(app)
+    payload = await _build_skill_management_export_payload(app, principal)
     return payload, len(payload.get("items", []))
 
 
-async def _build_skill_management_export_payload(app: FastAPI) -> dict[str, Any]:
+async def _build_skill_management_export_payload(app: FastAPI, principal: ConsolePrincipalContext) -> dict[str, Any]:
     registry: FrameworkRegistry = app.state.registry
     settings: AppSettings = app.state.settings
     config_store: ConfigStore = app.state.config_store
-    skill_sources = await config_store.get_document("skill_sources")
+    skill_sources = await config_store.get_document("skill_sources", principal.config)
 
     items: list[dict[str, Any]] = []
     for skill_name in sorted(registry.skills):
@@ -2241,6 +3604,9 @@ async def _build_skill_management_export_payload(app: FastAPI) -> dict[str, Any]
             continue
 
         category = _skill_category(manifest, settings)
+        source_payload = _visible_skill_source_payload_for_spec(manifest, skill_sources)
+        if not _can_access_manifest_skill(manifest, settings, source_payload):
+            continue
         items.append(
             SkillManagementItemResponse(
                 name=manifest.name,
@@ -2303,25 +3669,48 @@ async def _import_management_payload(
     kind: ManagementKind,
     raw_text: str,
     file_name: str | None,
+    principal: ConsolePrincipalContext,
+    request: Request | None = None,
 ) -> ManagementImportResponse:
     settings: AppSettings = app.state.settings
     config_store: ConfigStore = app.state.config_store
+    db_manager: DatabaseManager = app.state.db_manager
     parsed = _parse_management_upload(raw_text, file_name)
 
     if kind in {"agents", "mcp"}:
         raw_items = _extract_management_items(kind, parsed)
         validated = _validate_config_payload(kind, raw_items, settings)
-        saved = await config_store.save_document(kind, validated)
-        await _apply_runtime_config(app, kind, saved)
+        saved = await config_store.save_document(kind, validated, principal=principal.config)
+        await _apply_runtime_config(app, kind, await config_store.get_document(kind))
         label = "agents" if kind == "agents" else "MCP services"
-        return ManagementImportResponse(
+        response = ManagementImportResponse(
             kind=kind,
             imported_items=len(validated),
             applied_items=len(saved),
             summary=f"Imported {len(saved)} {label}.",
         )
+        await _record_audit_log(
+            db_manager,
+            action="management.imported",
+            target_type=kind,
+            target_id=file_name,
+            principal=principal,
+            request=request,
+            metadata={"imported_items": response.imported_items, "applied_items": response.applied_items},
+        )
+        return response
 
-    return await _import_skill_management_payload(app, parsed)
+    response = await _import_skill_management_payload(app, parsed, principal)
+    await _record_audit_log(
+        db_manager,
+        action="management.imported",
+        target_type=kind,
+        target_id=file_name,
+        principal=principal,
+        request=request,
+        metadata={"imported_items": response.imported_items, "applied_items": response.applied_items},
+    )
+    return response
 
 
 def _parse_management_upload(raw_text: str, file_name: str | None) -> Any:
@@ -2358,13 +3747,14 @@ def _extract_management_items(kind: ConfigKind, payload: Any) -> list[object]:
 async def _import_skill_management_payload(
     app: FastAPI,
     payload: Any,
+    principal: ConsolePrincipalContext,
 ) -> ManagementImportResponse:
     registry: FrameworkRegistry = app.state.registry
     config_store: ConfigStore = app.state.config_store
 
     imported_items, imported_sources = _extract_skill_management_payload(payload)
-    saved_sources = await config_store.save_document("skill_sources", imported_sources)
-    await _apply_runtime_config(app, "skill_sources", saved_sources)
+    saved_sources = await config_store.save_document("skill_sources", imported_sources, principal=principal.config)
+    await _apply_runtime_config(app, "skill_sources", await config_store.get_document("skill_sources"))
 
     warnings: list[str] = []
     applied_items = 0
@@ -2384,6 +3774,7 @@ async def _import_skill_management_payload(
             )
             continue
 
+        await _ensure_skill_state_mutation_allowed(app, item.name, principal)
         registry.set_skill_enabled(item.name, item.enabled)
         await config_store.set_skill_enabled(item.name, item.enabled)
         if not item.enabled and registry.skill_process_manager is not None:
@@ -2579,7 +3970,14 @@ def _seed_agent_payload(
 
 def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: AppSettings | None = None) -> list[dict[str, object]]:
     if kind == "mcp":
-        return [McpServerConfig.model_validate(item).model_dump(mode="json") for item in payload]
+        normalized_servers: list[dict[str, object]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=400, detail="MCP server entries must be JSON objects")
+            normalized = McpServerConfig.model_validate(item).model_dump(mode="json")
+            normalized.update({field: item[field] for field in RESOURCE_METADATA_FIELDS if field in item})
+            normalized_servers.append(normalized)
+        return normalized_servers
 
     if kind == "providers":
         from agent_framework.infra.config_store import PersistedProviderConfig
@@ -2639,6 +4037,7 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
             normalized = normalize_git_source_payload(item)
             if normalized is None:
                 raise HTTPException(status_code=400, detail="Only git skill sources are currently supported")
+            normalized.update({field: item[field] for field in RESOURCE_METADATA_FIELDS if field in item})
             normalized_sources.append(PersistedSkillSourceConfig.model_validate(normalized).model_dump(mode="json"))
         return normalized_sources
 
@@ -2706,7 +4105,62 @@ def _extract_agent_renames(metadata: object) -> dict[str, str]:
 
 
 def _parse_mcp_servers(payload: list[dict[str, object]]) -> list[McpServerConfig]:
-    return [McpServerConfig.model_validate(item) for item in payload]
+    return [McpServerConfig.model_validate(_runtime_named_resource_payload(item)) for item in payload]
+
+
+def _runtime_named_resource_payload(item: dict[str, object]) -> dict[str, object]:
+    runtime_item = dict(item)
+    internal_name = runtime_item.get("internal_name")
+    if isinstance(internal_name, str) and internal_name.strip():
+        runtime_item["name"] = internal_name.strip()
+    return runtime_item
+
+
+def _runtime_agent_payload_item(
+    item: dict[str, object],
+    *,
+    mcp_internal_by_public: dict[str, str] | None = None,
+    agent_internal_by_public: dict[str, str] | None = None,
+) -> dict[str, object]:
+    runtime_item = _runtime_named_resource_payload(item)
+    mcp_internal_by_public = mcp_internal_by_public or {}
+    agent_internal_by_public = agent_internal_by_public or {}
+
+    if mcp_internal_by_public:
+        runtime_item["mcp_servers"] = [
+            mcp_internal_by_public.get(server_name, server_name)
+            for server_name in runtime_item.get("mcp_servers", [])
+            if isinstance(server_name, str)
+        ]
+        runtime_item["mcp_tools"] = [
+            {
+                **tool_ref,
+                "server_name": mcp_internal_by_public.get(tool_ref.get("server_name"), tool_ref.get("server_name")),
+            }
+            for tool_ref in runtime_item.get("mcp_tools", [])
+            if isinstance(tool_ref, dict)
+        ]
+
+    if agent_internal_by_public:
+        runtime_item["delegate_agents"] = [
+            agent_internal_by_public.get(agent_name, agent_name)
+            for agent_name in runtime_item.get("delegate_agents", [])
+            if isinstance(agent_name, str)
+        ]
+    return runtime_item
+
+
+def _runtime_internal_name_map(payload: list[dict[str, object]]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for item in payload:
+        name = item.get("name")
+        internal_name = item.get("internal_name")
+        if not isinstance(name, str) or not name:
+            continue
+        resolved_name = internal_name.strip() if isinstance(internal_name, str) and internal_name.strip() else name
+        mapping[name] = resolved_name
+        mapping[resolved_name] = resolved_name
+    return mapping
 
 
 async def _reload_git_skills(app: FastAPI, payload: list[dict[str, object]]) -> None:
@@ -2777,6 +4231,95 @@ def _matches_skill_source(spec: ManifestSkillSpec, payload: dict[str, object]) -
     )
 
 
+def _visible_skill_source_payload_for_spec(
+    spec: ManifestSkillSpec,
+    visible_sources: list[dict[str, object]],
+) -> dict[str, object] | None:
+    if spec.source_type != "git":
+        return None
+    for source in visible_sources:
+        payload = PersistedSkillSourceConfig.model_validate(source).model_dump(mode="json")
+        if _matches_skill_source(spec, payload):
+            return payload
+    return None
+
+
+def _can_access_manifest_skill(
+    spec: ManifestSkillSpec,
+    settings: AppSettings,
+    source_payload: dict[str, object] | None,
+) -> bool:
+    if spec.source_type == "git":
+        return source_payload is not None
+    return _skill_category(spec, settings) in {"built_in", "uploaded", "authored", "unknown"}
+
+
+def _skill_publication_metadata(source_payload: dict[str, object] | None) -> dict[str, object]:
+    if source_payload is None:
+        return {}
+    return {
+        "publication_resource_name": source_payload.get("name"),
+        **{field: source_payload.get(field) for field in RESOURCE_METADATA_FIELDS if field in source_payload},
+    }
+
+
+def _manifest_skill_summary_response(
+    registry: FrameworkRegistry,
+    settings: AppSettings,
+    spec: ManifestSkillSpec,
+    source_payload: dict[str, object] | None = None,
+) -> SkillSummaryResponse:
+    return SkillSummaryResponse(
+        name=spec.name,
+        version=spec.version,
+        description=spec.description,
+        source_type=spec.source_type,
+        category=_skill_category(spec, settings),
+        source_dir=spec.source_dir,
+        runtime_type=spec.runtime.type if spec.runtime else None,
+        tools=[tool.name for tool in spec.tools],
+        references=spec.references,
+        enabled=registry.is_skill_enabled(spec.name),
+        **_skill_publication_metadata(source_payload),
+    )
+
+
+def _inline_skill_summary_response(
+    registry: FrameworkRegistry,
+    spec: Any,
+) -> SkillSummaryResponse:
+    return SkillSummaryResponse(
+        name=spec.name,
+        version=spec.metadata.get("version", "0.0.0"),
+        description=spec.description,
+        source_type="local",
+        runtime_type="python",
+        tools=spec.tools,
+        references=[],
+        enabled=registry.is_skill_enabled(spec.name),
+    )
+
+
+async def _ensure_skill_access(
+    app: FastAPI,
+    skill_name: str,
+    principal: ConsolePrincipalContext,
+) -> None:
+    registry: FrameworkRegistry = app.state.registry
+    manifest = registry.manifest_skills.get(skill_name)
+    if manifest is None:
+        if skill_name in registry.skills:
+            return
+        raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
+
+    source_payload = _visible_skill_source_payload_for_spec(
+        manifest,
+        await app.state.config_store.get_document("skill_sources", principal.config),
+    )
+    if not _can_access_manifest_skill(manifest, app.state.settings, source_payload):
+        raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
+
+
 def _skill_category(spec: ManifestSkillSpec, settings: AppSettings) -> str:
     if spec.source_type == "git":
         return "github_synced"
@@ -2795,11 +4338,20 @@ def _build_agent_specs(
     provider_config: ProviderConfig,
     mcp_servers: list[McpServerConfig],
     settings: AppSettings,
+    *,
+    mcp_payload: list[dict[str, object]] | None = None,
 ) -> list[AgentSpec]:
     mcp_by_name = {server.name: server for server in mcp_servers}
+    mcp_internal_by_public = _runtime_internal_name_map(mcp_payload or [])
+    agent_internal_by_public = _runtime_internal_name_map(payload)
     agents: list[AgentSpec] = []
     for item in payload:
-        persisted = PersistedAgentConfig.model_validate(_normalize_agent_payload_item(item, settings))
+        runtime_item = _runtime_agent_payload_item(
+            item,
+            mcp_internal_by_public=mcp_internal_by_public,
+            agent_internal_by_public=agent_internal_by_public,
+        )
+        persisted = PersistedAgentConfig.model_validate(_normalize_agent_payload_item(runtime_item, settings))
         resolved_mcp = [mcp_by_name[name] for name in persisted.mcp_servers if name in mcp_by_name]
         agents.append(
             AgentSpec(
@@ -2864,7 +4416,7 @@ async def _resolve_default_provider(
 def _format_api_key_masked(key: str) -> str:
     if len(key) <= 8:
         return "•" * len(key)
-    return f"{key[:5]}...{key[-3:]}"
+    return f"{key[:5]}{'•' * (len(key) - 8)}{key[-3:]}"
 
 
 def _mask_provider_api_key(item: dict[str, object]) -> dict[str, object]:
@@ -2924,6 +4476,30 @@ async def _set_skill_enabled(app: FastAPI, skill_name: str, enabled: bool) -> No
         await registry.skill_process_manager.stop_skill(skill_name)
 
     await _reconcile_skill_process_manager(registry)
+
+
+async def _ensure_skill_state_mutation_allowed(
+    app: FastAPI,
+    skill_name: str,
+    principal: ConsolePrincipalContext,
+) -> None:
+    if principal.is_admin:
+        return
+
+    registry: FrameworkRegistry = app.state.registry
+    settings: AppSettings = app.state.settings
+    manifest = registry.manifest_skills.get(skill_name)
+    if manifest is None:
+        raise HTTPException(status_code=403, detail="Only admins can change global skill state")
+    if _skill_category(manifest, settings) != "github_synced":
+        raise HTTPException(status_code=403, detail="Only admins can change global skill state")
+
+    source_payload = _visible_skill_source_payload_for_spec(
+        manifest,
+        await app.state.config_store.get_document("skill_sources", principal.config),
+    )
+    if not source_payload or source_payload.get("owner_user_id") != principal.user_id:
+        raise HTTPException(status_code=403, detail="Only the skill owner can change this skill state")
 
 
 def _language_from_path(path: Path) -> str:
