@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 
 import { usePageShellActions } from "@/components/page-shell-context";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
 const PAGE_META: Record<string, { title: string; subtitle?: string }> = {
@@ -76,7 +77,10 @@ export function AppTopBar() {
           </>
         ) : null}
       </div>
-      {actions ? <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{actions}</div> : null}
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <ThemeToggle />
+        {actions}
+      </div>
     </header>
   );
 }

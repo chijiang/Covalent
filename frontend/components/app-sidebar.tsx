@@ -49,7 +49,7 @@ function isNavActive(pathname: string, href: string, exact = false) {
 function navButtonClass(active: boolean) {
   return cn(
     active &&
-      "bg-foreground text-background font-medium hover:bg-foreground/90 hover:text-background data-active:bg-foreground data-active:text-background shadow-[inset_3px_0_0_var(--surface-accent-strong)]",
+      "bg-sidebar-accent font-medium text-sidebar-accent-foreground hover:bg-sidebar-accent/90 hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground shadow-[inset_3px_0_0_var(--surface-accent-strong)]",
   );
 }
 
@@ -68,7 +68,7 @@ export function AppSidebar() {
         >
           <img
             alt="Covalent"
-            className="h-10 w-full max-w-full object-contain object-left group-data-[collapsible=icon]:hidden"
+            className="sidebar-brand-logo h-10 w-full max-w-full object-contain object-left group-data-[collapsible=icon]:hidden"
             decoding="async"
             height={188}
             src="/logos/covalent-logo-horizontal-1024.png"
