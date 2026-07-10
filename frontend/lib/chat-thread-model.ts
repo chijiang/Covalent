@@ -5,6 +5,7 @@ export type ChatThreadMessage = {
   role: "user" | "assistant";
   content: string;
   attachments?: unknown[];
+  askUserPrompt?: PendingQuestionRequest | null;
 };
 
 export type ChatThreadActivity = {
