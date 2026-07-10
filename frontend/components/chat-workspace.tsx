@@ -42,7 +42,7 @@ import {
   streamAgent,
   uploadChatAttachments,
 } from "@/lib/client-api";
-import { uid, type ChatThread } from "@/lib/chat-thread-model";
+import { uid, type ChatThread, type ChatThreadMessage } from "@/lib/chat-thread-model";
 import type {
   AgentDetail,
   AgentInputPart,
@@ -358,13 +358,81 @@ function ChatCodeBlock({ children, tone, ...props }: ComponentPropsWithoutRef<"p
   );
 }
 
+function isWaitingForAnswerContent(content: string): boolean {
+  const normalized = content.trim();
+  return normalized === "Waiting for your answer…" || normalized === "Waiting for your answer...";
+}
+
+function ChatMarkdownContent({
+  content,
+  tone,
+}: {
+  content: string;
+  tone: ChatCodeBlockTone;
+}) {
+  return (
+    <div className="chat-markdown">
+      <ReactMarkdown
+        components={{
+          pre({ children, ...props }) {
+            return (
+              <ChatCodeBlock {...props} tone={tone}>
+                {children}
+              </ChatCodeBlock>
+            );
+          },
+        }}
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeSanitize]}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function AskUserPromptSummary({ prompt }: { prompt: PendingQuestionRequest }) {
+  return (
+    <section aria-label="Agent question" className="ask-user-prompt-summary">
+      <div className="ask-user-prompt-summary-header">
+        <p className="section-kicker">Input required</p>
+        <strong className="ask-user-prompt-summary-title">{prompt.title}</strong>
+      </div>
+      <div className="ask-user-prompt-summary-list">
+        {prompt.questions.map((question) => (
+          <article className="ask-user-prompt-summary-card" key={question.header}>
+            <strong>{question.header}</strong>
+            <p>{question.question}</p>
+            {question.message ? <p className="helper-copy">{question.message}</p> : null}
+            {question.options.length ? (
+              <ul className="ask-user-prompt-option-list">
+                {question.options.map((option) => (
+                  <li key={option.label}>
+                    {option.label}
+                    {option.description ? ` — ${option.description}` : ""}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ChatMessageBubble({ message, sending }: { message: Message; sending: boolean }) {
   const tone = message.role === "user" ? "outbound" : "inbound";
+  const displayContent =
+    message.askUserPrompt && isWaitingForAnswerContent(message.content) ? "" : message.content;
+  const markdownContent =
+    displayContent || (sending && message.role === "assistant" ? "Thinking..." : "");
 
   return (
     <article className={message.role === "user" ? "chat-message-row outbound" : "chat-message-row inbound"}>
       <div className={message.role === "user" ? "chat-bubble outbound" : "chat-bubble inbound"}>
-        <ChatBubbleCopy content={message.content || ""} tone={tone} />
+        <ChatBubbleCopy content={displayContent || ""} tone={tone} />
+        {message.askUserPrompt ? <AskUserPromptSummary prompt={message.askUserPrompt} /> : null}
         {message.attachments?.length ? (
           <div className="chat-attachment-list">
             {message.attachments.map((file) =>
@@ -391,23 +459,7 @@ function ChatMessageBubble({ message, sending }: { message: Message; sending: bo
             )}
           </div>
         ) : null}
-        <div className="chat-markdown">
-          <ReactMarkdown
-            components={{
-              pre({ children, ...props }) {
-                return (
-                  <ChatCodeBlock {...props} tone={tone}>
-                    {children}
-                  </ChatCodeBlock>
-                );
-              },
-            }}
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeSanitize]}
-          >
-            {message.content || (sending && message.role === "assistant" ? "Thinking..." : "")}
-          </ReactMarkdown>
-        </div>
+        <ChatMarkdownContent content={markdownContent} tone={tone} />
       </div>
     </article>
   );
@@ -730,6 +782,78 @@ function normalizePendingQuestionRequest(raw: unknown): PendingQuestionRequest |
   };
 }
 
+function getResolvedQuestionsFromActivity(items: ActivityItem[]): PendingQuestionRequest[] {
+  const resolvedIds = new Set<string>();
+
+  for (const item of items) {
+    if (item.title === "input_resolved" && item.payload && typeof item.payload === "object") {
+      const resolvedId = (item.payload as Record<string, unknown>).id;
+      if (typeof resolvedId === "string" && resolvedId.trim()) {
+        resolvedIds.add(resolvedId);
+      }
+    }
+  }
+
+  const resolvedQuestions: PendingQuestionRequest[] = [];
+  for (const item of items) {
+    if (item.title !== "input_required") {
+      continue;
+    }
+    const request = normalizePendingQuestionRequest(item.payload);
+    if (request && resolvedIds.has(request.id)) {
+      resolvedQuestions.push(request);
+    }
+  }
+
+  return resolvedQuestions;
+}
+
+function enrichMessagesWithAskUserPrompts(
+  messages: ChatThreadMessage[],
+  activity: ActivityItem[],
+): ChatThreadMessage[] {
+  const resolvedQuestions = getResolvedQuestionsFromActivity(activity);
+  if (resolvedQuestions.length === 0) {
+    return messages.map((message) =>
+      message.role === "assistant" && isWaitingForAnswerContent(message.content)
+        ? { ...message, content: "" }
+        : message,
+    );
+  }
+
+  let questionIdx = 0;
+  const enriched: ChatThreadMessage[] = [];
+
+  for (const message of messages) {
+    if (message.role === "user" && questionIdx < resolvedQuestions.length) {
+      const hasPriorUser = enriched.some((entry) => entry.role === "user");
+      if (hasPriorUser) {
+        const request = resolvedQuestions[questionIdx];
+        enriched.push({
+          id: `ask-user-prompt-${request.id}`,
+          role: "assistant",
+          content: "",
+          askUserPrompt: request,
+        });
+        questionIdx += 1;
+      }
+    }
+
+    if (
+      message.role === "assistant" &&
+      isWaitingForAnswerContent(message.content) &&
+      !message.askUserPrompt
+    ) {
+      enriched.push({ ...message, content: "" });
+      continue;
+    }
+
+    enriched.push(message);
+  }
+
+  return enriched;
+}
+
 function getPendingQuestionFromActivity(items: ActivityItem[]): PendingQuestionRequest | null {
   const resolvedIds = new Set<string>();
 
@@ -875,19 +999,26 @@ function normalizeAttachment(raw: Record<string, unknown>): ComposerAttachment {
 }
 
 function threadFromSession(session: ChatSession): ChatThread {
+  const activity = session.activity.map((item) => ({
+    id: item.id,
+    title: item.title,
+    payload: item.payload,
+  }));
+  const baseMessages: ChatThreadMessage[] = session.messages.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    attachments: message.attachments.map((attachment) => normalizeAttachment(attachment)),
+  }));
+
   return {
     id: session.id,
     title: session.title,
     titleSource: session.title_source,
     sessionId: session.id,
     agentName: session.agent_name || "",
-    messages: session.messages.map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: message.content,
-      attachments: message.attachments.map((attachment) => normalizeAttachment(attachment)),
-    })),
-    activity: session.activity.map((item) => ({ id: item.id, title: item.title, payload: item.payload })),
+    messages: enrichMessagesWithAskUserPrompts(baseMessages, activity),
+    activity,
     createdAt: toTimestamp(session.created_at),
     updatedAt: toTimestamp(session.updated_at),
     previewText: session.preview_text,
@@ -1850,7 +1981,13 @@ export function ChatWorkspace() {
               pendingQuestion,
               activity: [...thread.activity, { id: uid(event), title: event, payload }],
               messages: thread.messages.map((message) =>
-                message.id === assistantId ? { ...message, content: message.content || "Waiting for your answer…" } : message,
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      content: message.content || "Waiting for your answer…",
+                      askUserPrompt: pendingQuestion,
+                    }
+                  : message,
               ),
             }));
             return;
