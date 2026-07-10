@@ -74,6 +74,31 @@ class PublicAgentInvokeResponse(BaseModel):
     created_at: datetime
 
 
+class ConsoleLoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=1024)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class ConsoleRegisterRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=1024)
+    display_name: str = Field(default="", max_length=255)
+    workspace_name: str = Field(default="Default workspace", max_length=255)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if "@" not in normalized:
+            raise ValueError("email must be a valid email address")
+        return normalized
+
+
 class ApiTokenCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     user_id: str | None = None
@@ -106,6 +131,81 @@ class ApiTokenSummaryResponse(BaseModel):
 
 class ApiTokenCreateResponse(ApiTokenSummaryResponse):
     token: str
+
+
+class ConsoleUserResponse(BaseModel):
+    user_id: str
+    email: str
+    display_name: str
+    role: str
+    workspace_id: str
+    workspace_name: str
+    workspace_role: str
+
+
+class ConsoleUserSummaryResponse(BaseModel):
+    user_id: str
+    email: str
+    display_name: str
+    role: str
+    status: str
+    workspace_id: str | None = None
+    workspace_name: str | None = None
+    workspace_role: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConsoleUserUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=255)
+    role: Literal["admin", "member"] | None = None
+    status: Literal["active", "disabled"] | None = None
+    workspace_role: Literal["admin", "member"] | None = None
+
+
+class AgentRunLogResponse(BaseModel):
+    id: str
+    user_id: str | None = None
+    token_id: str | None = None
+    workspace_id: str | None = None
+    agent_name: str
+    memory_mode: str
+    session_id: str | None = None
+    status: str
+    latency_ms: int | None = None
+    provider: str | None = None
+    model: str | None = None
+    usage: dict[str, Any] = Field(default_factory=dict)
+    error: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class AuditLogResponse(BaseModel):
+    id: str
+    actor_user_id: str | None = None
+    actor_token_id: str | None = None
+    workspace_id: str | None = None
+    action: str
+    target_type: str
+    target_id: str | None = None
+    outcome: str
+    request_id: str | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class PublicationReviewRequest(BaseModel):
+    status: Literal["approved", "rejected"]
+
+
+class PublicationRequestResponse(BaseModel):
+    kind: Literal["agents", "mcp", "skill_sources", "providers"]
+    name: str
+    visibility: str
+    publication_status: str
 
 
 class ProviderSummaryResponse(BaseModel):
@@ -200,6 +300,14 @@ class SkillSummaryResponse(BaseModel):
     tools: list[str]
     references: list[str]
     enabled: bool
+    publication_resource_name: str | None = None
+    owner_user_id: str | None = None
+    workspace_id: str | None = None
+    visibility: Literal["private", "public"] = "public"
+    publication_status: Literal["draft", "pending", "approved", "rejected"] = "approved"
+    publication_requested_at: str | None = None
+    publication_reviewed_at: str | None = None
+    publication_reviewed_by_user_id: str | None = None
 
 
 class SkillInstallRequest(BaseModel):

@@ -9,11 +9,12 @@ import { ConsolePanel } from "@/components/console/console-panel";
 import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
 import { PanelHeader } from "@/components/console/panel-header";
+import { PublicationControls } from "@/components/console/publication-controls";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
 import { exportManagementConfig, fetchProviderModels, getAgentLocalTools, getAgents, getConfig, getSkills, importManagementConfig, inspectMcpServer, saveConfig, sortAgentsForPicker } from "@/lib/client-api";
-import type { AgentConfig, AgentDetail, ConfigDocument, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, SkillSummary } from "@/lib/types";
+import type { AgentConfig, AgentDetail, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, SkillSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -36,7 +37,6 @@ type AgentFormState = {
   capabilities: string[];
   providerName: string;
   model: string;
-  maxIterations: string;
 };
 
 const DEFAULT_AGENT_DESCRIPTION = "General-purpose ReAct agent";
@@ -51,9 +51,6 @@ const MAX_AGENT_LIST_PANEL_WIDTH = 520;
 const MIN_AGENT_DETAIL_PANEL_WIDTH = 720;
 const REASONING_LEVEL_OPTIONS = ["none", "low", "medium", "high", "max"] as const;
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS = 500;
-const DEFAULT_MAX_REACT_ITERATIONS = 8;
-const MIN_MAX_REACT_ITERATIONS = 1;
-const MAX_MAX_REACT_ITERATIONS = 100;
 
 const FALLBACK_LOCAL_TOOLS = ["get_current_time"];
 const FALLBACK_LOCAL_TOOL_SUMMARIES: LocalToolSummary[] = FALLBACK_LOCAL_TOOLS.map((name) => ({
@@ -216,16 +213,7 @@ function toAgentForm(
     capabilities: agent?.capabilities || [],
     providerName,
     model: agent?.provider?.model || "",
-    maxIterations: String(agent?.max_iterations || DEFAULT_MAX_REACT_ITERATIONS),
   };
-}
-
-function normalizeMaxReactIterations(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return DEFAULT_MAX_REACT_ITERATIONS;
-  }
-  return Math.min(Math.max(parsed, MIN_MAX_REACT_ITERATIONS), MAX_MAX_REACT_ITERATIONS);
 }
 
 function downloadTextFile(filename: string, content: string, contentType = "text/plain;charset=utf-8") {
@@ -242,10 +230,6 @@ function agentStatusLabel(isActive: boolean): string {
   return isActive ? "Active" : "Draft";
 }
 
-function agentStatusTone(isActive: boolean): "enabled" | "disabled" {
-  return isActive ? "enabled" : "disabled";
-}
-
 function routingCountLabel(count: number, noun: string): string {
   return `${count} ${noun}`;
 }
@@ -253,7 +237,6 @@ function routingCountLabel(count: number, noun: string): string {
 export function AgentsWorkspace() {
   const isMountedRef = useRef(true);
   const importInputRef = useRef<HTMLInputElement | null>(null);
-  const [document, setDocument] = useState<ConfigDocument | null>(null);
   const [editor, setEditor] = useState("[]\n");
   const [runtimeAgents, setRuntimeAgents] = useState<AgentDetail[]>([]);
   const [availableLocalTools, setAvailableLocalTools] = useState<LocalToolSummary[] | null>(null);
@@ -303,7 +286,6 @@ export function AgentsWorkspace() {
         getConfig("providers").catch(() => null),
       ]);
       const sortedRuntimeAgents = sortAgentsForPicker(nextRuntimeAgents);
-      setDocument(nextDocument);
       setEditor(nextDocument.raw);
       setRuntimeAgents(sortedRuntimeAgents);
       setAvailableLocalTools([...nextLocalTools].sort((left, right) => left.name.localeCompare(right.name)));
@@ -742,7 +724,6 @@ export function AgentsWorkspace() {
       mcp_servers: dedupeStrings(form.mcpServers),
       mcp_tools: dedupeMcpToolReferences(form.mcpToolKeys),
       capabilities: dedupeStrings(form.capabilities),
-      max_iterations: normalizeMaxReactIterations(form.maxIterations),
     };
     const nextAgents = draftAgents.map((agent) => (agent.name === selectedAgent.name ? nextAgent : agent));
     const nextRaw = `${JSON.stringify(nextAgents, null, 2)}\n`;
@@ -754,7 +735,6 @@ export function AgentsWorkspace() {
 
     await runAction("save", async () => {
       const saved = await saveConfig("agents", nextRaw, renameMetadata);
-      setDocument(saved);
       setEditor(saved.raw);
       setMessage(`Saved ${saved.label}.`);
       await refresh();
@@ -785,7 +765,6 @@ export function AgentsWorkspace() {
 
     await runAction("delete", async () => {
       const saved = await saveConfig("agents", nextRaw);
-      setDocument(saved);
       setEditor(saved.raw);
       setMessage(`Deleted agent: ${selectedAgent.name}.`);
       await refresh();
@@ -968,6 +947,15 @@ export function AgentsWorkspace() {
                           {busyAction === "save" ? "Saving" : "Save agent"}
                         </Button>
                       </div>
+                      <PublicationControls
+                        disabled={!!busyAction || formDirty}
+                        kind="agents"
+                        metadata={selectedAgent}
+                        onError={(nextError) => setError(nextError || null)}
+                        onMessage={setMessage}
+                        onUpdated={refresh}
+                        resourceName={selectedAgent.internal_name || selectedAgent.name}
+                      />
                     </div>
 
                     <div className="skill-meta-rail" role="list" aria-label="Agent metadata">
@@ -1089,26 +1077,6 @@ export function AgentsWorkspace() {
                           </ShadcnSelect>
                           <small className="text-[13px] text-muted-foreground">Controls the model reasoning setting for this agent. Defaults to `none`.</small>
                         </div>
-                        <div className="form-field">
-                          <Label htmlFor="agent-max-iterations">Max ReAct iterations</Label>
-                          <Input
-                            id="agent-max-iterations"
-                            inputMode="numeric"
-                            max={MAX_MAX_REACT_ITERATIONS}
-                            min={MIN_MAX_REACT_ITERATIONS}
-                            onBlur={() =>
-                              setForm((current) => ({
-                                ...current,
-                                maxIterations: String(normalizeMaxReactIterations(current.maxIterations)),
-                              }))
-                            }
-                            onChange={(event) => setForm((current) => ({ ...current, maxIterations: event.target.value }))}
-                            placeholder={String(DEFAULT_MAX_REACT_ITERATIONS)}
-                            type="number"
-                            value={form.maxIterations}
-                          />
-                          <small className="entity-meta">Maximum tool-use loop count before the agent is told to stop calling tools and answer from gathered context.</small>
-                        </div>
                       </FormSection>
 
                     </div>
@@ -1117,12 +1085,12 @@ export function AgentsWorkspace() {
                       <div className="form-field">
                         <Label htmlFor="agent-system-prompt">System prompt</Label>
                         <Textarea id="agent-system-prompt" onChange={(event) => setForm((current) => ({ ...current, systemPrompt: event.target.value }))} rows={8} value={form.systemPrompt} />
-                        <small className="entity-meta">Sets the agent's role, tone, boundaries, and output expectations.</small>
+                        <small className="entity-meta">Sets the agent&apos;s role, tone, boundaries, and output expectations.</small>
                       </div>
                       <div className="form-field">
                         <Label htmlFor="agent-reasoning-prompt">Reasoning prompt</Label>
                         <Textarea id="agent-reasoning-prompt" onChange={(event) => setForm((current) => ({ ...current, reasoningPrompt: event.target.value }))} rows={5} value={form.reasoningPrompt} />
-                        <small className="text-[13px] text-muted-foreground">Defines the agent's built-in working method, such as when to reason explicitly or use tools. This is not a skill.</small>
+                        <small className="text-[13px] text-muted-foreground">Defines the agent&apos;s built-in working method, such as when to reason explicitly or use tools. This is not a skill.</small>
                       </div>
                     </FormSection>
 

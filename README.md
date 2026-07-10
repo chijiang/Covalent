@@ -257,6 +257,7 @@ The SDK auto-generates tool parameter schemas from function signatures and enfor
 | `GET` | `/agents/{name}` | Get agent details |
 | `POST` | `/agents/{name}/run` | Run agent (sync) |
 | `POST` | `/agents/{name}/stream` | Run agent (SSE stream) |
+| `POST` | `/v1/agent/invoke` | External production API for token-authenticated agent invokes |
 
 **Run agent:**
 
@@ -273,6 +274,84 @@ curl -N http://localhost:5170/agents/default/stream \
   -H "Content-Type: application/json" \
   -d '{"input": "Hello", "session_id": "abc123"}'
 ```
+
+### Production Agent Invoke API
+
+External callers should use the single public API surface:
+
+```text
+POST /v1/agent/invoke
+Authorization: Bearer cvt_<token-prefix>_<secret>
+Content-Type: application/json
+```
+
+API tokens are created and revoked in the Service Console under API Tokens. Each token is owned by one user and workspace, and can be constrained with a fine-grained policy:
+
+```json
+{
+  "allowed_agents": ["researcher"],
+  "allowed_memory_modes": ["none", "session"],
+  "max_trace_level": "steps",
+  "max_requests_per_minute": 60,
+  "max_requests_per_day": 1000,
+  "max_tokens_per_day": 200000
+}
+```
+
+Supported policy fields:
+
+| Field | Description |
+|-------|-------------|
+| `allowed_agents` | Optional allow-list of agent names this token can invoke |
+| `allowed_memory_modes` | Optional allow-list containing `none`, `session`, or both |
+| `max_trace_level` | Highest stream trace level: `none`, `steps`, or `debug` |
+| `max_requests_per_minute` | Optional token-level burst limit enforced from invoke logs |
+| `max_requests_per_day` | Optional token-level daily request quota enforced from invoke logs |
+| `max_tokens_per_day` | Optional daily token quota using recorded `total_tokens` |
+
+Stateless invoke does not write conversation memory:
+
+```bash
+curl -X POST http://localhost:5170/v1/agent/invoke \
+  -H "Authorization: Bearer $COVALENT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent": "researcher",
+    "input": "Summarize the latest uploaded brief.",
+    "memory": { "mode": "none" },
+    "trace": { "level": "steps" }
+  }'
+```
+
+Session invoke stores and reuses memory scoped to the token owner's user and workspace:
+
+```bash
+curl -X POST http://localhost:5170/v1/agent/invoke \
+  -H "Authorization: Bearer $COVALENT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent": "researcher",
+    "input": "Continue from the prior analysis.",
+    "memory": { "mode": "session", "session_id": "customer-brief-001" }
+  }'
+```
+
+Set `stream: true` to receive Server-Sent Events. `trace.level` controls how much execution detail is exposed: `none` suppresses tool and thought events, `steps` emits redacted execution steps, and `debug` includes tool arguments and summarized results.
+
+```bash
+curl -N http://localhost:5170/v1/agent/invoke \
+  -H "Authorization: Bearer $COVALENT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent": "researcher",
+    "input": "Inspect the configured tools before answering.",
+    "stream": true,
+    "memory": { "mode": "none" },
+    "trace": { "level": "debug" }
+  }'
+```
+
+Every public invoke writes an `agent_run_logs` row and an audit event. Denied calls, including missing or invalid tokens, cross-user private agent access, disallowed policy values, and quota failures, write `agent.invoke.denied` audit events when the request reaches the application.
 
 ### Skill Endpoints
 

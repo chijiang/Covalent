@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { FormSection } from "@/components/console/form-section";
 import { ConsoleAlert } from "@/components/console/console-alert";
@@ -8,6 +8,7 @@ import { ConsolePanel } from "@/components/console/console-panel";
 import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
 import { PanelHeader } from "@/components/console/panel-header";
+import { PublicationControls } from "@/components/console/publication-controls";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { fetchProviderModels, getConfig, saveConfig } from "@/lib/client-api";
@@ -188,7 +189,7 @@ export function ProviderWorkspace() {
     storageKey: PROVIDER_LIST_PANEL_STORAGE_KEY,
   });
 
-  async function refresh(preferredSelectedName?: string | null) {
+  const refresh = useCallback(async (preferredSelectedName?: string | null) => {
     setLoading(true);
     setError(null);
     try {
@@ -196,24 +197,21 @@ export function ProviderWorkspace() {
       const list = Array.isArray(doc.data) ? (doc.data as ProviderEntry[]) : [];
       setProviders(list);
 
-      const nextSelectedName = preferredSelectedName === undefined ? selectedName : preferredSelectedName;
-      if (nextSelectedName && list.some((provider) => provider.name === nextSelectedName)) {
-        setSelectedName(nextSelectedName);
-        setIsCreatingProvider(false);
-      } else {
-        setSelectedName(list[0]?.name ?? null);
-        setIsCreatingProvider(false);
-      }
+      setSelectedName((current) => {
+        const nextSelectedName = preferredSelectedName === undefined ? current : preferredSelectedName;
+        return nextSelectedName && list.some((provider) => provider.name === nextSelectedName) ? nextSelectedName : list[0]?.name ?? null;
+      });
+      setIsCreatingProvider(false);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load providers.");
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [refresh]);
 
   async function runAction(action: string, fn: () => Promise<void>) {
     setBusyAction(action);
@@ -483,6 +481,17 @@ export function ProviderWorkspace() {
                             {busyAction === "save" ? "Saving" : isCreatingProvider ? "Create provider" : "Save provider"}
                           </Button>
                         </div>
+                        {selectedProvider && !isCreatingProvider ? (
+                          <PublicationControls
+                            disabled={!!busyAction || formDirty}
+                            kind="providers"
+                            metadata={selectedProvider}
+                            onError={(nextError) => setError(nextError || null)}
+                            onMessage={setMessage}
+                            onUpdated={() => refresh(selectedProvider.name)}
+                            resourceName={selectedProvider.internal_name || selectedProvider.name}
+                          />
+                        ) : null}
                       </div>
 
                       <div className="skill-meta-rail" role="list" aria-label="Provider metadata">

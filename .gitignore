@@ -39,6 +39,12 @@ tmp
 # build
 .next
 
+# Local generated artifacts
+.pnpm-store/
+frontend/.pnpm-store/
+*.tsbuildinfo
+.agent_framework/
+
 # local skills
 skills/uploaded
 

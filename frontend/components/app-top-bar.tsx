@@ -2,6 +2,8 @@
 
 import { usePathname } from "next/navigation";
 
+import { useAuth } from "@/components/auth-provider";
+import { Button } from "@/components/ui/button";
 import { usePageShellActions } from "@/components/page-shell-context";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
@@ -17,6 +19,14 @@ const PAGE_META: Record<string, { title: string; subtitle?: string }> = {
   "/service-console/agent-settings": {
     title: "Agent settings",
     subtitle: "Configure agent prompts, tools, delegates, and runtime wiring.",
+  },
+  "/service-console/audit-logs": {
+    title: "Audit logs",
+    subtitle: "Review external API calls, denials, token changes, and publication workflow events.",
+  },
+  "/service-console/users": {
+    title: "Users",
+    subtitle: "Manage local accounts, roles, and workspace membership.",
   },
   "/service-console/mcp-services": {
     title: "MCP services",
@@ -50,6 +60,7 @@ export function AppTopBar() {
   const pathname = usePathname();
   const meta = resolvePageMeta(pathname);
   const actions = usePageShellActions();
+  const { logout, user } = useAuth();
   const isConsolePage = pathname.startsWith("/service-console");
 
   return (
@@ -76,7 +87,20 @@ export function AppTopBar() {
           </>
         ) : null}
       </div>
-      {actions ? <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{actions}</div> : null}
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        {actions}
+        {user ? (
+          <div className="hidden items-center gap-2 rounded-full border border-border/70 bg-background px-2.5 py-1 text-[length:var(--text-xs)] text-muted-foreground sm:flex">
+            <span className="max-w-36 truncate">{user.display_name || user.email}</span>
+            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-[var(--tracking-label)]">
+              {user.role}
+            </span>
+          </div>
+        ) : null}
+        <Button onClick={() => void logout()} size="sm" variant="outline">
+          Sign out
+        </Button>
+      </div>
     </header>
   );
 }
