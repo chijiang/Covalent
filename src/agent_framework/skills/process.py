@@ -9,6 +9,8 @@ import sys
 import time
 from typing import Any
 
+from agent_framework.runtime.backend import ExecutionBackend
+from agent_framework.runtime.filesystem_backend import FileSystemBackend
 from agent_framework.skills.exceptions import SkillProcessError, SkillStartupError
 from agent_framework.skills.permissions import PermissionChecker
 from agent_framework.skills.protocol import JsonRpcResponse
@@ -121,11 +123,12 @@ class SkillProcessManager:
     """Manages per-skill process pools with health checking, idle eviction,
     and concurrency control via semaphores and busy flags."""
 
-    def __init__(self) -> None:
+    def __init__(self, backend: ExecutionBackend | None = None) -> None:
         self._pools: dict[str, list[SkillProcessHandle]] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
         self._health_task: asyncio.Task[None] | None = None
         self._checker = PermissionChecker()
+        self._backend: ExecutionBackend = backend or FileSystemBackend()
 
     async def start(self) -> None:
         self._health_task = asyncio.create_task(self._health_check_loop())
@@ -203,11 +206,8 @@ class SkillProcessManager:
         env = self._build_env(spec)
         full_args = self._build_command(spec, command, extra_args, env)
 
-        process = await asyncio.create_subprocess_exec(
-            *full_args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        process = await self._backend.spawn_stream(
+            full_args,
             cwd=spec.resolved_working_dir(),
             env=env,
         )
