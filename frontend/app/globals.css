@@ -5,8 +5,9 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --font-display: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans", "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
+  --font-cjk-sans: "PingFang SC", "Hiragino Sans GB", "Heiti SC", "STHeiti", "Songti SC", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", "WenQuanYi Micro Hei";
+  --font-display: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", var(--font-cjk-sans), "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", var(--font-cjk-sans), monospace;
 
   /* Type scale (size / line-height) */
   --text-2xs: 11px;

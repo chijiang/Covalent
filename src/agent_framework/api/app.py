@@ -1406,7 +1406,7 @@ def create_app() -> FastAPI:
             registered_spec = loader.load_skill_dir(target_dir)
             registry.register_manifest_skill(registered_spec)
             await _sync_registry_skill_states(registry, config_store)
-            await _reconcile_skill_process_manager(registry)
+            await _reconcile_skill_process_manager(registry, app.state.execution_backend)
             return SkillInstallResponse(
                 name=registered_spec.name,
                 version=registered_spec.version,
@@ -1521,7 +1521,7 @@ def create_app() -> FastAPI:
 
         spec = registry.unregister_skill(skill_name)
         await config_store.delete_skill_state(skill_name)
-        await _reconcile_skill_process_manager(registry)
+        await _reconcile_skill_process_manager(registry, app.state.execution_backend)
 
         if spec:
             category = _skill_category(spec, settings)
@@ -2344,9 +2344,16 @@ async def _seed_initial_admin_user(db_manager: DatabaseManager, settings: AppSet
         return
     async with db_manager.session_factory() as session:
         async with session.begin():
-            user = await session.scalar(select(UserRow).where(UserRow.email == email))
-            if user is None and username:
-                user = await session.scalar(select(UserRow).where(func.lower(UserRow.username) == username))
+            by_email = await session.scalar(select(UserRow).where(UserRow.email == email))
+            by_username = await session.scalar(
+                select(UserRow).where(func.lower(UserRow.username) == username)
+            )
+            # Prefer the username match when email/username resolve to different rows so
+            # we never stamp the seed username onto another account (unique violation).
+            if by_email is not None and by_username is not None and by_email.id != by_username.id:
+                user = by_username
+            else:
+                user = by_email or by_username
             if user is None:
                 user = UserRow(
                     id=_new_chat_item_id("user"),
@@ -2364,9 +2371,23 @@ async def _seed_initial_admin_user(db_manager: DatabaseManager, settings: AppSet
                 if not user.display_name.strip():
                     user.display_name = settings.console_seed_admin_display_name.strip() or username
                 if not user.username:
-                    user.username = username
+                    username_taken = await session.scalar(
+                        select(UserRow.id).where(
+                            func.lower(UserRow.username) == username,
+                            UserRow.id != user.id,
+                        )
+                    )
+                    if username_taken is None:
+                        user.username = username
                 if not user.email or "@" not in user.email:
-                    user.email = email
+                    email_taken = await session.scalar(
+                        select(UserRow.id).where(
+                            UserRow.email == email,
+                            UserRow.id != user.id,
+                        )
+                    )
+                    if email_taken is None:
+                        user.email = email
                 user.role = "admin"
                 user.status = "active"
 
@@ -4218,7 +4239,7 @@ async def _import_skill_management_payload(
             await registry.skill_process_manager.stop_skill(item.name)
         applied_items += 1
 
-    await _reconcile_skill_process_manager(registry)
+    await _reconcile_skill_process_manager(registry, app.state.execution_backend)
 
     summary = (
         f"Imported {len(imported_items)} skill entries and synced {len(saved_sources)} git skill sources. "
@@ -4616,7 +4637,7 @@ async def _reload_git_skills(app: FastAPI, payload: list[dict[str, object]]) -> 
         registry.register_manifest_skill(spec)
 
     await _sync_registry_skill_states(registry, config_store)
-    await _reconcile_skill_process_manager(registry)
+    await _reconcile_skill_process_manager(registry, app.state.execution_backend)
 
 
 def _infer_skill_install_source_type(settings: AppSettings, source: str) -> str:
@@ -4912,7 +4933,7 @@ async def _set_skill_enabled(app: FastAPI, skill_name: str, enabled: bool) -> No
     if not enabled and registry.skill_process_manager is not None:
         await registry.skill_process_manager.stop_skill(skill_name)
 
-    await _reconcile_skill_process_manager(registry)
+    await _reconcile_skill_process_manager(registry, app.state.execution_backend)
 
 
 async def _ensure_skill_state_mutation_allowed(
