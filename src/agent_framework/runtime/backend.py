@@ -1,26 +1,26 @@
 """Execution backend abstraction.
 
-A backend decides *where* a session's skill code and scripts run. Phase 0
-introduces a lean interface covering process execution only:
+A backend decides *where* a session's skill code and scripts run.
 
 - ``spawn_stream`` — long-lived bidirectional stdio for JSON-RPC skill runners
   (used by :class:`agent_framework.skills.process.SkillProcessManager`).
 - ``exec`` — one-shot command for ad-hoc scripts.
+- ``ensure``/``stop``/``is_alive`` — per-session environment lifecycle
+  (no-ops on FileSystem; container create/teardown on Docker).
 - ``aclose`` — release backend-owned resources on shutdown.
 
-Lifecycle (``ensure``/``stop``) and file-transfer (``put_file``/``get_file``)
-methods arrive in later phases: Docker container lifecycle in Phase 1, the
-``WorkspaceAccess`` refactor in Phase 2, and Kubernetes in Phase 3.
-
-``spawn_stream`` returns ``asyncio.subprocess.Process`` in Phase 0 because the
-only implementation (FileSystem) spawns a local subprocess. Phase 1 generalizes
-the return to a ``ProcessStream`` Protocol so the Docker backend can return an
-exec-socket channel instead — validated stable by ``script/spike-docker-exec-rpc.py``.
+``spawn_stream``/``exec`` take a ``session_id`` so a backend can scope execution
+to a per-session environment. FileSystem ignores it; Docker routes it to the
+session's container. ``spawn_stream`` returns an ``asyncio.subprocess.Process``-
+compatible object: FileSystem returns a real subprocess; Docker returns a
+:class:`~agent_framework.runtime.docker_process.DockerExecProcess` that quacks
+like one (validated by ``script/spike-docker-exec-rpc.py``).
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -42,10 +42,15 @@ class ExecutionBackend(Protocol):
     """Where a session's skill code and scripts run.
 
     Implementations: :class:`~agent_framework.runtime.filesystem_backend.FileSystemBackend`
-    (default, Phase 0), DockerBackend (Phase 1), KubernetesBackend (Phase 3).
+    (default), :class:`~agent_framework.runtime.docker_backend.DockerBackend`,
+    KubernetesBackend (Phase 3).
     """
 
     name: str
+
+    async def ensure(self, session_id: str) -> None:
+        """Make the per-session execution environment ready. Idempotent."""
+        ...
 
     async def spawn_stream(
         self,
@@ -53,6 +58,7 @@ class ExecutionBackend(Protocol):
         *,
         cwd: str | Path | None,
         env: dict[str, str],
+        session_id: str | None = None,
     ) -> asyncio.subprocess.Process:
         """Start a long-lived process with piped stdio for JSON-RPC."""
         ...
@@ -64,8 +70,18 @@ class ExecutionBackend(Protocol):
         cwd: str | Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
+        session_id: str | None = None,
+        stdin: bytes | None = None,
     ) -> ExecResult:
         """Run a one-shot command to completion and capture its output."""
+        ...
+
+    async def stop(self, session_id: str) -> None:
+        """Tear down the per-session environment."""
+        ...
+
+    async def is_alive(self, session_id: str) -> bool:
+        """Whether the per-session environment is still running."""
         ...
 
     async def aclose(self) -> None:
@@ -73,11 +89,16 @@ class ExecutionBackend(Protocol):
         ...
 
 
-def make_backend(settings: "AppSettings") -> ExecutionBackend:
+def make_backend(
+    settings: "AppSettings",
+    skill_source_dirs_provider: Callable[[], Sequence[str]] | None = None,
+) -> ExecutionBackend:
     """Select the execution backend configured by ``settings.execution_backend_kind``.
 
-    Fails fast with a clear message for backends not yet implemented, so a
-    misconfiguration surfaces at startup rather than at first execution.
+    ``skill_source_dirs_provider`` (a zero-arg callable returning host skill source
+    directories) is required for the Docker backend so it can bind-mount skill code
+    into the session container; ignored by FileSystem. Fails fast for backends not
+    yet implemented so a misconfiguration surfaces at startup.
     """
     from agent_framework.runtime.filesystem_backend import FileSystemBackend
 
@@ -85,7 +106,11 @@ def make_backend(settings: "AppSettings") -> ExecutionBackend:
     if kind == "filesystem":
         return FileSystemBackend()
     if kind == "docker":
-        raise NotImplementedError("Docker execution backend lands in Phase 1")
+        if skill_source_dirs_provider is None:
+            raise ValueError("Docker backend requires skill_source_dirs_provider")
+        from agent_framework.runtime.docker_backend import DockerBackend
+
+        return DockerBackend(settings, skill_source_dirs_provider)
     if kind == "kubernetes":
         raise NotImplementedError("Kubernetes execution backend lands in Phase 3")
     raise ValueError(f"Unknown execution_backend_kind: {kind!r}")

@@ -8,6 +8,8 @@ from typing import Any
 
 from agent_framework.core.types import RunContext
 from agent_framework.core.workspace_tools import _get_session_workspace_root
+from agent_framework.runtime.backend import ExecutionBackend
+from agent_framework.runtime.filesystem_backend import FileSystemBackend
 from agent_framework.skills.bundle import SkillBundle, SkillBundleError
 from agent_framework.skills.permissions import PermissionChecker
 from agent_framework.skills.spec import ManifestSkillSpec, ScriptDeclaration
@@ -17,7 +19,7 @@ READ_SKILL_RESOURCE_TOOL = "read_skill_resource"
 RUN_SKILL_SCRIPT_TOOL = "run_skill_script"
 
 
-def register_skill_meta_tools(registry: Any, settings: Any = None) -> None:
+def register_skill_meta_tools(registry: Any, settings: Any = None, backend: ExecutionBackend | None = None) -> None:
     registry.register_local_tool(
         LIST_SKILL_FILES_TOOL,
         {
@@ -101,7 +103,7 @@ def register_skill_meta_tools(registry: Any, settings: Any = None) -> None:
                 },
             },
         },
-        handler=lambda args, ctx: _run_skill_script(registry, args, ctx, settings),
+        handler=lambda args, ctx: _run_skill_script(registry, args, ctx, settings, backend),
     )
 
 
@@ -137,6 +139,7 @@ async def _run_skill_script(
     args: dict[str, Any],
     context: RunContext | None,
     settings: Any = None,
+    backend: ExecutionBackend | None = None,
 ) -> str:
     spec, bundle = _bundle_for_skill(registry, str(args.get("skill", "")))
     script = bundle.script_for_name(str(args.get("name", "")))
@@ -161,33 +164,30 @@ async def _run_skill_script(
             # Fallback to bundle root if session workspace can't be determined
             pass
 
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        cwd=cwd,
-        env=env,
-        stdin=asyncio.subprocess.PIPE if stdin_data else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    active_backend: ExecutionBackend = backend or FileSystemBackend()
+    encoded_stdin = stdin_data.encode("utf-8") if stdin_data else None
+    session_id = context.session_id if context else None
     try:
-        encoded_stdin = stdin_data.encode("utf-8") if stdin_data else None
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(input=encoded_stdin), timeout=timeout
+        result = await active_backend.exec(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            session_id=session_id,
+            stdin=encoded_stdin,
         )
     except asyncio.TimeoutError as exc:
-        process.kill()
-        await process.wait()
         raise RuntimeError(
             f"Skill script '{script.name}' timed out after {timeout}s"
         ) from exc
 
     return json.dumps(
         {
-            "ok": process.returncode == 0,
-            "exit_code": process.returncode,
+            "ok": result.exit_code == 0,
+            "exit_code": result.exit_code,
             "command": command,
-            "stdout": stdout.decode("utf-8", errors="replace"),
-            "stderr": stderr.decode("utf-8", errors="replace"),
+            "stdout": result.stdout.decode("utf-8", errors="replace"),
+            "stderr": result.stderr.decode("utf-8", errors="replace"),
         },
         ensure_ascii=False,
         indent=2,

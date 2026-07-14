@@ -71,6 +71,7 @@ class AppSettings(BaseSettings):
     session_workspace_enabled: bool = True
     session_workspace_root_dir: str | None = None
     execution_backend_kind: Literal["filesystem", "docker", "kubernetes"] = "filesystem"
+    execution_backend_docker_image: str = "covalent-sandbox:dev"
     skills_root_dir: str = "skills"
     skills_directories: str | None = None
     skills_cache_dir: str = "~/.agent_framework/skill_cache"

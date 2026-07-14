@@ -283,10 +283,11 @@ def _normalize_agent_payload_item(item: dict[str, object], settings: AppSettings
 async def build_registry(
     settings: AppSettings,
     config_store: ConfigStore,
+    backend: ExecutionBackend | None = None,
 ) -> tuple[FrameworkRegistry, SkillLoader, list[dict[str, object]]]:
     settings.ensure_managed_skill_directories()
     registry = FrameworkRegistry()
-    register_skill_meta_tools(registry, settings)
+    register_skill_meta_tools(registry, settings, backend)
     mcp_payload = await config_store.ensure_document("mcp", _seed_mcp_payload(settings))
     mcp_servers = _parse_mcp_servers(mcp_payload)
     if settings.enable_builtin_tools:
@@ -325,7 +326,26 @@ async def lifespan(app: FastAPI):
     db_manager = DatabaseManager(database_url)
     await _seed_initial_admin_user(db_manager, settings)
     config_store = ConfigStore(db_manager.session_factory)
-    registry, loader, skill_source_payload = await build_registry(settings, config_store)
+    # The execution backend must exist before build_registry so the skill
+    # meta-tools (run_skill_script) can route through it. The skill-source-dirs
+    # provider is a closure over the registry, assigned right after build_registry.
+    registry_holder: dict[str, Any] = {}
+
+    def _skill_source_dirs() -> list[str]:
+        registry = registry_holder.get("registry")
+        if registry is None:
+            return []
+        return [
+            spec.source_dir
+            for spec in registry.manifest_skills.values()
+            if getattr(spec, "source_dir", None)
+        ]
+
+    execution_backend = make_backend(settings, skill_source_dirs_provider=_skill_source_dirs)
+    registry, loader, skill_source_payload = await build_registry(
+        settings, config_store, backend=execution_backend
+    )
+    registry_holder["registry"] = registry
 
     git_skills = await loader.discover_git(skill_source_payload)
     for spec in git_skills:
@@ -333,7 +353,6 @@ async def lifespan(app: FastAPI):
         logger.info("Loaded git skill '%s' (v%s) from %s", spec.name, spec.version, spec.source_dir)
 
     await _sync_registry_skill_states(registry, config_store)
-    execution_backend = make_backend(settings)
     await _reconcile_skill_process_manager(registry, execution_backend)
 
     app.state.settings = settings

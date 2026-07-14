@@ -32,8 +32,12 @@ class FileSystemBackendTests(unittest.TestCase):
         backend = make_backend(AppSettings(execution_backend_kind="filesystem"))
         self.assertIsInstance(backend, FileSystemBackend)
 
-    def test_make_backend_docker_raises_not_implemented(self) -> None:
-        with self.assertRaises(NotImplementedError):
+    def test_make_backend_docker_requires_skill_source_dirs_provider(self) -> None:
+        # The Docker backend needs a skill-source-dirs provider so it can
+        # bind-mount skill code into the session container; selecting docker
+        # without one fails fast. (The backend itself is covered by
+        # test_docker_backend.py.)
+        with self.assertRaises(ValueError):
             make_backend(AppSettings(execution_backend_kind="docker"))
 
     def test_make_backend_kubernetes_raises_not_implemented(self) -> None:
