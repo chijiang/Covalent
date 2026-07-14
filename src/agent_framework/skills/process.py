@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sys
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent_framework.runtime.backend import ExecutionBackend
 from agent_framework.runtime.filesystem_backend import FileSystemBackend
@@ -15,6 +15,9 @@ from agent_framework.skills.exceptions import SkillProcessError, SkillStartupErr
 from agent_framework.skills.permissions import PermissionChecker
 from agent_framework.skills.protocol import JsonRpcResponse
 from agent_framework.skills.spec import ManifestSkillSpec
+
+if TYPE_CHECKING:
+    from agent_framework.core.types import RunContext
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +127,10 @@ class SkillProcessManager:
     and concurrency control via semaphores and busy flags."""
 
     def __init__(self, backend: ExecutionBackend | None = None) -> None:
-        self._pools: dict[str, list[SkillProcessHandle]] = {}
-        self._semaphores: dict[str, asyncio.Semaphore] = {}
+        # Keyed by (skill_name, session_id) so a backend that isolates sessions
+        # (e.g. Docker) never reuses one session's warm process for another.
+        self._pools: dict[tuple[str, str | None], list[SkillProcessHandle]] = {}
+        self._semaphores: dict[tuple[str, str | None], asyncio.Semaphore] = {}
         self._health_task: asyncio.Task[None] | None = None
         self._checker = PermissionChecker()
         self._backend: ExecutionBackend = backend or FileSystemBackend()
@@ -146,18 +151,29 @@ class SkillProcessManager:
         self._pools.clear()
         self._semaphores.clear()
 
-    async def acquire(self, spec: ManifestSkillSpec) -> SkillProcessHandle:
-        """Acquire a process slot. Blocks if all instances are busy, up to max_instances."""
+    async def acquire(
+        self,
+        spec: ManifestSkillSpec,
+        context: RunContext | None = None,
+    ) -> SkillProcessHandle:
+        """Acquire a process slot. Blocks if all instances are busy, up to max_instances.
+
+        ``context`` carries the session id; the pool is scoped per (skill, session)
+        so a backend that isolates sessions (e.g. Docker) never reuses one session's
+        warm process for another.
+        """
         if not spec.is_executable:
             raise SkillProcessError({"code": -32002, "message": f"Skill '{spec.name}' is not executable"})
-        sem = self._semaphores.get(spec.name)
+        session_id = context.session_id if context else None
+        key = (spec.name, session_id)
+        sem = self._semaphores.get(key)
         if sem is None:
             sem = asyncio.Semaphore(spec.process.max_instances)
-            self._semaphores[spec.name] = sem
+            self._semaphores[key] = sem
 
         await sem.acquire()
         try:
-            handle = await self._get_or_spawn(spec)
+            handle = await self._get_or_spawn(spec, session_id)
             handle._busy = True
             return handle
         except Exception:
@@ -168,36 +184,38 @@ class SkillProcessManager:
         """Release a process back to the pool."""
         handle._busy = False
         handle._last_activity = time.monotonic()
-        sem = self._semaphores.get(handle.spec.name)
+        sem = self._semaphores.get((handle.spec.name, getattr(handle, "_session_id", None)))
         if sem:
             sem.release()
 
     def pool_status(self, skill_name: str) -> dict[str, Any]:
-        pool = self._pools.get(skill_name, [])
-        alive = sum(1 for h in pool if h.is_alive)
-        ready = sum(1 for h in pool if h.is_alive and h.is_ready)
-        busy = sum(1 for h in pool if h._busy)
-        return {"total": len(pool), "alive": alive, "ready": ready, "busy": busy}
+        handles = [h for key, pool in self._pools.items() if key[0] == skill_name for h in pool]
+        alive = sum(1 for h in handles if h.is_alive)
+        ready = sum(1 for h in handles if h.is_alive and h.is_ready)
+        busy = sum(1 for h in handles if h._busy)
+        return {"total": len(handles), "alive": alive, "ready": ready, "busy": busy}
 
     async def stop_skill(self, skill_name: str) -> None:
-        pool = self._pools.pop(skill_name, [])
-        self._semaphores.pop(skill_name, None)
-        for handle in pool:
-            await self._terminate(handle)
+        keys = [key for key in self._pools if key[0] == skill_name]
+        for key in keys:
+            pool = self._pools.pop(key)
+            self._semaphores.pop(key, None)
+            for handle in pool:
+                await self._terminate(handle)
 
-    async def _get_or_spawn(self, spec: ManifestSkillSpec) -> SkillProcessHandle:
+    async def _get_or_spawn(self, spec: ManifestSkillSpec, session_id: str | None) -> SkillProcessHandle:
         """Find an available process or spawn a new one."""
-        pool = self._pools.setdefault(spec.name, [])
+        pool = self._pools.setdefault((spec.name, session_id), [])
         # Try to find an idle, ready process
         for handle in pool:
             if handle.is_available:
                 return handle
         # Spawn a new one (semaphore already limits concurrency)
-        handle = await self._spawn(spec)
+        handle = await self._spawn(spec, session_id)
         pool.append(handle)
         return handle
 
-    async def _spawn(self, spec: ManifestSkillSpec) -> SkillProcessHandle:
+    async def _spawn(self, spec: ManifestSkillSpec, session_id: str | None = None) -> SkillProcessHandle:
         assert spec.runtime is not None
         command = spec.runtime.command or self._default_command(spec.runtime.type)
         extra_args: list[str] = []
@@ -210,8 +228,10 @@ class SkillProcessManager:
             full_args,
             cwd=spec.resolved_working_dir(),
             env=env,
+            session_id=session_id,
         )
         handle = SkillProcessHandle(spec=spec, process=process)
+        handle._session_id = session_id
         handle._reader_task = asyncio.create_task(handle._read_loop())
         asyncio.create_task(self._stderr_logger(spec.name, process))
 
@@ -280,7 +300,7 @@ class SkillProcessManager:
         while True:
             try:
                 await asyncio.sleep(30.0)
-                for skill_name, pool in list(self._pools.items()):
+                for (skill_name, _session_id), pool in list(self._pools.items()):
                     for handle in pool[:]:
                         if not handle.is_alive:
                             pool.remove(handle)

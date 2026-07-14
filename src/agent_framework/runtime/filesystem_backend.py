@@ -1,10 +1,12 @@
 """FileSystem execution backend — runs code as local subprocesses on the host.
 
-This is the default backend and the Phase 0 baseline. ``spawn_stream`` is a
-verbatim extraction of the original ``SkillProcessManager._spawn`` subprocess
-call, so behavior is identical to the pre-backend code path. The Docker backend
-(Phase 1) swaps ``spawn_stream`` for a container exec channel; the rest of the
-framework is unchanged because it goes through :class:`ExecutionBackend`.
+This is the default backend. ``spawn_stream`` is a verbatim extraction of the
+original ``SkillProcessManager._spawn`` subprocess call, so behavior is identical
+to the pre-backend code path. ``session_id`` and the lifecycle methods
+(``ensure``/``stop``/``is_alive``) are no-ops: the host has no per-session
+environment to set up. The Docker backend
+(:mod:`agent_framework.runtime.docker_backend`) overrides these to manage a
+per-session container.
 """
 
 from __future__ import annotations
@@ -20,12 +22,17 @@ class FileSystemBackend(ExecutionBackend):
 
     name = "filesystem"
 
+    async def ensure(self, session_id: str) -> None:
+        """No per-session setup on the host filesystem."""
+        return None
+
     async def spawn_stream(
         self,
         command: list[str],
         *,
         cwd: str | Path | None,
         env: dict[str, str],
+        session_id: str | None = None,
     ) -> asyncio.subprocess.Process:
         return await asyncio.create_subprocess_exec(
             *command,
@@ -43,6 +50,8 @@ class FileSystemBackend(ExecutionBackend):
         cwd: str | Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
+        session_id: str | None = None,
+        stdin: bytes | None = None,
     ) -> ExecResult:
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -53,7 +62,7 @@ class FileSystemBackend(ExecutionBackend):
             env=env,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            stdout, stderr = await asyncio.wait_for(process.communicate(input=stdin), timeout=timeout)
         except asyncio.TimeoutError:
             process.kill()
             await process.wait()
@@ -63,6 +72,14 @@ class FileSystemBackend(ExecutionBackend):
             stdout=stdout or b"",
             stderr=stderr or b"",
         )
+
+    async def stop(self, session_id: str) -> None:
+        """No per-session teardown on the host filesystem."""
+        return None
+
+    async def is_alive(self, session_id: str) -> bool:
+        """The host filesystem is always available."""
+        return True
 
     async def aclose(self) -> None:
         """No resources to release on the host filesystem backend."""

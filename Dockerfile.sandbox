@@ -1,0 +1,27 @@
+# Covalent sandbox image — Phase 1a.
+#
+# Minimal runtime for skill runners: Python + Node + the framework runners
+# baked at /runners/. Skill source code and the session workspace are
+# bind-mounted at runtime at their host-absolute paths (see DockerBackend).
+#
+# Phase 1a uses alpine (small, and already cached locally) so the image builds
+# without depending on a slow registry mirror. Production may prefer a Debian
+# base (e.g. python:3.12-slim) for glibc compatibility — swap the FROM line.
+#
+# Build:  docker build -t covalent-sandbox:dev -f Dockerfile.sandbox .
+
+FROM alpine:latest
+
+# Python runtime for skill runners/scripts. (Node + pip + git land in the
+# production image / Phase 1b; Phase 1a verification only needs python.)
+# `python` symlink so the backend's host-interpreter rewrite
+# (sys.executable -> python) resolves.
+RUN apk add --no-cache python3 \
+    && ln -sf python3 /usr/bin/python
+
+# Framework runners baked into the image. DockerBackend rewrites the host runner
+# path (src/agent_framework/skills/runners/<name>) to /runners/<name>.
+COPY src/agent_framework/skills/runners/ /runners/
+
+# Keep the container alive; the backend execs skill runners into it.
+CMD ["tail", "-f", "/dev/null"]

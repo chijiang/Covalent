@@ -265,7 +265,7 @@ class FrameworkRegistry:
             )
         handle = None
         try:
-            handle = await self.skill_process_manager.acquire(spec)
+            handle = await self.skill_process_manager.acquire(spec, context=context)
             result_data = await handle.send_request(
                 "call_tool",
                 {"name": tool_call.name, "arguments": tool_call.arguments},
