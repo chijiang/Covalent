@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -69,6 +70,7 @@ class AppSettings(BaseSettings):
     workspace_root_dir: str = "."
     session_workspace_enabled: bool = True
     session_workspace_root_dir: str | None = None
+    execution_backend_kind: Literal["filesystem", "docker", "kubernetes"] = "filesystem"
     skills_root_dir: str = "skills"
     skills_directories: str | None = None
     skills_cache_dir: str = "~/.agent_framework/skill_cache"

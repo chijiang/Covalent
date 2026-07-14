@@ -129,6 +129,7 @@ from agent_framework.model.base import ModelProviderError, ProviderConfig
 from agent_framework.model.factory import default_provider_config
 from agent_framework.registry.registry import FrameworkRegistry
 from agent_framework.runtime.react import ReactAgentRuntime
+from agent_framework.runtime.backend import ExecutionBackend, make_backend
 from agent_framework.skills.loader import SkillLoader, normalize_git_source_payload
 from agent_framework.skills.meta_tools import register_skill_meta_tools
 from agent_framework.skills.process import SkillProcessManager
@@ -332,9 +333,11 @@ async def lifespan(app: FastAPI):
         logger.info("Loaded git skill '%s' (v%s) from %s", spec.name, spec.version, spec.source_dir)
 
     await _sync_registry_skill_states(registry, config_store)
-    await _reconcile_skill_process_manager(registry)
+    execution_backend = make_backend(settings)
+    await _reconcile_skill_process_manager(registry, execution_backend)
 
     app.state.settings = settings
+    app.state.execution_backend = execution_backend
     app.state.db_manager = db_manager
     app.state.config_store = config_store
     app.state.registry = registry
@@ -352,6 +355,7 @@ async def lifespan(app: FastAPI):
 
     yield
     await registry.aclose()
+    await execution_backend.aclose()
     await db_manager.dispose()
 
 
@@ -4883,10 +4887,10 @@ async def _sync_registry_skill_states(registry: FrameworkRegistry, config_store:
     registry.sync_skill_enabled_states(await config_store.get_skill_state_map())
 
 
-async def _reconcile_skill_process_manager(registry: FrameworkRegistry) -> None:
+async def _reconcile_skill_process_manager(registry: FrameworkRegistry, backend: ExecutionBackend) -> None:
     if registry.has_executable_skills(enabled_only=True):
         if registry.skill_process_manager is None:
-            registry.skill_process_manager = SkillProcessManager()
+            registry.skill_process_manager = SkillProcessManager(backend=backend)
             await registry.skill_process_manager.start()
         return
 
