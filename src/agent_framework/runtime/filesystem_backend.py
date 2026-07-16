@@ -81,6 +81,14 @@ class FileSystemBackend(ExecutionBackend):
         """The host filesystem is always available."""
         return True
 
+    async def startup_sweep(self) -> None:
+        """No backend-owned resources to reclaim on the host filesystem."""
+        return None
+
+    async def list_sandbox_sessions(self) -> list[str]:
+        """No per-session sandbox environments on the host filesystem."""
+        return []
+
     async def aclose(self) -> None:
         """No resources to release on the host filesystem backend."""
         return None

@@ -84,6 +84,17 @@ class ExecutionBackend(Protocol):
         """Whether the per-session environment is still running."""
         ...
 
+    async def startup_sweep(self) -> None:
+        """Reclaim backend-owned resources left by previous runs (e.g. orphan
+        containers from a crashed process). Called once at startup."""
+        ...
+
+    async def list_sandbox_sessions(self) -> list[str]:
+        """Session ids of live sandbox environments this backend knows about
+        (across restarts, where applicable). Used by the reaper to reconcile
+        against the session store."""
+        ...
+
     async def aclose(self) -> None:
         """Release backend-owned resources. No-op for stateless backends."""
         ...

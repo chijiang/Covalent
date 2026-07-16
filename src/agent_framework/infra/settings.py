@@ -72,6 +72,12 @@ class AppSettings(BaseSettings):
     session_workspace_root_dir: str | None = None
     execution_backend_kind: Literal["filesystem", "docker", "kubernetes"] = "filesystem"
     execution_backend_docker_image: str = "covalent-sandbox:dev"
+    execution_backend_docker_mem_limit: str = "512m"
+    execution_backend_docker_pids_limit: int = 256
+    execution_backend_docker_cpus: float = 1.0
+    execution_backend_docker_network: Literal["none", "bridge"] = "none"
+    execution_backend_docker_tmpfs_size: str = "128m"
+    execution_backend_docker_reaper_interval_seconds: float = 60.0
     skills_root_dir: str = "skills"
     skills_directories: str | None = None
     skills_cache_dir: str = "~/.agent_framework/skill_cache"

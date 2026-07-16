@@ -141,6 +141,45 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await asyncio.wait_for(proc.stdout.readline(), 5), b"")
         a.close()
 
+    async def test_create_container_applies_limits_network_and_tmpfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_client = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake_client)
+            await backend.ensure("sess-limits")
+            call = fake_client.containers.run_calls[0]
+            self.assertEqual(call["mem_limit"], "512m")
+            self.assertEqual(call["pids_limit"], 256)
+            self.assertEqual(call["nano_cpus"], 1_000_000_000)
+            self.assertEqual(call["network_mode"], "none")
+            self.assertEqual(call["tmpfs"], {"/tmp": "size=128m"})
+
+    async def test_startup_sweep_removes_labeled_containers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_client = _FakeDockerClient()
+            fake_client.containers.run(image="x", name="covalent-sandbox-a", labels={"covalent.sandbox": "1", "covalent.session": "a"})
+            fake_client.containers.run(image="x", name="covalent-sandbox-b", labels={"covalent.sandbox": "1", "covalent.session": "b"})
+            backend = self._make_backend(Path(tmp), client=fake_client)
+            await backend.startup_sweep()
+            self.assertTrue(fake_client.containers._by_name["covalent-sandbox-a"].removed)
+            self.assertTrue(fake_client.containers._by_name["covalent-sandbox-b"].removed)
+
+    async def test_list_sandbox_sessions_returns_session_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_client = _FakeDockerClient()
+            fake_client.containers.run(image="x", name="covalent-sandbox-a", labels={"covalent.sandbox": "1", "covalent.session": "sess-a"})
+            fake_client.containers.run(image="x", name="covalent-sandbox-b", labels={"covalent.sandbox": "1", "covalent.session": "sess-b"})
+            fake_client.containers.run(image="x", name="unrelated", labels={"covalent.sandbox": "0"})
+            backend = self._make_backend(Path(tmp), client=fake_client)
+            self.assertEqual(sorted(await backend.list_sandbox_sessions()), ["sess-a", "sess-b"])
+
+    async def test_stop_removes_untracked_container_by_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_client = _FakeDockerClient()
+            fake_client.containers.run(image="x", name="covalent-sandbox-orph", labels={"covalent.sandbox": "1", "covalent.session": "orph"})
+            backend = self._make_backend(Path(tmp), client=fake_client)
+            await backend.stop("orph")
+            self.assertTrue(fake_client.containers._by_name["covalent-sandbox-orph"].removed)
+
 
 def settings_session_workspace_dir(workspace_root: Path, session_id: str) -> Path:
     """Mirror AppSettings.session_workspace_dir for assertion expectations."""
@@ -148,10 +187,13 @@ def settings_session_workspace_dir(workspace_root: Path, session_id: str) -> Pat
 
 
 class _FakeContainer:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, labels: dict[str, str] | None = None) -> None:
         self.id = "cid-" + name
+        self.name = name
         self.status = "running"
+        self.labels = labels or {}
         self.attrs = types.SimpleNamespace(load=lambda: None)
+        self.removed = False
 
     def reload(self) -> None:
         return None
@@ -161,6 +203,7 @@ class _FakeContainer:
 
     def remove(self, **_kwargs) -> None:
         self.status = "removed"
+        self.removed = True
 
     def exec_run(self, *_args, **_kwargs):
         return types.SimpleNamespace(exit_code=0, output=(b"", b""))
@@ -174,12 +217,26 @@ class _FakeContainers:
     def run(self, **kwargs) -> _FakeContainer:
         self.run_calls.append(kwargs)
         name = kwargs.get("name", "anon")
-        container = _FakeContainer(name)
+        container = _FakeContainer(name, labels=kwargs.get("labels"))
         self._by_name[name] = container
         return container
 
     def get(self, name: str) -> _FakeContainer:
         return self._by_name[name]
+
+    def list(self, all: bool = False, filters: dict | None = None) -> list[_FakeContainer]:
+        containers = list(self._by_name.values())
+        if not filters:
+            return containers
+        wanted = filters.get("label", [])
+        result: list[_FakeContainer] = []
+        for c in containers:
+            for label_filter in wanted:
+                key, _eq, val = label_filter.partition("=")
+                if key in c.labels and (not val or c.labels[key] == val):
+                    result.append(c)
+                    break
+        return result
 
 
 class _FakeDockerClient(types.SimpleNamespace):
@@ -265,6 +322,39 @@ class DockerBackendIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.exit_code, 0)
         self.assertIn(b"one-shot-ok", result.stdout)
+
+    async def test_exec_with_stdin_round_trips(self) -> None:
+        result = await self.backend.exec(
+            ["python", "-c", "import sys; print('got:' + sys.stdin.readline().strip())"],
+            session_id=self.session_id,
+            timeout=30.0,
+            stdin=b"hello\n",
+        )
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn(b"got:hello", result.stdout)
+
+    async def test_workspace_writes_reach_host_but_outside_do_not(self) -> None:
+        workspace = self.settings.session_workspace_dir(self.session_id)
+        marker = "covalent_escape_" + uuid.uuid4().hex[:8]
+        # Write INSIDE the workspace mount -> reaches the host.
+        await self.backend.exec(
+            ["sh", "-c", f"echo x > {workspace}/{marker}"], session_id=self.session_id, timeout=30.0
+        )
+        self.assertTrue((workspace / marker).exists())
+        # Write OUTSIDE any mount (container /tmp tmpfs) -> must NOT reach the host.
+        await self.backend.exec(
+            ["sh", "-c", f"echo x > /tmp/{marker}"], session_id=self.session_id, timeout=30.0
+        )
+        self.assertFalse(Path(f"/tmp/{marker}").exists())
+
+    async def test_network_egress_is_blocked(self) -> None:
+        # network_mode=none -> outbound TCP connections fail.
+        result = await self.backend.exec(
+            ["python", "-c", "import socket; socket.create_connection(('1.2.3.4', 80), 2)"],
+            session_id=self.session_id,
+            timeout=30.0,
+        )
+        self.assertNotEqual(result.exit_code, 0)
 
 
 if __name__ == "__main__":
