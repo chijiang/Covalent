@@ -115,6 +115,35 @@ AGENT_FRAMEWORK_SKILL_SOURCES_JSON=[]
 Use `GET/PUT /config/agents`, `GET/PUT /config/mcp`, `GET/PUT /config/skill_sources`, and `GET/PUT /config/providers` to inspect and update persisted config.
 Use `GET /providers/{provider_name}/models` to fetch the model catalog for a saved provider.
 
+### Execution Backend
+
+The **execution backend** decides where a session's skill code and ad-hoc scripts run. It is selected by `AGENT_FRAMEWORK_EXECUTION_BACKEND_KIND` and is transparent to agents — the same skill works under any backend.
+
+| Backend | Where code runs | Isolation | Status |
+|---------|-----------------|-----------|--------|
+| `filesystem` (default) | Local host subprocesses | None | Stable |
+| `docker` | One container per session | Container: resource limits + no network by default | Stable |
+| `kubernetes` | One Pod per session | Pod + cluster network policy | Planned |
+
+Under `filesystem` (the default) skills run as host subprocesses with the backend process's permissions — fine for trusted local/development use.
+
+Under `docker`, each session gets an isolated container: skill runners and scripts are exec'd into it over a hijacked socket, the session workspace and skill source directories are bind-mounted, and the container is created with resource ceilings (`mem` / `pids` / `cpu`), a sized `tmpfs /tmp`, and **no outbound network by default** (`network_mode=none` — the model provider runs on the host, so skill runners don't need network). Containers are torn down when the session is deleted, swept on startup, and reclaimed by a periodic reaper.
+
+To use Docker:
+
+```bash
+# 1. Build the sandbox image (Python + Node + the framework runners):
+docker build -t covalent-sandbox:dev -f Dockerfile.sandbox .
+
+# 2. Select the backend and (optionally) tune:
+AGENT_FRAMEWORK_EXECUTION_BACKEND_KIND=docker
+# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_IMAGE=covalent-sandbox:dev
+# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_MEM_LIMIT=512m
+# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_NETWORK=none   # or "bridge" to allow outbound
+```
+
+Full design — the pluggable `ExecutionBackend` interface, lifecycle, security model, and phase roadmap — is in [`docs/execution-backend-design.md`](docs/execution-backend-design.md).
+
 ## Skills
 
 ### Directory Layout

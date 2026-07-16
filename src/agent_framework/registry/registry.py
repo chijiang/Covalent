@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 from typing import Any
@@ -32,6 +33,9 @@ class FrameworkRegistry:
         self.local_tools: dict[str, ToolDefinition] = {}
         self.mcp_client: McpClient | None = None
         self.skill_process_manager: SkillProcessManager | None = None
+        # tool name -> normalized parameter schema, populated in resolve_tools_for_agent
+        # so execute_tool_call can repair stringified object/array arguments.
+        self._tool_schemas: dict[str, dict[str, Any]] = {}
 
     def register_agent(self, spec: AgentSpec) -> None:
         self.agents[spec.name] = spec
@@ -165,6 +169,13 @@ class FrameworkRegistry:
             for server in agent.mcp_servers:
                 tool_schemas.extend(await self._export_mcp_tools(server, allowed_mcp_tools.get(server.name)))
 
+        # Cache each tool's parameter schema (standard pydantic form, sent to the model
+        # unchanged) so execute_tool_call can repair stringified object/array arguments
+        # before forwarding to the MCP server.
+        for tool in tool_schemas:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if isinstance(function, dict) and isinstance(function.get("name"), str):
+                self._tool_schemas[function["name"]] = function.get("parameters") or {}
         return tool_schemas
 
     async def execute_tool_call(
@@ -209,7 +220,10 @@ class FrameworkRegistry:
                     is_error=True,
                 )
             try:
-                result = await self.mcp_client.call_tool(server, remote_tool_name, tool_call.arguments)
+                arguments = FrameworkRegistry._coerce_arguments_to_schema(
+                    tool_call.arguments, self._tool_schemas.get(canonical_mcp_name)
+                )
+                result = await self.mcp_client.call_tool(server, remote_tool_name, arguments)
                 result.name = canonical_mcp_name
                 result.tool_call_id = tool_call.id
                 return result
@@ -318,6 +332,75 @@ class FrameworkRegistry:
                 }
             )
         return exported
+
+    @staticmethod
+    def _coerce_arguments_to_schema(arguments: Any, schema: Any) -> Any:
+        """Best-effort repair of tool-call arguments against a JSON Schema.
+
+        Some OpenAI-compatible models serialize object/array parameters as JSON
+        strings. For each property the schema declares as object/array (directly or via
+        a pydantic ``anyOf``/``oneOf`` Optional union), if the model supplied a JSON
+        string we parse it back in place. Recurses into nested objects and arrays.
+        Returns a new dict; the input is not mutated.
+        """
+        if not isinstance(arguments, dict) or not isinstance(schema, dict):
+            return arguments
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return arguments
+        return {
+            key: FrameworkRegistry._coerce_value(value, properties.get(key))
+            for key, value in arguments.items()
+        }
+
+    @staticmethod
+    def _coerce_value(value: Any, schema: Any) -> Any:
+        if not isinstance(schema, dict):
+            return value
+        # Narrow pydantic Optional[T] unions (anyOf/oneOf with a null member) to the
+        # concrete member so we still recognize object/array types on standard schemas.
+        schema = FrameworkRegistry._narrow_schema(schema)
+        if schema.get("type") == "object" or isinstance(schema.get("properties"), dict):
+            if isinstance(value, str):
+                parsed = FrameworkRegistry._try_parse_json(value, dict)
+                if parsed is not None:
+                    value = parsed
+            if isinstance(value, dict):
+                return FrameworkRegistry._coerce_arguments_to_schema(value, schema)
+            return value
+        if schema.get("type") == "array" or isinstance(schema.get("items"), dict):
+            if isinstance(value, str):
+                parsed = FrameworkRegistry._try_parse_json(value, list)
+                if parsed is not None:
+                    value = parsed
+            if isinstance(value, list):
+                item_schema = schema.get("items")
+                return [FrameworkRegistry._coerce_value(item, item_schema) for item in value]
+            return value
+        return value
+
+    @staticmethod
+    def _narrow_schema(schema: Any) -> dict[str, Any]:
+        """Resolve an ``anyOf``/``oneOf`` union (pydantic ``Optional[T]``) to its
+        non-null member for type inspection. Non-union schemas are returned as-is.
+        """
+        if not isinstance(schema, dict):
+            return schema  # type: ignore[return-value]
+        for union_key in ("anyOf", "oneOf"):
+            members = schema.get(union_key)
+            if isinstance(members, list):
+                non_null = [m for m in members if isinstance(m, dict) and m.get("type") != "null"]
+                if non_null:
+                    return non_null[0]
+        return schema
+
+    @staticmethod
+    def _try_parse_json(text: str, expected: type) -> Any:
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, expected) else None
 
     @staticmethod
     def _encode_mcp_tool_name(server_name: str, tool_name: str) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -78,6 +79,7 @@ from agent_framework.api.schemas import (
     SkillPreviewFileResponse,
     SkillPreviewResponse,
     SkillSummaryResponse,
+    USERNAME_PATTERN,
 )
 from agent_framework.api.auth import (
     ApiPrincipal,
@@ -362,6 +364,19 @@ async def lifespan(app: FastAPI):
     app.state.registry = registry
     app.state.skill_loader = loader
     app.state.session_store = PersistentSessionStore(db_manager.session_factory)
+
+    # Reclaim sandbox containers orphaned by a previous run, then start a periodic
+    # reaper that removes containers whose session has been deleted. No-op for the
+    # FileSystem backend (list_sandbox_sessions returns []).
+    await execution_backend.startup_sweep()
+    reaper_task = asyncio.create_task(
+        _sandbox_reaper_loop(
+            execution_backend,
+            app.state.session_store,
+            settings.execution_backend_docker_reaper_interval_seconds,
+        )
+    )
+
     app.state.runtime = ReactAgentRuntime(
         registry,
         session_store=app.state.session_store,
@@ -373,6 +388,11 @@ async def lifespan(app: FastAPI):
     )
 
     yield
+    reaper_task.cancel()
+    try:
+        await reaper_task
+    except asyncio.CancelledError:
+        pass
     await registry.aclose()
     await execution_backend.aclose()
     await db_manager.dispose()
@@ -930,6 +950,7 @@ def create_app() -> FastAPI:
         shutil.rmtree(_download_session_dir(settings.workspace_root(), session_id), ignore_errors=True)
         if settings.session_workspace_enabled:
             shutil.rmtree(settings.session_workspace_dir(session_id), ignore_errors=True)
+        await app.state.execution_backend.stop(session_id)
         return {"status": "deleted", "id": session_id}
 
     @app.post("/attachments/upload")
@@ -2009,6 +2030,7 @@ async def _resolve_console_principal(request: Request, db_manager: DatabaseManag
                 user = UserRow(
                     id=header_user_id or _new_chat_item_id("user"),
                     email=fallback_email,
+                    username=await _derive_unique_username(session, fallback_email),
                     display_name=fallback_display_name,
                     role="admin" if is_dev_identity or header_role == "admin" else "member",
                     status="active",
@@ -2430,10 +2452,27 @@ async def _list_console_users(
                 select(UserRow, WorkspaceRow, WorkspaceMemberRow)
                 .outerjoin(WorkspaceMemberRow, WorkspaceMemberRow.user_id == UserRow.id)
                 .outerjoin(WorkspaceRow, WorkspaceRow.id == WorkspaceMemberRow.workspace_id)
-                .order_by(UserRow.created_at.desc(), UserRow.email.asc())
+                .order_by(
+                    UserRow.created_at.desc(),
+                    UserRow.email.asc(),
+                    # Deterministic tiebreak so a user with multiple workspace
+                    # memberships always resolves to the same row below.
+                    WorkspaceRow.created_at.asc(),
+                )
             )
         ).all()
-        return [_console_user_summary_response(user, workspace, member) for user, workspace, member in rows]
+        # The joins above fan out to one row per workspace membership, so a user
+        # belonging to more than one workspace would otherwise appear several
+        # times (same user_id) and break the console's keyed list. Collapse to a
+        # single entry per user, keeping the first (earliest) membership.
+        summaries: list[ConsoleUserSummaryResponse] = []
+        seen_user_ids: set[str] = set()
+        for user, workspace, member in rows:
+            if user.id in seen_user_ids:
+                continue
+            seen_user_ids.add(user.id)
+            summaries.append(_console_user_summary_response(user, workspace, member))
+        return summaries
 
 
 async def _update_console_user(
@@ -3618,6 +3657,33 @@ def _coerce_int(value: Any) -> int:
         except ValueError:
             return 0
     return 0
+
+
+async def _derive_unique_username(session: AsyncSession, email: str) -> str:
+    """Derive a valid, unique username from an email for auto-provisioned users.
+
+    The ``username`` column is NOT NULL with a case-insensitive unique index, so
+    every user-creation path must supply one. Registration and the seed receive
+    one from input/settings; this covers the session auto-provision path, which
+    only has the caller's email. The local-part is sanitized to the username
+    alphabet and, on collision, suffixed with an incrementing number.
+    """
+    local_part = (email or "").split("@", 1)[0].lower()
+    base = re.sub(r"[^a-z0-9_-]", "-", local_part).strip("-_")
+    if not USERNAME_PATTERN.match(base):
+        base = "user"
+    base = base[:27]  # leave room for a "-NNN" suffix within the 32-char limit
+    candidate = base
+    suffix = 1
+    while (
+        await session.scalar(
+            select(UserRow.id).where(func.lower(UserRow.username) == candidate)
+        )
+        is not None
+    ):
+        candidate = f"{base}-{suffix}"[-32:]
+        suffix += 1
+    return candidate
 
 
 def _safe_storage_component(raw: str, default: str) -> str:
@@ -4925,6 +4991,33 @@ def _merge_provider_config(
 
 async def _sync_registry_skill_states(registry: FrameworkRegistry, config_store: ConfigStore) -> None:
     registry.sync_skill_enabled_states(await config_store.get_skill_state_map())
+
+
+async def _sandbox_reaper_loop(
+    backend: ExecutionBackend,
+    session_store: SessionStore,
+    interval_seconds: float,
+) -> None:
+    """Periodically remove sandbox containers whose session no longer exists.
+
+    Belt-and-suspenders for the session DELETE hook: catches containers leaked by
+    a crash or race. No-op for the FileSystem backend (``list_sandbox_sessions``
+    returns ``[]``).
+    """
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            for session_id in await backend.list_sandbox_sessions():
+                try:
+                    if await session_store.get_session(session_id) is None:
+                        logger.info("Reaping orphan sandbox container for session %s", session_id)
+                        await backend.stop(session_id)
+                except Exception as exc:
+                    logger.error("Sandbox reaper error for session %s: %s", session_id, exc)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.error("Sandbox reaper loop error: %s", exc)
 
 
 async def _reconcile_skill_process_manager(registry: FrameworkRegistry, backend: ExecutionBackend) -> None:

@@ -1,21 +1,29 @@
 """Docker execution backend — runs skill runners/scripts inside a per-session
 container, exec'd over a hijacked socket (see :mod:`docker_process`).
 
-Phase 1a scope: lazy per-session container; bind-mount skill source dirs + the
-session workspace at their host-absolute paths (so host-absolute entry points /
-working dirs resolve unchanged); rewrite the two host-only command tokens that
-don't exist in the container (``sys.executable`` → ``python``, the host runners
-directory → ``/runners/`` in the image). Every Docker SDK call is blocking, so
-each is wrapped in :func:`asyncio.to_thread` to keep the event loop responsive.
+Per-session container; bind-mount skill source dirs + the session workspace at
+their host-absolute paths (so host-absolute entry points / working dirs resolve
+unchanged); rewrite the two host-only command tokens that don't exist in the
+container (``sys.executable`` → ``python``, the host runners directory →
+``/runners/``). Every Docker SDK call is blocking, so each is wrapped in
+:func:`asyncio.to_thread` to keep the event loop responsive.
 
-Deferred to 1b: per-session teardown on session end, orphan reaper/GC, resource
-limits, network profile, hard-kill of hung execs.
+Phase 1b hardening: resource ceilings (mem/pids/cpu) + ``tmpfs`` for ``/tmp`` +
+network isolation (``network_mode`` default ``none``); per-session teardown via
+``stop`` (called from the session DELETE handler); ``startup_sweep`` reclaims
+orphan containers from previous runs; ``list_sandbox_sessions`` feeds the
+lifespan reaper; one-shot ``exec`` (with stdin) over a hijacked socket.
+
+Deferred: sandbox image CI; in-container ``kill`` for hung execs (the
+``DockerExecProcess`` socket-close fallback remains); egress allow-list /
+restricted-bridge proxy (network is ``none`` or permissive ``bridge`` for now).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import struct
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -38,10 +46,26 @@ _HOST_ENV_DROP = {"PATH", "PYTHONPATH", "PYTHONHOME"}
 _SANDBOX_LABEL = "covalent.sandbox"
 _SESSION_LABEL = "covalent.session"
 
+# Docker stream multiplexing (tty=False): 8-byte header [type, 0, 0, 0, len_be32].
+_FRAME = struct.Struct(">BxxxI")
+_STREAM_STDOUT = 1
+_STREAM_STDERR = 2
+
 
 def _safe_name(value: str) -> str:
     safe = "".join(c if (c.isalnum() or c in "._-") else "-" for c in value).strip(".-")
     return safe or "session"
+
+
+def _recv_exact_blocking(sock, n: int) -> bytes | None:
+    """Read exactly n bytes from a blocking socket; None on EOF."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
 
 
 class DockerBackend(ExecutionBackend):
@@ -58,6 +82,11 @@ class DockerBackend(ExecutionBackend):
         self._settings = settings
         self._skill_source_dirs_provider = skill_source_dirs_provider
         self._image = settings.execution_backend_docker_image
+        self._mem_limit = settings.execution_backend_docker_mem_limit
+        self._pids_limit = settings.execution_backend_docker_pids_limit
+        self._nano_cpus = int(settings.execution_backend_docker_cpus * 1e9)
+        self._network_mode = settings.execution_backend_docker_network
+        self._tmpfs_size = settings.execution_backend_docker_tmpfs_size
         self._client = docker_client  # lazily created on first use
         self._sessions: dict[str, object] = {}
 
@@ -88,6 +117,11 @@ class DockerBackend(ExecutionBackend):
             detach=True,
             labels={_SANDBOX_LABEL: "1", _SESSION_LABEL: session_id},
             name=name,
+            mem_limit=self._mem_limit,
+            pids_limit=self._pids_limit,
+            nano_cpus=self._nano_cpus,
+            network_mode=self._network_mode,
+            tmpfs={"/tmp": f"size={self._tmpfs_size}"},
         )
         try:
             return client.containers.run(**kwargs)
@@ -125,9 +159,13 @@ class DockerBackend(ExecutionBackend):
             return False
 
     async def stop(self, session_id: str) -> None:
+        """Stop+remove the session's container. Robust to untracked containers
+        (e.g. created by a previous process) by falling back to a name lookup."""
         container = self._sessions.pop(session_id, None)
         if container is not None:
             await asyncio.to_thread(self._remove_container, container)
+            return
+        await asyncio.to_thread(self._remove_container_by_name, session_id)
 
     async def aclose(self) -> None:
         containers = list(self._sessions.values())
@@ -144,6 +182,37 @@ class DockerBackend(ExecutionBackend):
             container.remove(force=True)
         except Exception:
             pass
+
+    def _remove_container_by_name(self, session_id: str) -> None:
+        name = f"covalent-sandbox-{_safe_name(session_id)}"
+        try:
+            container = self._api().containers.get(name)
+        except Exception:
+            return
+        self._remove_container(container)
+
+    # -- sweep / reaper support ---------------------------------------------
+    def _list_sandbox_containers(self) -> list:
+        try:
+            return list(self._api().containers.list(all=True, filters={"label": [f"{_SANDBOX_LABEL}=1"]}))
+        except Exception:
+            return []
+
+    async def startup_sweep(self) -> None:
+        """Remove all covalent sandbox containers — orphans from a previous run."""
+        containers = await asyncio.to_thread(self._list_sandbox_containers)
+        for container in containers:
+            await asyncio.to_thread(self._remove_container, container)
+
+    async def list_sandbox_sessions(self) -> list[str]:
+        """Session ids of sandbox containers known to the daemon (across restarts)."""
+        containers = await asyncio.to_thread(self._list_sandbox_containers)
+        sessions: list[str] = []
+        for container in containers:
+            sid = (container.labels or {}).get(_SESSION_LABEL)
+            if sid:
+                sessions.append(sid)
+        return sessions
 
     # -- execution -----------------------------------------------------------
     def _rewrite_command(self, command: list[str]) -> list[str]:
@@ -224,39 +293,74 @@ class DockerBackend(ExecutionBackend):
     ) -> ExecResult:
         if not session_id:
             raise ValueError("DockerBackend.exec requires a session_id")
-        if stdin:
-            # One-shot exec with stdin input needs the hijacked-socket path;
-            # container.exec_run can't feed stdin bytes. Lands in Phase 1b.
-            raise NotImplementedError("Docker script stdin lands in Phase 1b")
         container = await self.ensure(session_id)
         rewritten = self._rewrite_command(command)
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(
-                    self._exec_run, container, rewritten, str(cwd) if cwd else None, self._sanitize_env(env)
+                    self._exec_one_shot,
+                    container.id,
+                    rewritten,
+                    str(cwd) if cwd else None,
+                    self._sanitize_env(env),
+                    stdin,
                 ),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
             return ExecResult(exit_code=124, stdout=b"", stderr=f"timed out after {timeout}s".encode())
 
-    def _exec_run(self, container, command, workdir, env) -> ExecResult:
-        result = container.exec_run(
-            command,
-            environment=env or None,
-            workdir=workdir,
-            demux=True,
-            stdin=False,
+    def _exec_one_shot(
+        self, container_id, command, workdir, env, stdin_bytes
+    ) -> ExecResult:
+        """One-shot exec over a hijacked socket (supports stdin), blocking.
+
+        Run via ``asyncio.to_thread``. Reuses the Docker framed-stream demux to
+        separate stdout/stderr; resolves the exit code via ``exec_inspect``.
+        """
+        api = self._api().api
+        exec_id = api.exec_create(
+            container_id,
+            cmd=command,
+            stdin=stdin_bytes is not None,
             stdout=True,
             stderr=True,
             tty=False,
-        )
-        if isinstance(result.output, tuple):
-            out, err = result.output
-        else:
-            out, err = result.output, b""
+            environment=env or None,
+            workdir=workdir,
+        )["Id"]
+        sock = api.exec_start(exec_id, socket=True)
+        real = getattr(sock, "_sock", sock)
+        real.setblocking(True)
+        out = bytearray()
+        err = bytearray()
+        try:
+            if stdin_bytes:
+                try:
+                    real.sendall(stdin_bytes)
+                    real.shutdown(1)  # signal EOF on the write half
+                except OSError:
+                    pass
+            while True:
+                header = _recv_exact_blocking(real, 8)
+                if not header:
+                    break
+                stream_type, length = _FRAME.unpack(header)
+                payload = _recv_exact_blocking(real, length) if length else b""
+                if payload is None:
+                    break
+                if stream_type == _STREAM_STDOUT:
+                    out.extend(payload)
+                elif stream_type == _STREAM_STDERR:
+                    err.extend(payload)
+        finally:
+            try:
+                real.close()
+            except OSError:
+                pass
+        code = self._exec_exit_code(exec_id)
         return ExecResult(
-            exit_code=result.exit_code if result.exit_code is not None else -1,
-            stdout=out or b"",
-            stderr=err or b"",
+            exit_code=code if code is not None else -1,
+            stdout=bytes(out),
+            stderr=bytes(err),
         )
