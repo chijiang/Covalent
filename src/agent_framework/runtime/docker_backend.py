@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import struct
 import sys
 from collections.abc import Callable, Sequence
@@ -144,7 +145,10 @@ class DockerBackend(ExecutionBackend):
         except Exception:
             source_dirs = []
         for raw in source_dirs:
-            host_path = str(Path(str(raw)).expanduser())
+            # Absolute, matching resolved_entry_point()/resolved_working_dir() (both
+            # os.path.abspath) so the bind-mounted path equals what the runner imports.
+            # Docker rejects relative bind paths.
+            host_path = os.path.abspath(str(Path(str(raw)).expanduser()))
             volumes[host_path] = {"bind": host_path, "mode": "rw"}
         return volumes
 
@@ -215,7 +219,9 @@ class DockerBackend(ExecutionBackend):
         return sessions
 
     # -- execution -----------------------------------------------------------
-    def _rewrite_command(self, command: list[str]) -> list[str]:
+    def rewrite_command(self, command: list[str]) -> list[str]:
+        """The command as it will actually execute inside the container:
+        host ``sys.executable`` -> ``python``, host runners dir -> ``/runners/``."""
         runners_host = str(_RUNNERS_HOST_DIR)
         rewritten: list[str] = []
         for arg in command:
@@ -245,7 +251,7 @@ class DockerBackend(ExecutionBackend):
         if not session_id:
             raise ValueError("DockerBackend.spawn_stream requires a session_id")
         container = await self.ensure(session_id)
-        rewritten = self._rewrite_command(command)
+        rewritten = self.rewrite_command(command)
         exec_id, sock = await asyncio.to_thread(
             self._start_exec_socket, container.id, rewritten, str(cwd) if cwd else None, self._sanitize_env(env)
         )
@@ -294,7 +300,7 @@ class DockerBackend(ExecutionBackend):
         if not session_id:
             raise ValueError("DockerBackend.exec requires a session_id")
         container = await self.ensure(session_id)
-        rewritten = self._rewrite_command(command)
+        rewritten = self.rewrite_command(command)
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(

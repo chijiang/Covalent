@@ -76,6 +76,13 @@ class ExecutionBackend(Protocol):
         """Run a one-shot command to completion and capture its output."""
         ...
 
+    def rewrite_command(self, command: list[str]) -> list[str]:
+        """Return the command as this backend will actually execute it. The
+        Docker backend rewrites host-only tokens (``sys.executable`` -> ``python``,
+        the host runners dir -> ``/runners/``); FileSystem returns it unchanged.
+        Useful for recording the real command in execution traces."""
+        ...
+
     async def stop(self, session_id: str) -> None:
         """Tear down the per-session environment."""
         ...

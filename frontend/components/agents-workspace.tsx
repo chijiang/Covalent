@@ -37,6 +37,8 @@ type AgentFormState = {
   capabilities: string[];
   providerName: string;
   model: string;
+  maxIterations: number;
+  timeoutSeconds: number;
 };
 
 const DEFAULT_AGENT_DESCRIPTION = "General-purpose ReAct agent";
@@ -51,6 +53,11 @@ const MAX_AGENT_LIST_PANEL_WIDTH = 520;
 const MIN_AGENT_DETAIL_PANEL_WIDTH = 720;
 const REASONING_LEVEL_OPTIONS = ["none", "low", "medium", "high", "max"] as const;
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS = 500;
+const DEFAULT_AGENT_MAX_ITERATIONS = 6;
+const MAX_ITERATIONS_MIN = 1;
+const MAX_ITERATIONS_MAX = 50;
+const TIMEOUT_SECONDS_MIN = 1;
+const TIMEOUT_SECONDS_MAX = 3600;
 
 const FALLBACK_LOCAL_TOOLS = ["get_current_time"];
 const FALLBACK_LOCAL_TOOL_SUMMARIES: LocalToolSummary[] = FALLBACK_LOCAL_TOOLS.map((name) => ({
@@ -213,6 +220,8 @@ function toAgentForm(
     capabilities: agent?.capabilities || [],
     providerName,
     model: agent?.provider?.model || "",
+    maxIterations: agent?.max_iterations ?? DEFAULT_AGENT_MAX_ITERATIONS,
+    timeoutSeconds: agent?.provider?.timeout_seconds ?? DEFAULT_PROVIDER_TIMEOUT_SECONDS,
   };
 }
 
@@ -232,6 +241,13 @@ function agentStatusLabel(isActive: boolean): string {
 
 function routingCountLabel(count: number, noun: string): string {
   return `${count} ${noun}`;
+}
+
+function coerceLimitInt(value: number, fallback: number, min: number, max: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
 
 export function AgentsWorkspace() {
@@ -709,6 +725,12 @@ export function AgentsWorkspace() {
       nextProvider.extra = {};
       nextProvider.model = nextModel;
     }
+    nextProvider.timeout_seconds = coerceLimitInt(
+      form.timeoutSeconds,
+      DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+      TIMEOUT_SECONDS_MIN,
+      TIMEOUT_SECONDS_MAX,
+    );
 
     const nextAgent: AgentConfig = {
       ...selectedAgent,
@@ -717,6 +739,12 @@ export function AgentsWorkspace() {
       system_prompt: form.systemPrompt.trim(),
       reasoning_prompt: form.reasoningPrompt.trim(),
       reasoning_level: form.reasoningLevel,
+      max_iterations: coerceLimitInt(
+        form.maxIterations,
+        DEFAULT_AGENT_MAX_ITERATIONS,
+        MAX_ITERATIONS_MIN,
+        MAX_ITERATIONS_MAX,
+      ),
       provider: nextProvider,
       skills: dedupeStrings(form.skills),
       local_tools: dedupeStrings(form.localTools),
@@ -1080,6 +1108,39 @@ export function AgentsWorkspace() {
                       </FormSection>
 
                     </div>
+
+                    <FormSection title="Limits">
+                      <div className="form-field">
+                        <Label htmlFor="agent-max-iterations">Max iterations</Label>
+                        <Input
+                          id="agent-max-iterations"
+                          type="number"
+                          min={MAX_ITERATIONS_MIN}
+                          max={MAX_ITERATIONS_MAX}
+                          step={1}
+                          value={form.maxIterations || ""}
+                          onChange={(event) => setForm((current) => ({ ...current, maxIterations: Number(event.target.value) }))}
+                        />
+                        <small className="entity-meta">
+                          Maximum number of ReAct loop turns ({MAX_ITERATIONS_MIN}–{MAX_ITERATIONS_MAX}). Leave blank to use the default of {DEFAULT_AGENT_MAX_ITERATIONS}.
+                        </small>
+                      </div>
+                      <div className="form-field">
+                        <Label htmlFor="agent-timeout-seconds">Call timeout (seconds)</Label>
+                        <Input
+                          id="agent-timeout-seconds"
+                          type="number"
+                          min={TIMEOUT_SECONDS_MIN}
+                          max={TIMEOUT_SECONDS_MAX}
+                          step={1}
+                          value={form.timeoutSeconds || ""}
+                          onChange={(event) => setForm((current) => ({ ...current, timeoutSeconds: Number(event.target.value) }))}
+                        />
+                        <small className="entity-meta">
+                          Maximum seconds to wait for a single model request ({TIMEOUT_SECONDS_MIN}–{TIMEOUT_SECONDS_MAX}). Leave blank to use the default of {DEFAULT_PROVIDER_TIMEOUT_SECONDS}.
+                        </small>
+                      </div>
+                    </FormSection>
 
                     <FormSection title="Prompts">
                       <div className="form-field">

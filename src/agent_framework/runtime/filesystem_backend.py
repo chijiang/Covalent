@@ -73,6 +73,10 @@ class FileSystemBackend(ExecutionBackend):
             stderr=stderr or b"",
         )
 
+    def rewrite_command(self, command: list[str]) -> list[str]:
+        """Host subprocesses run the command as-is."""
+        return command
+
     async def stop(self, session_id: str) -> None:
         """No per-session teardown on the host filesystem."""
         return None
