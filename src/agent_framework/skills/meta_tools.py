@@ -165,6 +165,10 @@ async def _run_skill_script(
             pass
 
     active_backend: ExecutionBackend = backend or FileSystemBackend()
+    # The command as the backend will actually execute it (e.g. Docker rewrites
+    # the host interpreter to the container's). Recorded so the trace shows the
+    # real command + which environment ran it.
+    executed_command = active_backend.rewrite_command(command)
     encoded_stdin = stdin_data.encode("utf-8") if stdin_data else None
     session_id = context.session_id if context else None
     try:
@@ -185,7 +189,9 @@ async def _run_skill_script(
         {
             "ok": result.exit_code == 0,
             "exit_code": result.exit_code,
-            "command": command,
+            # Where this ran: "filesystem" = host subprocess, "docker" = sandbox container.
+            "execution_backend": active_backend.name,
+            "command": executed_command,
             "stdout": result.stdout.decode("utf-8", errors="replace"),
             "stderr": result.stderr.decode("utf-8", errors="replace"),
         },

@@ -14,6 +14,7 @@ Two layers:
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import struct
 import sys
@@ -69,13 +70,13 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend = self._make_backend(Path(tmp))
             runner = str(_RUNNERS_HOST_DIR / "python_runner.py")
-            rewritten = backend._rewrite_command([sys.executable, "-u", runner, "entry.py"])
+            rewritten = backend.rewrite_command([sys.executable, "-u", runner, "entry.py"])
             self.assertEqual(rewritten, ["python", "-u", "/runners/python_runner.py", "entry.py"])
 
     def test_rewrite_command_leaves_other_args_intact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             backend = self._make_backend(Path(tmp))
-            rewritten = backend._rewrite_command(["node", "/some/script.js", "--flag"])
+            rewritten = backend.rewrite_command(["node", "/some/script.js", "--flag"])
             self.assertEqual(rewritten, ["node", "/some/script.js", "--flag"])
 
     def test_sanitize_env_drops_host_path_vars(self) -> None:
@@ -116,6 +117,21 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             # Idempotent: a second ensure reuses the cached container.
             await backend.ensure("sess-1")
             self.assertEqual(len(fake_client.containers.run_calls), 1)
+
+    async def test_relative_skill_source_dir_is_mounted_absolute(self) -> None:
+        # Skill source dirs can be relative (e.g. "skills/built_in/x"); Docker
+        # requires absolute bind paths, and they must equal resolved_entry_point()
+        # / resolved_working_dir() (os.path.abspath) so the runner can import them
+        # inside the container.
+        rel = "skills/built_in/skill-x"
+        expected = os.path.abspath(rel)
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_client = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), source_dirs=[rel], client=fake_client)
+            await backend.ensure("sess-rel")
+            binds = {k: v["bind"] for k, v in fake_client.containers.run_calls[0]["volumes"].items()}
+            self.assertIn(expected, binds)
+            self.assertTrue(all(p.startswith("/") for p in binds), binds)
 
     async def test_demux_readline_reassembles_stdout_and_logs_stderr(self) -> None:
         a, b = socket.socketpair()
