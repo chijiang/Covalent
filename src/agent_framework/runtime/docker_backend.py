@@ -257,10 +257,13 @@ class DockerBackend(ExecutionBackend):
         )
         real_sock = getattr(sock, "_sock", sock)  # unwrap SocketIO -> raw socket
 
-        def probe() -> int | None:
+        def exit_probe() -> int | None:
             return self._exec_exit_code(exec_id)
 
-        return DockerExecProcess(real_sock, exit_code_probe=probe)
+        def kill_probe(signal_name: str) -> None:
+            self._kill_exec(container, exec_id, signal_name)
+
+        return DockerExecProcess(real_sock, exit_code_probe=exit_probe, kill_probe=kill_probe)
 
     def _start_exec_socket(self, container_id, command, workdir, env):
         api = self._api().api
@@ -286,6 +289,26 @@ class DockerBackend(ExecutionBackend):
         if isinstance(code, int) and code >= 0:
             return code
         return None
+
+    def _kill_exec(self, container, exec_id: str, signal_name: str) -> None:
+        """Best-effort: signal the exec process inside the container via its PID.
+
+        ``exec_inspect`` returns the exec process's PID in the container namespace;
+        ``kill`` is run inside the same container so the namespace matches. Called
+        from ``DockerExecProcess.terminate/kill`` (sync, rare) — a brief blocking
+        call, acceptable for a kill.
+        """
+        try:
+            info = self._api().api.exec_inspect(exec_id)
+        except Exception:
+            return
+        pid = info.get("Pid") if isinstance(info, dict) else None
+        if not isinstance(pid, int) or pid <= 0:
+            return
+        try:
+            container.exec_run(["kill", f"-{signal_name}", str(pid)])
+        except Exception:
+            pass
 
     async def exec(
         self,

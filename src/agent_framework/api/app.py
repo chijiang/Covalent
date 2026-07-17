@@ -95,6 +95,7 @@ from agent_framework.api.auth import (
 )
 from agent_framework.core.attachment_processing import process_attachment_bytes
 from agent_framework.core.agent import AgentSpec
+from agent_framework.core.shell_tools import register_shell_tool
 from agent_framework.core.workspace_tools import register_workspace_tools
 from agent_framework.core.types import Capability, GenerationRequest, Message, ResumedToolResult, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
 from agent_framework.infra.config_store import ConfigKind, ConfigPrincipal, ConfigStore, PersistedAgentConfig, PersistedSkillSourceConfig
@@ -293,7 +294,7 @@ async def build_registry(
     mcp_payload = await config_store.ensure_document("mcp", _seed_mcp_payload(settings))
     mcp_servers = _parse_mcp_servers(mcp_payload)
     if settings.enable_builtin_tools:
-        register_builtin_tools(registry, settings)
+        register_builtin_tools(registry, settings, backend)
 
     if settings.mcp_enabled:
         registry.set_mcp_client(McpSdkClient())
@@ -1728,8 +1729,9 @@ def create_app() -> FastAPI:
     return app
 
 
-def register_builtin_tools(registry: FrameworkRegistry, settings: AppSettings) -> None:
+def register_builtin_tools(registry: FrameworkRegistry, settings: AppSettings, backend: ExecutionBackend | None = None) -> None:
     register_workspace_tools(registry, settings)
+    register_shell_tool(registry, settings, backend)
     registry.register_local_tool(
         "get_current_time",
         {

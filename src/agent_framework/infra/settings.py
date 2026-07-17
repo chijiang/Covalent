@@ -78,6 +78,12 @@ class AppSettings(BaseSettings):
     execution_backend_docker_network: Literal["none", "bridge"] = "none"
     execution_backend_docker_tmpfs_size: str = "128m"
     execution_backend_docker_reaper_interval_seconds: float = 60.0
+    # Shell tool: an opt-in, sandbox-only tool that runs a shell command in the
+    # session's container. Never registered on the filesystem backend.
+    execution_backend_shell_tool_enabled: bool = False
+    execution_backend_shell_tool_binary: str = "sh"
+    execution_backend_shell_tool_timeout_seconds: float = 120.0
+    execution_backend_shell_tool_max_bytes: int = 51200
     skills_root_dir: str = "skills"
     skills_directories: str | None = None
     skills_cache_dir: str = "~/.agent_framework/skill_cache"

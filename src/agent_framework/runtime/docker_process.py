@@ -78,6 +78,7 @@ class DockerExecProcess:
         *,
         exit_code_probe: Callable[[], int | None],
         log_stderr: Callable[[str], None] | None = None,
+        kill_probe: Callable[[str], None] | None = None,
     ) -> None:
         self._sock = sock
         self._sock.setblocking(False)
@@ -86,6 +87,7 @@ class DockerExecProcess:
         self._returncode: int | None = None
         self._closed = False
         self._exit_code_probe = exit_code_probe
+        self._kill_probe = kill_probe
         self._log_stderr = log_stderr or (lambda text: logger.info("[sandbox:stderr] %s", text.strip()))
 
         self.stdin = _StdinWriter(self)
@@ -135,14 +137,23 @@ class DockerExecProcess:
         self._returncode = code if code is not None else 0
 
     def terminate(self) -> None:
-        """Best-effort: close the socket so the runner sees stdin EOF and exits.
-
-        Hard-killing a hung exec (in-container ``kill``) is a 1b concern.
-        """
+        """Best-effort SIGTERM via in-container ``kill <pid>``, then close the socket."""
+        self._signal("TERM")
         self._close_socket()
 
     def kill(self) -> None:
+        """Best-effort SIGKILL via in-container ``kill <pid>``, then close the socket."""
+        self._signal("KILL")
         self._close_socket()
+
+    def _signal(self, signal_name: str) -> None:
+        probe = self._kill_probe
+        if probe is None:
+            return
+        try:
+            probe(signal_name)
+        except Exception:
+            pass
 
     def _close_socket(self) -> None:
         try:
