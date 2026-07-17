@@ -142,6 +142,8 @@ AGENT_FRAMEWORK_EXECUTION_BACKEND_KIND=docker
 # AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_NETWORK=none   # or "bridge" to allow outbound
 ```
 
+**Sandbox shell tool (opt-in).** Under the Docker backend, set `AGENT_FRAMEWORK_EXECUTION_BACKEND_SHELL_TOOL_ENABLED=true` to give agents a `run_shell` tool that runs a shell command inside the session container. The sandbox exists precisely to allow this — it inherits `network_mode=none`, the resource limits, and the ephemeral container, and it's the same trust boundary as the skill code already running there. It is never registered on the `filesystem` backend (where it would mean arbitrary host commands). The workspace file tools remain available in both modes; `run_shell` is an additive capability. Tune the binary (`sh`/`bash`), timeout, and output cap with the other `EXECUTION_BACKEND_SHELL_TOOL_*` vars.
+
 Full design — the pluggable `ExecutionBackend` interface, lifecycle, security model, and phase roadmap — is in [`docs/execution-backend-design.md`](docs/execution-backend-design.md).
 
 ## Skills

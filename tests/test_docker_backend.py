@@ -14,6 +14,7 @@ Two layers:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 import struct
@@ -196,6 +197,45 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             await backend.stop("orph")
             self.assertTrue(fake_client.containers._by_name["covalent-sandbox-orph"].removed)
 
+    async def test_kill_exec_signals_pid_in_container(self) -> None:
+        killed: list[list[str]] = []
+
+        class _C:
+            def exec_run(self, cmd, **_kw):
+                killed.append(list(cmd))
+                return types.SimpleNamespace(exit_code=0, output=(b"", b""))
+
+        class _Api:
+            def exec_inspect(self, _exec_id):
+                return {"Pid": 4242, "ExitCode": None}
+
+        class _Client:
+            api = _Api()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._make_backend(Path(tmp), client=_Client())
+            backend._kill_exec(_C(), "exec-1", "TERM")
+        self.assertEqual(killed, [["kill", "-TERM", "4242"]])
+
+    async def test_kill_exec_noop_when_no_pid(self) -> None:
+        killed: list[list[str]] = []
+
+        class _C:
+            def exec_run(self, cmd, **_kw):
+                killed.append(list(cmd))
+
+        class _Api:
+            def exec_inspect(self, _exec_id):
+                return {"Pid": 0}
+
+        class _Client:
+            api = _Api()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._make_backend(Path(tmp), client=_Client())
+            backend._kill_exec(_C(), "exec-1", "KILL")
+        self.assertEqual(killed, [])
+
 
 def settings_session_workspace_dir(workspace_root: Path, session_id: str) -> Path:
     """Mirror AppSettings.session_workspace_dir for assertion expectations."""
@@ -371,6 +411,28 @@ class DockerBackendIntegrationTests(unittest.IsolatedAsyncioTestCase):
             timeout=30.0,
         )
         self.assertNotEqual(result.exit_code, 0)
+
+    async def test_run_shell_tool_executes_in_container(self) -> None:
+        from agent_framework.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
+
+        # register_shell_tool reads the enabled flag off settings; the default
+        # asyncSetUp settings don't enable it, so build an enabled settings with
+        # the same workspace root the backend already mounted.
+        enabled_settings = AppSettings(
+            workspace_root_dir=str(self.settings.workspace_root()),
+            execution_backend_shell_tool_enabled=True,
+        )
+        tools: dict[str, object] = {}
+        fake_registry = types.SimpleNamespace(
+            register_local_tool=lambda name, schema, handler=None: tools.__setitem__(name, handler)
+        )
+        register_shell_tool(fake_registry, enabled_settings, self.backend)
+        self.assertIn(RUN_SHELL_TOOL, tools)
+        ctx = types.SimpleNamespace(session_id=self.session_id)
+        result = json.loads(await tools[RUN_SHELL_TOOL]({"command": "echo hi; uname -s"}, ctx))
+        self.assertEqual(result["execution_backend"], "docker")
+        self.assertIn("hi", result["stdout"])
+        self.assertIn("Linux", result["stdout"])  # container is Linux, not host Darwin
 
 
 if __name__ == "__main__":
