@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from agent_framework.core.agent import AgentSpec
+from agent_framework.core.shell_tools import RUN_SHELL_TOOL
 from agent_framework.core.tooling import ToolDefinition, ToolHandler
 from agent_framework.core.types import RunContext, ToolCall, ToolResult, UserInputRequest
 from agent_framework.mcp.adapter import McpClient

@@ -109,6 +109,10 @@ class RunContext(BaseModel):
     agent_name: str
     session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # The execution backend for this run (injected so the workspace file tools
+    # resolve the session workspace through it). None in tests/legacy paths ->
+    # the tools fall back to settings-derived resolution.
+    execution_backend: Any = None
 
     @property
     def memory_mode(self) -> Literal["session", "none"]:

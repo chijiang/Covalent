@@ -13,14 +13,31 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from agent_framework.runtime.backend import ExecResult, ExecutionBackend
+from agent_framework.runtime.backend import ExecResult, ExecutionBackend, HostPathWorkspace
+
+if TYPE_CHECKING:
+    from agent_framework.infra.settings import AppSettings
 
 
 class FileSystemBackend(ExecutionBackend):
     """Run skill runners and scripts as local OS subprocesses (no isolation)."""
 
     name = "filesystem"
+
+    def __init__(self, settings: "AppSettings | None" = None) -> None:
+        # ``settings`` is needed only for ``workspace()`` (the workspace file
+        # tools). Skill spawning (``spawn_stream``) doesn't need it, so a
+        # settings-less default is fine for that path.
+        self._settings = settings
+
+    def workspace(self, session_id: str | None) -> HostPathWorkspace:
+        if self._settings is None:
+            raise RuntimeError("FileSystemBackend has no settings; cannot resolve workspace")
+        if isinstance(session_id, str) and session_id.strip():
+            return HostPathWorkspace(host_path=self._settings.session_workspace_dir(session_id))
+        return HostPathWorkspace(host_path=self._settings.workspace_root())
 
     async def ensure(self, session_id: str) -> None:
         """No per-session setup on the host filesystem."""

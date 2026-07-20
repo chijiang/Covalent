@@ -632,6 +632,7 @@ class ReactAgentRuntime(AgentRuntime):
                 "delegation_chain": delegation_chain,
                 "delegated_by": parent_agent.name,
             },
+            execution_backend=getattr(context, "execution_backend", None),
         )
 
     async def _load_session_messages(self, agent: AgentSpec, context: RunContext | None) -> list[Message]:

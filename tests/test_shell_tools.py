@@ -6,11 +6,23 @@ The shell tool must be registered ONLY on non-filesystem backends AND only when
 
 from __future__ import annotations
 
-import types
 import unittest
 
+from agent_framework.core.agent import AgentSpec
 from agent_framework.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool, shell_tool_available
 from agent_framework.infra.settings import AppSettings
+from agent_framework.model.base import ProviderConfig
+from agent_framework.registry.registry import FrameworkRegistry
+
+
+def _agent(name: str = "a", local_tools: list[str] | None = None) -> AgentSpec:
+    return AgentSpec(
+        name=name,
+        description="test",
+        system_prompt="test",
+        provider=ProviderConfig(provider="openai_compatible", model="m"),
+        local_tools=list(local_tools or []),
+    )
 
 
 class _FakeRegistry:
@@ -52,6 +64,32 @@ class ShellToolGatingTests(unittest.TestCase):
         registry = _FakeRegistry()
         register_shell_tool(registry, AppSettings(execution_backend_shell_tool_enabled=True), _FakeBackend("docker"))
         self.assertIn(RUN_SHELL_TOOL, registry.local_tools)
+
+
+class ShellToolResolutionTests(unittest.IsolatedAsyncioTestCase):
+    """run_shell is opt-in per agent: an agent only gets it when its local_tools
+    lists it AND the tool is registered (sandbox backend + flag on). Not registered
+    -> never exposed, even if listed."""
+
+    async def test_exposed_when_listed_and_registered(self) -> None:
+        registry = FrameworkRegistry()
+        register_shell_tool(registry, AppSettings(execution_backend_shell_tool_enabled=True), _FakeBackend("docker"))
+        tools = await registry.resolve_tools_for_agent(_agent(local_tools=[RUN_SHELL_TOOL]))
+        names = {t["function"]["name"] for t in tools}
+        self.assertIn(RUN_SHELL_TOOL, names)
+
+    async def test_not_exposed_when_registered_but_not_listed(self) -> None:
+        registry = FrameworkRegistry()
+        register_shell_tool(registry, AppSettings(execution_backend_shell_tool_enabled=True), _FakeBackend("docker"))
+        tools = await registry.resolve_tools_for_agent(_agent())  # local_tools=[]
+        names = {t["function"]["name"] for t in tools}
+        self.assertNotIn(RUN_SHELL_TOOL, names)
+
+    async def test_not_exposed_when_not_registered_even_if_listed(self) -> None:
+        registry = FrameworkRegistry()  # run_shell NOT registered (flag off / fs)
+        tools = await registry.resolve_tools_for_agent(_agent(local_tools=[RUN_SHELL_TOOL]))
+        names = {t["function"]["name"] for t in tools}
+        self.assertNotIn(RUN_SHELL_TOOL, names)
 
 
 if __name__ == "__main__":
