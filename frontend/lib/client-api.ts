@@ -27,6 +27,7 @@ import type {
   LocalToolSummary,
   McpInspectResponse,
   McpServerConfig,
+  SandboxStatus,
   McpToolCallResponse,
   ManagementExportFormat,
   ManagementExportResponse,
@@ -140,6 +141,14 @@ export async function getAgents(): Promise<AgentDetail[]> {
 
 export function getAgentLocalTools(): Promise<LocalToolSummary[]> {
   return apiFetchJson<LocalToolSummary[]>("local-tools", { method: "GET" });
+}
+
+export function getSandboxStatus(): Promise<SandboxStatus> {
+  return apiFetchJson<SandboxStatus>("sandbox/status", { method: "GET" });
+}
+
+export function stopSandboxSession(sessionId: string): Promise<{ status: string; session_id: string }> {
+  return apiFetchJson(`sandbox/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
 }
 
 export function listChatSessions(): Promise<ChatSessionSummary[]> {

@@ -126,17 +126,23 @@ class DockerBackend(ExecutionBackend):
         self._client = docker_client  # lazily created on first use
         self._sessions: dict[str, object] = {}
         self._metrics = SandboxMetrics()
-        self._agent_outbound: dict[str, list[str]] = {}
+        # Per-session metadata: session_id → {agent_name, outbound, started_at}
+        self._session_meta: dict[str, dict[str, object]] = {}
 
     # -- container lifecycle -------------------------------------------------
 
-    def store_agent_outbound(self, session_id: str, allowed: list[str]) -> None:
-        """Record the agent-level outbound whitelist for this session. Called
-        before the first container creation so the network mode can switch."""
-        self._agent_outbound[session_id] = list(allowed) if allowed else []
+    def record_session(self, session_id: str, agent_name: str, allowed_outbound: list[str]) -> None:
+        """Record per-session metadata before the container is created. Drives
+        network mode (bridge if outbound) and the admin monitoring snapshot."""
+        import time
+        self._session_meta[session_id] = {
+            "agent_name": agent_name,
+            "outbound": list(allowed_outbound) if allowed_outbound else [],
+            "started_at": time.time(),
+        }
 
     def agent_outbound(self, session_id: str) -> list[str]:
-        return self._agent_outbound.get(session_id, [])
+        return self._session_meta.get(session_id, {}).get("outbound", [])
     def _api(self):
         if self._client is None:
             self._client = docker.from_env()
@@ -154,6 +160,39 @@ class DockerBackend(ExecutionBackend):
     def metrics_snapshot(self) -> dict[str, object]:
         """Sandbox status for ``/healthz``: live container count + counters."""
         return {"backend": self.name, "live_containers": len(self._sessions), **self._metrics.to_dict()}
+
+    async def sandbox_snapshot(self) -> dict[str, object]:
+        """Admin monitoring snapshot: per-session live status + config + metrics."""
+        sessions: list[dict[str, object]] = []
+        for sid, container in list(self._sessions.items()):
+            meta = self._session_meta.get(sid, {})
+            outbound = meta.get("outbound", [])
+            alive = await self.is_alive(sid)
+            sessions.append({
+                "session_id": sid,
+                "agent_name": meta.get("agent_name", ""),
+                "started_at": meta.get("started_at"),
+                "status": "running" if alive else "stopped",
+                "network_mode": "bridge" if outbound else self._network_mode,
+                "allowed_outbound": outbound,
+            })
+        return {
+            "backend": self.name,
+            "supported": True,
+            "live": len(self._sessions),
+            "metrics": self._metrics.to_dict(),
+            "config": {
+                "image": self._image,
+                "mem_limit": self._mem_limit,
+                "pids_limit": self._pids_limit,
+                "cpus": self._nano_cpus / 1e9,
+                "network": self._network_mode,
+                "tmpfs_size": self._tmpfs_size,
+                "reaper_interval_seconds": self._settings.execution_backend_docker_reaper_interval_seconds,
+                "shell_tool_enabled": getattr(self._settings, "execution_backend_shell_tool_enabled", False),
+            },
+            "sessions": sessions,
+        }
 
     async def ensure(self, session_id: str):
         existing = self._sessions.get(session_id)
@@ -187,7 +226,7 @@ class DockerBackend(ExecutionBackend):
             mem_limit=self._mem_limit,
             pids_limit=self._pids_limit,
             nano_cpus=self._nano_cpus,
-            network_mode="bridge" if self._agent_outbound.get(session_id) else self._network_mode,
+            network_mode="bridge" if self._session_meta.get(session_id, {}).get("outbound") else self._network_mode,
             tmpfs={"/tmp": f"size={self._tmpfs_size}"},
         )
         try:

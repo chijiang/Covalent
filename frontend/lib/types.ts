@@ -180,6 +180,24 @@ export type HealthResponse = {
   status: string;
 };
 
+export type SandboxSessionSummary = {
+  session_id: string;
+  agent_name: string;
+  started_at: number | null;
+  status: string;
+  network_mode: string;
+  allowed_outbound: string[];
+};
+
+export type SandboxStatus = {
+  backend: string;
+  supported: boolean;
+  live?: number;
+  metrics?: Record<string, number>;
+  config?: Record<string, unknown>;
+  sessions?: SandboxSessionSummary[];
+};
+
 export type ConfigDocument = {
   kind: ConfigKind;
   label: string;

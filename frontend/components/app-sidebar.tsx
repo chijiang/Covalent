@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
   Bot,
+  Box,
   Cable,
   ChevronDown,
   ChevronUp,
@@ -52,6 +53,7 @@ const CONSOLE_ITEMS = [
 const ADMIN_ITEMS = [
   { href: "/service-console/users", label: "Users", icon: UsersRound },
   { href: "/service-console/audit-logs", label: "Audit logs", icon: ShieldCheck },
+  { href: "/service-console/sandbox", label: "Sandbox", icon: Box },
 ] as const;
 
 const SIDEBAR_SECTION_STORAGE_KEYS = {

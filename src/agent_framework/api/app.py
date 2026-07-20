@@ -477,6 +477,28 @@ def create_app() -> FastAPI:
 
         return checks
 
+    @app.get("/sandbox/status")
+    async def sandbox_status(request: Request) -> dict[str, Any]:
+        principal = await _resolve_console_principal(request, app.state.db_manager)
+        if not principal.is_admin:
+            raise HTTPException(status_code=403, detail="Only admins can view sandbox status")
+        backend = getattr(app.state, "execution_backend", None)
+        snapshot_fn = getattr(backend, "sandbox_snapshot", None)
+        if not callable(snapshot_fn):
+            return {"backend": getattr(backend, "name", "unknown"), "supported": False}
+        return await snapshot_fn()
+
+    @app.delete("/sandbox/sessions/{session_id}")
+    async def stop_sandbox_session(request: Request, session_id: str) -> dict[str, str]:
+        principal = await _resolve_console_principal(request, app.state.db_manager)
+        if not principal.is_admin:
+            raise HTTPException(status_code=403, detail="Only admins can stop sandbox sessions")
+        backend = getattr(app.state, "execution_backend", None)
+        if backend is None:
+            raise HTTPException(status_code=404, detail="No execution backend configured")
+        await backend.stop(session_id)
+        return {"status": "stopped", "session_id": session_id}
+
     @app.get("/me")
     async def get_current_console_user(request: Request) -> ConsoleUserResponse:
         db_manager: DatabaseManager = app.state.db_manager
@@ -760,7 +782,7 @@ def create_app() -> FastAPI:
         backend_ref = getattr(app.state, "execution_backend", None)
         outbound = getattr(agent, "allowed_outbound", None)
         if backend_ref is not None and outbound:
-            backend_ref.store_agent_outbound(context.session_id or "", outbound)
+            backend_ref.record_session(context.session_id or "", agent.name, outbound)
 
         if invoke_request.stream:
             async def event_stream():
@@ -1114,7 +1136,7 @@ def create_app() -> FastAPI:
             backend_ref = getattr(app.state, "execution_backend", None)
             outbound = getattr(agent, "allowed_outbound", None)
             if backend_ref is not None and outbound:
-                backend_ref.store_agent_outbound(session_id, outbound)
+                backend_ref.record_session(session_id, agent.name, outbound)
         except Exception:
             pass
         try:
@@ -1156,7 +1178,7 @@ def create_app() -> FastAPI:
             backend_ref = getattr(app.state, "execution_backend", None)
             outbound = getattr(agent, "allowed_outbound", None)
             if backend_ref is not None and outbound:
-                backend_ref.store_agent_outbound(session_id, outbound)
+                backend_ref.record_session(session_id, agent.name, outbound)
         except Exception:
             pass
         try:

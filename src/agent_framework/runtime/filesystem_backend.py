@@ -94,11 +94,14 @@ class FileSystemBackend(ExecutionBackend):
         """Host subprocesses run the command as-is."""
         return command
 
-    def store_agent_outbound(self, session_id: str, allowed: list[str]) -> None:
+    def record_session(self, session_id: str, agent_name: str, allowed_outbound: list[str]) -> None:
         return None
 
     def agent_outbound(self, session_id: str) -> list[str]:
         return []
+
+    async def sandbox_snapshot(self) -> dict[str, object]:
+        return {"backend": self.name, "supported": False}
 
     async def stop(self, session_id: str) -> None:
         """No per-session teardown on the host filesystem."""

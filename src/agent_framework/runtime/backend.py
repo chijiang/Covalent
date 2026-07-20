@@ -123,13 +123,18 @@ class ExecutionBackend(Protocol):
         """Tear down the per-session environment."""
         ...
 
-    def store_agent_outbound(self, session_id: str, allowed: list[str]) -> None:
-        """Record per-agent outbound patterns for this session. Called before
-        container creation so the network mode can switch. FS: no-op."""
+    def record_session(self, session_id: str, agent_name: str, allowed_outbound: list[str]) -> None:
+        """Record per-session metadata (agent name + outbound patterns) before
+        the container is created. FS: no-op."""
         ...
 
     def agent_outbound(self, session_id: str) -> list[str]:
         """Per-agent outbound patterns for this session. FS: returns []."""
+        ...
+
+    async def sandbox_snapshot(self) -> dict[str, object]:
+        """Admin monitoring snapshot: live sessions, metrics, config. FS / unsupported
+        backends return ``{"supported": false}``."""
         ...
 
     async def is_alive(self, session_id: str) -> bool:

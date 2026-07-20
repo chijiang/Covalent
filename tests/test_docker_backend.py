@@ -281,7 +281,7 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             fake_client = _FakeDockerClient()
             backend = self._make_backend(Path(tmp), client=fake_client)
-            backend.store_agent_outbound("s-out", ["api.example.com"])
+            backend.record_session("s-out", "test-agent", ["api.example.com"])
             await backend.ensure("s-out")
             call = fake_client.containers.run_calls[0]
             self.assertEqual(call["network_mode"], "bridge")
@@ -293,6 +293,25 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             await backend.ensure("s-none")
             call = fake_client.containers.run_calls[0]
             self.assertEqual(call["network_mode"], "none")  # settings default
+
+    async def test_sandbox_snapshot_returns_session_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_client = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake_client)
+            backend.record_session("s-snap", "my-agent", ["api.example.com"])
+            await backend.ensure("s-snap")
+            snapshot = await backend.sandbox_snapshot()
+            self.assertTrue(snapshot["supported"])
+            self.assertEqual(snapshot["live"], 1)
+            self.assertEqual(len(snapshot["sessions"]), 1)
+            session = snapshot["sessions"][0]
+            self.assertEqual(session["session_id"], "s-snap")
+            self.assertEqual(session["agent_name"], "my-agent")
+            self.assertEqual(session["network_mode"], "bridge")
+            self.assertEqual(session["allowed_outbound"], ["api.example.com"])
+            self.assertIsNotNone(session["started_at"])
+            self.assertIn("config", snapshot)
+            self.assertEqual(snapshot["config"]["image"], "covalent-sandbox:dev")
 
 
 def settings_session_workspace_dir(workspace_root: Path, session_id: str) -> Path:
