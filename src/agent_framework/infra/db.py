@@ -75,6 +75,7 @@ class AgentRow(TimestampMixin, Base):
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     reasoning_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     local_tools: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    allowed_outbound: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     provider_name: Mapped[str] = mapped_column(String(100), nullable=False)
     provider_model: Mapped[str] = mapped_column(String(255), nullable=False)
     provider_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)

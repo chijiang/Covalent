@@ -16,6 +16,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from agent_framework.core.workspace_tools import _get_session_workspace_root
+from agent_framework.runtime.backend import BackendUnavailable
 
 if TYPE_CHECKING:
     from agent_framework.runtime.backend import ExecutionBackend
@@ -105,6 +106,19 @@ async def _run_shell(
         result = await backend.exec(command, cwd=cwd, env=None, timeout=timeout, session_id=session_id)
     except asyncio.TimeoutError as exc:
         raise RuntimeError(f"run_shell timed out after {timeout}s") from exc
+    except BackendUnavailable as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "exit_code": -1,
+                "execution_backend": backend.name,
+                "error": f"sandbox unavailable: {exc}",
+                "stdout": "",
+                "stderr": str(exc),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     return json.dumps(
         {

@@ -323,6 +323,7 @@ class AgentSummaryResponse(BaseModel):
     reasoning_level: str
     skills: list[str]
     local_tools: list[str]
+    allowed_outbound: list[str] = Field(default_factory=list)
     delegate_agents: list[str]
     capabilities: set[Capability]
     max_iterations: int

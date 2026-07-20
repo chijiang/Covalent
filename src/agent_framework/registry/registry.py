@@ -14,6 +14,7 @@ from agent_framework.mcp.adapter import McpClient
 from agent_framework.mcp.spec import McpServerConfig
 from agent_framework.model.base import ModelAdapter, ProviderConfig
 from agent_framework.model.factory import build_provider
+from agent_framework.runtime.backend import BackendUnavailable
 from agent_framework.skills.exceptions import SkillProcessError, SkillStartupError
 from agent_framework.skills.meta_tools import LIST_SKILL_FILES_TOOL, READ_SKILL_RESOURCE_TOOL, RUN_SKILL_SCRIPT_TOOL
 from agent_framework.skills.process import SkillProcessManager
@@ -292,7 +293,7 @@ class FrameworkRegistry:
                 tool_call_id=tool_call.id,
                 is_error=bool(result_data.get("is_error", False)),
             )
-        except (SkillProcessError, SkillStartupError) as exc:
+        except (SkillProcessError, SkillStartupError, BackendUnavailable) as exc:
             return ToolResult(
                 name=tool_call.name,
                 content=f"Skill '{skill_name}' error: {exc}",

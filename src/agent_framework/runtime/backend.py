@@ -38,6 +38,17 @@ class ExecResult:
     stderr: bytes
 
 
+class BackendUnavailable(RuntimeError):
+    """The execution backend can't reach its runtime right now (e.g. the Docker
+    daemon is down). Callers should surface this as a clean tool error rather than
+    a raw infrastructure exception. Carries the underlying cause in ``__cause__``."""
+
+    def __init__(self, message: str, *, cause: BaseException | None = None) -> None:
+        super().__init__(message)
+        if cause is not None:
+            self.__cause__ = cause
+
+
 class WorkspaceAccess(Protocol):
     """How the workspace file tools reach a session's files.
 
@@ -110,6 +121,15 @@ class ExecutionBackend(Protocol):
 
     async def stop(self, session_id: str) -> None:
         """Tear down the per-session environment."""
+        ...
+
+    def store_agent_outbound(self, session_id: str, allowed: list[str]) -> None:
+        """Record per-agent outbound patterns for this session. Called before
+        container creation so the network mode can switch. FS: no-op."""
+        ...
+
+    def agent_outbound(self, session_id: str) -> list[str]:
+        """Per-agent outbound patterns for this session. FS: returns []."""
         ...
 
     async def is_alive(self, session_id: str) -> bool:

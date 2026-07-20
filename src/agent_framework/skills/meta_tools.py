@@ -8,7 +8,7 @@ from typing import Any
 
 from agent_framework.core.types import RunContext
 from agent_framework.core.workspace_tools import _get_session_workspace_root
-from agent_framework.runtime.backend import ExecutionBackend
+from agent_framework.runtime.backend import ExecutionBackend, BackendUnavailable
 from agent_framework.runtime.filesystem_backend import FileSystemBackend
 from agent_framework.skills.bundle import SkillBundle, SkillBundleError
 from agent_framework.skills.permissions import PermissionChecker
@@ -184,6 +184,19 @@ async def _run_skill_script(
         raise RuntimeError(
             f"Skill script '{script.name}' timed out after {timeout}s"
         ) from exc
+    except BackendUnavailable as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "exit_code": -1,
+                "execution_backend": active_backend.name,
+                "error": f"sandbox unavailable: {exc}",
+                "stdout": "",
+                "stderr": str(exc),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     return json.dumps(
         {
