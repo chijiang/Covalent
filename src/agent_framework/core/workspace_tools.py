@@ -23,8 +23,20 @@ _DEFAULT_ZIP_MAX_ENTRIES = 10_000
 
 
 def _get_session_workspace_root(settings: Any, context: Any) -> Path:
-    """Get the workspace root for the current session, or the base root if session workspace is disabled."""
+    """Get the workspace root for the current session, or the base root if session workspace is disabled.
+
+    When the run context carries an ``execution_backend`` (production), resolve
+    through it so the backend owns workspace access (ready for a remote backend
+    in Phase 3). Otherwise fall back to settings-derived resolution (tests,
+    legacy/admin paths).
+    """
+    backend = getattr(context, "execution_backend", None)
     session_id = getattr(context, "session_id", None)
+    if backend is not None and isinstance(session_id, str) and session_id.strip():
+        host_path = backend.workspace(session_id).host_path
+        if host_path is None:
+            raise RuntimeError("execution backend has no host_path for the workspace (remote workspace is Phase 3)")
+        return host_path
     if isinstance(session_id, str) and session_id.strip():
         return settings.session_workspace_dir(session_id)
     if settings.session_workspace_enabled and session_id is None:

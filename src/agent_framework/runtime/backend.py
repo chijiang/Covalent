@@ -38,6 +38,25 @@ class ExecResult:
     stderr: bytes
 
 
+class WorkspaceAccess(Protocol):
+    """How the workspace file tools reach a session's files.
+
+    ``host_path`` is the on-host directory when the backend exposes one
+    (FileSystem, and Docker via a bind mount); the tools use ``pathlib`` on it.
+    ``None`` means a remote workspace (e.g. a Kubernetes Pod volume) with no host
+    path — the tools would then need backend-mediated file ops (Phase 3).
+    """
+
+    host_path: Path | None
+
+
+@dataclass
+class HostPathWorkspace:
+    """WorkspaceAccess backed by a host directory (FileSystem + Docker bind-mount)."""
+
+    host_path: Path
+
+
 class ExecutionBackend(Protocol):
     """Where a session's skill code and scripts run.
 
@@ -50,6 +69,12 @@ class ExecutionBackend(Protocol):
 
     async def ensure(self, session_id: str) -> None:
         """Make the per-session execution environment ready. Idempotent."""
+        ...
+
+    def workspace(self, session_id: str | None) -> WorkspaceAccess:
+        """The session's workspace access. For host-path backends this points at a
+        host directory (bind-mounted for Docker); remote backends return a
+        workspace with ``host_path=None`` (Phase 3)."""
         ...
 
     async def spawn_stream(
@@ -122,7 +147,7 @@ def make_backend(
 
     kind = settings.execution_backend_kind
     if kind == "filesystem":
-        return FileSystemBackend()
+        return FileSystemBackend(settings)
     if kind == "docker":
         if skill_source_dirs_provider is None:
             raise ValueError("Docker backend requires skill_source_dirs_provider")

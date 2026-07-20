@@ -95,7 +95,7 @@ from agent_framework.api.auth import (
 )
 from agent_framework.core.attachment_processing import process_attachment_bytes
 from agent_framework.core.agent import AgentSpec
-from agent_framework.core.shell_tools import register_shell_tool
+from agent_framework.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
 from agent_framework.core.workspace_tools import register_workspace_tools
 from agent_framework.core.types import Capability, GenerationRequest, Message, ResumedToolResult, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
 from agent_framework.infra.config_store import ConfigKind, ConfigPrincipal, ConfigStore, PersistedAgentConfig, PersistedSkillSourceConfig
@@ -741,6 +741,7 @@ def create_app() -> FastAPI:
                     "token_id": principal.token_id,
                 },
             },
+            execution_backend=getattr(app.state, "execution_backend", None),
         )
 
         if invoke_request.stream:
@@ -1098,7 +1099,7 @@ def create_app() -> FastAPI:
             result = await runtime.run(
                 agent,
                 run_request.input,
-                RunContext(agent_name=resolved_agent_name, session_id=session_id, metadata=run_request.metadata),
+                RunContext(agent_name=resolved_agent_name, session_id=session_id, metadata=run_request.metadata, execution_backend=getattr(app.state, "execution_backend", None)),
             )
         except ModelProviderError as exc:
             status_code = 502 if exc.status_code is None else min(max(exc.status_code, 400), 599)
@@ -1166,7 +1167,7 @@ def create_app() -> FastAPI:
                 async for event in runtime.stream_events(
                     agent,
                     run_request.input,
-                    RunContext(agent_name=resolved_agent_name, session_id=session_id, metadata=runtime_metadata),
+                    RunContext(agent_name=resolved_agent_name, session_id=session_id, metadata=runtime_metadata, execution_backend=getattr(app.state, "execution_backend", None)),
                 ):
                     event_name = event["event"]
                     payload = event["payload"]
@@ -1819,7 +1820,13 @@ def _available_local_tool_summaries(
 ) -> list[LocalToolSummaryResponse]:
     default_tools = set(_default_agent_local_tools(settings))
     summaries: list[LocalToolSummaryResponse] = []
-    for name in BUILTIN_AGENT_TOOLS:
+    # The curated built-in tools, plus the sandbox shell tool when it's registered
+    # (sandbox backend + flag on) — so operators can grant it per-agent in the
+    # console without it ever showing up under filesystem / flag-off.
+    candidate_names = list(BUILTIN_AGENT_TOOLS)
+    if RUN_SHELL_TOOL in registry.local_tools and RUN_SHELL_TOOL not in candidate_names:
+        candidate_names.append(RUN_SHELL_TOOL)
+    for name in candidate_names:
         tool = registry.local_tools.get(name)
         if tool is None:
             continue

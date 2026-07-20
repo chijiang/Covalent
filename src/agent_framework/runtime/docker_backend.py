@@ -30,7 +30,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_framework.runtime.backend import ExecResult, ExecutionBackend
+from agent_framework.runtime.backend import ExecResult, ExecutionBackend, HostPathWorkspace
 from agent_framework.runtime.docker_process import DockerExecProcess
 
 if TYPE_CHECKING:
@@ -106,6 +106,13 @@ class DockerBackend(ExecutionBackend):
         container = await asyncio.to_thread(self._create_session_container, session_id)
         self._sessions[session_id] = container
         return container
+
+    def workspace(self, session_id: str | None) -> HostPathWorkspace:
+        # The session workspace is bind-mounted into the container at this host
+        # path, so host-side pathlib sees the same files the container writes.
+        if isinstance(session_id, str) and session_id.strip():
+            return HostPathWorkspace(host_path=self._settings.session_workspace_dir(session_id))
+        return HostPathWorkspace(host_path=self._settings.workspace_root())
 
     def _create_session_container(self, session_id: str):
         client = self._api()
