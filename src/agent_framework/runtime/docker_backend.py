@@ -27,10 +27,13 @@ import os
 import struct
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_framework.runtime.backend import ExecResult, ExecutionBackend, HostPathWorkspace
+import docker
+
+from agent_framework.runtime.backend import BackendUnavailable, ExecResult, ExecutionBackend, HostPathWorkspace
 from agent_framework.runtime.docker_process import DockerExecProcess
 
 if TYPE_CHECKING:
@@ -69,6 +72,38 @@ def _recv_exact_blocking(sock, n: int) -> bytes | None:
     return bytes(buf)
 
 
+@dataclass
+class SandboxMetrics:
+    """Lightweight in-process counters for the Docker sandbox (no external dep).
+
+    Exposed via ``/healthz``; ``live`` container count comes from ``len(_sessions)``,
+    not a counter.
+    """
+
+    containers_started: int = 0
+    containers_stopped: int = 0
+    containers_swept_startup: int = 0
+    unavailable_errors: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "containers_started": self.containers_started,
+            "containers_stopped": self.containers_stopped,
+            "containers_swept_startup": self.containers_swept_startup,
+            "unavailable_errors": self.unavailable_errors,
+        }
+
+
+# Exception classes that mean "the Docker daemon / runtime is unreachable right
+# now" rather than a config or logic error — translated to BackendUnavailable.
+_UNAVAILABLE_EXC: tuple[type[BaseException], ...] = (
+    docker.errors.APIError,
+    docker.errors.DockerException,
+    ConnectionError,
+    OSError,
+)
+
+
 class DockerBackend(ExecutionBackend):
     """Run skill runners and scripts inside one container per session."""
 
@@ -90,21 +125,45 @@ class DockerBackend(ExecutionBackend):
         self._tmpfs_size = settings.execution_backend_docker_tmpfs_size
         self._client = docker_client  # lazily created on first use
         self._sessions: dict[str, object] = {}
+        self._metrics = SandboxMetrics()
+        self._agent_outbound: dict[str, list[str]] = {}
 
     # -- container lifecycle -------------------------------------------------
+
+    def store_agent_outbound(self, session_id: str, allowed: list[str]) -> None:
+        """Record the agent-level outbound whitelist for this session. Called
+        before the first container creation so the network mode can switch."""
+        self._agent_outbound[session_id] = list(allowed) if allowed else []
+
+    def agent_outbound(self, session_id: str) -> list[str]:
+        return self._agent_outbound.get(session_id, [])
     def _api(self):
         if self._client is None:
-            import docker
-
             self._client = docker.from_env()
         return self._client
+
+    def _translate_unavailable(self, fn, *args, **kwargs):
+        """Run a blocking docker call; translate daemon-unreachable errors to
+        ``BackendUnavailable`` (counted) so callers get a clean, typed failure."""
+        try:
+            return fn(*args, **kwargs)
+        except _UNAVAILABLE_EXC as exc:
+            self._metrics.unavailable_errors += 1
+            raise BackendUnavailable(f"sandbox backend unavailable: {exc}", cause=exc) from exc
+
+    def metrics_snapshot(self) -> dict[str, object]:
+        """Sandbox status for ``/healthz``: live container count + counters."""
+        return {"backend": self.name, "live_containers": len(self._sessions), **self._metrics.to_dict()}
 
     async def ensure(self, session_id: str):
         existing = self._sessions.get(session_id)
         if existing is not None:
             return existing
-        container = await asyncio.to_thread(self._create_session_container, session_id)
+        container = await asyncio.to_thread(
+            self._translate_unavailable, self._create_session_container, session_id
+        )
         self._sessions[session_id] = container
+        self._metrics.containers_started += 1
         return container
 
     def workspace(self, session_id: str | None) -> HostPathWorkspace:
@@ -128,7 +187,7 @@ class DockerBackend(ExecutionBackend):
             mem_limit=self._mem_limit,
             pids_limit=self._pids_limit,
             nano_cpus=self._nano_cpus,
-            network_mode=self._network_mode,
+            network_mode="bridge" if self._agent_outbound.get(session_id) else self._network_mode,
             tmpfs={"/tmp": f"size={self._tmpfs_size}"},
         )
         try:
@@ -175,6 +234,7 @@ class DockerBackend(ExecutionBackend):
         container = self._sessions.pop(session_id, None)
         if container is not None:
             await asyncio.to_thread(self._remove_container, container)
+            self._metrics.containers_stopped += 1
             return
         await asyncio.to_thread(self._remove_container_by_name, session_id)
 
@@ -183,6 +243,8 @@ class DockerBackend(ExecutionBackend):
         self._sessions.clear()
         for container in containers:
             await asyncio.to_thread(self._remove_container, container)
+        if containers:
+            self._metrics.containers_stopped += len(containers)
 
     def _remove_container(self, container) -> None:
         try:
@@ -214,6 +276,8 @@ class DockerBackend(ExecutionBackend):
         containers = await asyncio.to_thread(self._list_sandbox_containers)
         for container in containers:
             await asyncio.to_thread(self._remove_container, container)
+        if containers:
+            self._metrics.containers_swept_startup += len(containers)
 
     async def list_sandbox_sessions(self) -> list[str]:
         """Session ids of sandbox containers known to the daemon (across restarts)."""
@@ -260,7 +324,12 @@ class DockerBackend(ExecutionBackend):
         container = await self.ensure(session_id)
         rewritten = self.rewrite_command(command)
         exec_id, sock = await asyncio.to_thread(
-            self._start_exec_socket, container.id, rewritten, str(cwd) if cwd else None, self._sanitize_env(env)
+            self._translate_unavailable,
+            self._start_exec_socket,
+            container.id,
+            rewritten,
+            str(cwd) if cwd else None,
+            self._sanitize_env(env),
         )
         real_sock = getattr(sock, "_sock", sock)  # unwrap SocketIO -> raw socket
 
@@ -334,6 +403,7 @@ class DockerBackend(ExecutionBackend):
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(
+                    self._translate_unavailable,
                     self._exec_one_shot,
                     container.id,
                     rewritten,

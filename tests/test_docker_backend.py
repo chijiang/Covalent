@@ -236,6 +236,64 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             backend._kill_exec(_C(), "exec-1", "KILL")
         self.assertEqual(killed, [])
 
+    async def test_metrics_count_start_and_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_client = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake_client)
+            await backend.ensure("s1")
+            snap = backend.metrics_snapshot()
+            self.assertEqual(snap["live_containers"], 1)
+            self.assertEqual(snap["containers_started"], 1)
+            await backend.stop("s1")
+            snap = backend.metrics_snapshot()
+            self.assertEqual(snap["live_containers"], 0)
+            self.assertEqual(snap["containers_stopped"], 1)
+
+    async def test_metrics_count_startup_sweep(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_client = _FakeDockerClient()
+            fake_client.containers.run(image="x", name="covalent-sandbox-a", labels={"covalent.sandbox": "1", "covalent.session": "a"})
+            fake_client.containers.run(image="x", name="covalent-sandbox-b", labels={"covalent.sandbox": "1", "covalent.session": "b"})
+            backend = self._make_backend(Path(tmp), client=fake_client)
+            await backend.startup_sweep()
+            self.assertEqual(backend.metrics_snapshot()["containers_swept_startup"], 2)
+
+    async def test_daemon_down_raises_backend_unavailable(self) -> None:
+        from agent_framework.runtime.backend import BackendUnavailable
+
+        class _DownContainers:
+            def run(self, **_kw):
+                raise docker.errors.APIError("daemon down")
+
+            def get(self, _name):
+                raise docker.errors.APIError("daemon down")
+
+        class _DownClient(types.SimpleNamespace):
+            containers = _DownContainers()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._make_backend(Path(tmp), client=_DownClient())
+            with self.assertRaises(BackendUnavailable):
+                await backend.ensure("s1")
+            self.assertEqual(backend.metrics_snapshot()["unavailable_errors"], 1)
+
+    async def test_network_mode_bridge_when_agent_has_outbound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_client = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake_client)
+            backend.store_agent_outbound("s-out", ["api.example.com"])
+            await backend.ensure("s-out")
+            call = fake_client.containers.run_calls[0]
+            self.assertEqual(call["network_mode"], "bridge")
+
+    async def test_network_mode_default_when_agent_has_no_outbound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_client = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake_client)
+            await backend.ensure("s-none")
+            call = fake_client.containers.run_calls[0]
+            self.assertEqual(call["network_mode"], "none")  # settings default
+
 
 def settings_session_workspace_dir(workspace_root: Path, session_id: str) -> Path:
     """Mirror AppSettings.session_workspace_dir for assertion expectations."""

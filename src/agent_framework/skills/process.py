@@ -222,6 +222,13 @@ class SkillProcessManager:
         if spec.runtime.type == "python" and not spec.runtime.command:
             extra_args = ["-u"]  # unbuffered stdout for proper pipe reads
         env = self._build_env(spec)
+        # Merge agent-level outbound patterns into SKILL_NET_ALLOW so the
+        # skill SDK enforces the agent's extra whitelist alongside the skill's.
+        agent_extras = getattr(self._backend, "agent_outbound", lambda _: [])(session_id)
+        if agent_extras:
+            existing = env.get("SKILL_NET_ALLOW", "")
+            joined = ",".join(agent_extras)
+            env["SKILL_NET_ALLOW"] = f"{existing},{joined}" if existing else joined
         full_args = self._build_command(spec, command, extra_args, env)
 
         process = await self._backend.spawn_stream(

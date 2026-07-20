@@ -449,7 +449,7 @@ unreachable (configurable: strict-fail vs fallback).
 | **1 — Docker backend** | Split into **1a (done)** and **1b (done)**. **1a**: `DockerBackend` + `DockerExecProcess` (asyncio-subprocess look-alike over a hijacked exec socket; `SkillProcessHandle` unchanged), `Dockerfile.sandbox`, `session_id` threaded through `acquire`/`_spawn` (pool keyed per `(skill, session)`), `run_skill_script` via `backend.exec`, lazy per-session container bind-mounting skill source dirs + workspace at host-absolute paths, command rewrite (`sys.executable`→`python`, runner path→`/runners/`). **1b**: resource limits (mem/pids/cpu) + `tmpfs /tmp` + `network_mode=none` default; per-session teardown on session DELETE; `startup_sweep` + lifespan reaper (reconciles against the session store); Docker `exec` with `stdin` via a hijacked-socket one-shot. Verified: 76 tests green (FS unchanged) + real-container smokes (`script/smoke-docker-skillhandle.py`, `script/smoke-docker-hardening.py`: stdin round-trip, path containment, network egress blocked). **Still deferred**: sandbox image CI; in-container `kill` for hung execs; egress allow-list / restricted-bridge proxy. Workspace tools unchanged (host path). | Docker backend selectable; skill runner + script execute safely in a container; FS still works. |
 | **2 — Workspace refactor** (done) | Introduced the `WorkspaceAccess` seam + `backend.workspace(session_id)`; FS/Docker return a `HostPathWorkspace` (the session workspace dir, bind-mounted for Docker). Workspace resolution now goes **through the backend**: `RunContext.execution_backend` is injected at the run sites, and `_get_session_workspace_root` resolves via `backend.workspace(session_id).host_path` (falling back to settings-derived resolution when no backend is present — so existing tests are unchanged). FS/Docker behavior is identical. `RemoteWorkspace` (`host_path=None`, async file ops over exec) is Phase 3. | Full suite green (existing workspace-tool tests pass unchanged via the fallback); new `test_workspace_access` pins `workspace()` host paths for FS + Docker. |
 | **3 — Kubernetes backend** | `KubernetesBackend`: Pod-per-session, k8s exec, RBAC, NetworkPolicy, RemoteWorkspace. Depends on Phase 2. | Cloud backend selectable; same agent surface works. |
-| **4 — Hardening** | Network profiles enforced, socket proxy / RBAC + PSA, `--user`/userns-remap, budgets applied, metrics on sandbox counts/reaps, fallback policy. | Production-grade on Docker and Kubernetes. |
+| **4 — Hardening** (partial) | **Done (pure code):** sandbox metrics (`SandboxMetrics` counters exposed via `/healthz` → `sandbox` block: live containers + started/stopped/swept/unavailable); graceful failure — `BackendUnavailable` wraps daemon-down errors and surfaces as a clean tool error (`is_error` result / error JSON), no silent host fallback. **Operator config (documented in the Production hardening checklist below, not code):** Docker socket proxy (Tecnativa), `--user`/userns-remap, gVisor/Kata. **Deferred (own phase):** egress allow-list (restricted network + managed allow-list proxy sidecar). | Metrics + graceful failure done; egress + operator hardening documented. |
 
 Phases 0–1 deliver the three motivating goals for single-host untrusted code.
 Phase 2 decouples the workspace. Phase 3 unlocks cloud. Phase 4 hardens both.
@@ -506,6 +506,71 @@ Phase 2 decouples the workspace. Phase 3 unlocks cloud. Phase 4 hardens both.
 - **Stronger isolation:** for genuinely untrusted multi-tenant work, layer
   gVisor (`runsc`) / Kata / Firecracker under the Docker backend, or a sandboxed
   runtime class on Kubernetes. Out of scope here; the seam makes it additive.
+
+## Production Hardening Checklist
+
+Phase 4 delivered the safe defaults and pure-code observability. Running untrusted
+agent/skill code in production needs **operator/daemon-level** hardening that can't
+land in application code — this is the deployment checklist.
+
+### Docker socket — front it with a restricting proxy
+The backend needs Docker socket access, which is **root-equivalent**. Never expose
+the raw `/var/run/docker.sock` to the backend process directly; a container escape
+that reaches the socket owns the host. Run the backend containerized and point it at
+a **restricting socket proxy** (e.g. [Tecnativa docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)), allowing only:
+
+```
+CONTAINERS=1   # create/start/stop/remove/exec/logs — what the backend needs
+POST=1         # exec_create needs POST
+VERSION=1
+# Everything else (images/build, networks, volumes, swarm) = 0
+```
+
+Set the backend's docker client at the daemon URL:
+`DOCKER_HOST=tcp://socket-proxy:2375`. A compromised sandbox that reaches the backend
+still can't `images.build` or create privileged containers.
+
+### uid mapping — run containers as the backend user
+A rootful container writes bind-mounted files owned by root, which the (non-root)
+backend then can't read or delete — and root-in-container is a larger attack surface.
+In `DockerBackend._create_session_container` pass `user=f"{os.getuid()}:{os.getgid()}"`
+(or a configured uid), or enable Docker daemon **user namespace remapping**
+(`userns-remap`) so container root maps to a non-host-root uid. The `bash`/`sh` skill
+SDKs still work; only file ownership changes.
+
+### Resource ceilings — keep the defaults, verify them
+1b already sets `mem_limit` / `pids_limit` / `nano_cpus` / `tmpfs` at create time
+(`docker_backend.py:_create_session_container`). Verify with `docker inspect
+<container> --format '{{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}'` on a live
+session container. These are the ceiling; raise them deliberately, never remove them.
+
+### Network egress — `none` by default; allow-list is a future phase
+`network_mode=none` (the default) gives sandboxed code **no outbound network** — the
+safest and recommended setting. The model provider runs on the **host** (not in the
+container), so skill runners need no network by default.
+
+Skills that genuinely need outbound (e.g. fetch from an approved API) today set
+`execution_backend_docker_network=bridge`, which is **permissive** (any host/port).
+A real **egress allow-list** is deferred: the design is a dedicated Docker network
+(`--internal`-flavored) plus a managed **allow-list proxy sidecar** the container
+routes through, mapping the skill's existing `permissions.network.allow_outbound`
+patterns to actual destination filtering. That's a substantial feature in its own
+phase; until then, prefer `network_mode=none` and route any needed calls through the
+trusted backend host.
+
+### Stronger isolation for untrusted multi-tenant
+Plain Docker shares the host kernel — fine for semi-trusted skill code, risky for a
+determined adversary. For genuinely untrusted multi-tenant work, swap the Docker
+runtime class: **gVisor** (`--runtime=runsc`) intercepts syscalls in a userspace
+kernel; **Kata Containers** runs each container in a lightweight VM. These are
+daemon/runtime-class settings — the `covalent-sandbox` image and `DockerBackend` code
+work unchanged; only the daemon/`--runtime` flag differs.
+
+### Image hygiene
+The GHCR CI workflow (`.github/workflows/sandbox-image.yml`) publishes the image on
+`Dockerfile.sandbox`/runners changes. Pin **digests** in production
+(`covalent-sandbox@sha256:…`, not `:latest`); rebuild on runner/dependency changes.
+Runtime `pip install` inside a container lands in an ephemeral layer, never the base.
 
 ## Appendix: Proven Proof of Concept
 

@@ -278,6 +278,8 @@ def _normalize_agent_payload_item(item: dict[str, object], settings: AppSettings
     if "local_tools" not in item:
         local_tools = _dedupe_strings(local_tools + _default_agent_local_tools(settings))
     normalized["local_tools"] = local_tools
+    allowed_outbound = _dedupe_strings([str(value) for value in normalized.get("allowed_outbound", []) if isinstance(value, str)])
+    normalized["allowed_outbound"] = allowed_outbound
     normalized["reasoning_prompt"] = reasoning_prompt
     normalized["reasoning_level"] = reasoning_level
     return normalized
@@ -463,6 +465,15 @@ def create_app() -> FastAPI:
                 if pool:
                     pool_summaries[skill_name] = spm.pool_status(skill_name)
             checks["skill_processes"] = pool_summaries if pool_summaries else "none_active"
+
+        backend = getattr(app.state, "execution_backend", None)
+        metrics_snapshot = getattr(backend, "metrics_snapshot", None)
+        if callable(metrics_snapshot):
+            try:
+                checks["sandbox"] = metrics_snapshot()
+            except Exception as exc:
+                checks["sandbox"] = f"error: {exc}"
+                checks["status"] = "degraded"
 
         return checks
 
@@ -743,6 +754,13 @@ def create_app() -> FastAPI:
             },
             execution_backend=getattr(app.state, "execution_backend", None),
         )
+
+        # Record agent-level outbound whitelist before the first container is
+        # created (affects network_mode + SKILL_NET_ALLOW merge).
+        backend_ref = getattr(app.state, "execution_backend", None)
+        outbound = getattr(agent, "allowed_outbound", None)
+        if backend_ref is not None and outbound:
+            backend_ref.store_agent_outbound(context.session_id or "", outbound)
 
         if invoke_request.stream:
             async def event_stream():
@@ -1090,6 +1108,15 @@ def create_app() -> FastAPI:
         resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
         await _ensure_console_principal_can_access_agent(db_manager, principal, resolved_agent_name)
         session_id = run_request.session_id or _new_chat_item_id("session")
+        # Record agent-level outbound before the container is created.
+        try:
+            agent = registry.get_agent(resolved_agent_name)
+            backend_ref = getattr(app.state, "execution_backend", None)
+            outbound = getattr(agent, "allowed_outbound", None)
+            if backend_ref is not None and outbound:
+                backend_ref.store_agent_outbound(session_id, outbound)
+        except Exception:
+            pass
         try:
             agent = registry.get_agent(resolved_agent_name)
         except KeyError as exc:
@@ -1123,6 +1150,15 @@ def create_app() -> FastAPI:
         resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
         await _ensure_console_principal_can_access_agent(db_manager, principal, resolved_agent_name)
         session_id = run_request.session_id or _new_chat_item_id("session")
+        # Record agent-level outbound before the container is created.
+        try:
+            agent = registry.get_agent(resolved_agent_name)
+            backend_ref = getattr(app.state, "execution_backend", None)
+            outbound = getattr(agent, "allowed_outbound", None)
+            if backend_ref is not None and outbound:
+                backend_ref.store_agent_outbound(session_id, outbound)
+        except Exception:
+            pass
         try:
             agent = registry.get_agent(resolved_agent_name)
         except KeyError as exc:
@@ -1804,6 +1840,7 @@ def to_agent_summary(agent: AgentSpec) -> AgentSummaryResponse:
         reasoning_level=agent.reasoning_level,
         skills=agent.skills,
         local_tools=agent.local_tools,
+        allowed_outbound=getattr(agent, "allowed_outbound", []) or [],
         delegate_agents=agent.delegate_agents,
         capabilities=agent.capabilities,
         max_iterations=agent.max_iterations,
@@ -4915,6 +4952,7 @@ def _build_agent_specs(
                 provider=_merge_provider_config(persisted.provider, provider_config),
                 skills=persisted.skills,
                 local_tools=[t for t in _dedupe_strings(persisted.local_tools) if t != "echo"],
+                allowed_outbound=_dedupe_strings(getattr(persisted, "allowed_outbound", []) or []),
                 delegate_agents=persisted.delegate_agents,
                 mcp_servers=resolved_mcp,
                 mcp_tools=persisted.mcp_tools,
