@@ -1,20 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
+import { FieldHelp } from "@/components/console/field-help";
 import { FormSection } from "@/components/console/form-section";
 import { MultiSelectField, type MultiSelectOption } from "@/components/console/multi-select-field";
 import { ConsoleAlert } from "@/components/console/console-alert";
 import { ConsolePanel } from "@/components/console/console-panel";
 import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
-import { PanelHeader } from "@/components/console/panel-header";
-import { PublicationControls } from "@/components/console/publication-controls";
+import { ConsoleMetaRail, PanelHeader } from "@/components/console/panel-header";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
 import { exportManagementConfig, fetchProviderModels, getAgentLocalTools, getAgents, getConfig, getSkills, importManagementConfig, inspectMcpServer, saveConfig, sortAgentsForPicker } from "@/lib/client-api";
-import type { AgentConfig, AgentDetail, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, SkillSummary } from "@/lib/types";
+import type { AgentConfig, AgentDetail, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, ResourceVisibility, SkillSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -26,11 +26,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 type AgentFormState = {
   name: string;
   description: string;
+  enabled: boolean;
+  visibility: ResourceVisibility;
   systemPrompt: string;
   reasoningPrompt: string;
   reasoningLevel: string;
   skills: string[];
   localTools: string[];
+  allowedOutbound: string[];
   delegates: string[];
   mcpServers: string[];
   mcpToolKeys: string[];
@@ -83,6 +86,7 @@ function buildSampleAgents(defaultLocalTools: string[]): AgentConfig[] {
       },
       skills: [],
       local_tools: [...defaultLocalTools],
+      enabled: true,
       delegate_agents: [],
       mcp_servers: [],
       mcp_tools: [],
@@ -103,6 +107,7 @@ function buildSampleAgents(defaultLocalTools: string[]): AgentConfig[] {
       },
       skills: ["search", "memory"],
       local_tools: [...defaultLocalTools],
+      enabled: true,
       delegate_agents: ["default"],
       mcp_servers: [],
       mcp_tools: [],
@@ -127,6 +132,7 @@ function buildStarterAgent(index: number, defaultLocalTools: string[]): AgentCon
     },
     skills: [],
     local_tools: [...defaultLocalTools],
+    enabled: true,
     delegate_agents: [],
     mcp_servers: [],
     mcp_tools: [],
@@ -209,6 +215,8 @@ function toAgentForm(
   return {
     name: agent?.name || "",
     description: agent?.description || "",
+    enabled: isAgentEnabled(agent),
+    visibility: agentVisibilityIntent(agent),
     systemPrompt: agent?.system_prompt || "",
     reasoningPrompt: agent?.reasoning_prompt || "",
     reasoningLevel: agent?.reasoning_level || "none",
@@ -236,8 +244,46 @@ function downloadTextFile(filename: string, content: string, contentType = "text
   URL.revokeObjectURL(url);
 }
 
-function agentStatusLabel(isActive: boolean): string {
-  return isActive ? "Active" : "Draft";
+function isAgentEnabled(agent: AgentConfig | null | undefined): boolean {
+  return agent?.enabled !== false;
+}
+
+function agentStatusLabel(isEnabled: boolean): string {
+  return isEnabled ? "Active" : "Inactive";
+}
+
+function agentVisibilityIntent(agent: AgentConfig | null | undefined): ResourceVisibility {
+  if (!agent) {
+    return "private";
+  }
+  if (agent.publication_status === "pending") {
+    return "public";
+  }
+  return agent.visibility === "public" && agent.publication_status === "approved" ? "public" : "private";
+}
+
+function formVisibilityLabel(visibility: ResourceVisibility, agent: AgentConfig | null | undefined): string {
+  if (visibility === "private") {
+    return "Private";
+  }
+  return agent?.publication_status === "pending" ? "Public pending" : "Public";
+}
+
+function FieldLabel({
+  children,
+  help,
+  htmlFor,
+}: {
+  children: ReactNode;
+  help?: ReactNode;
+  htmlFor?: string;
+}) {
+  return (
+    <div className="console-field-label-row">
+      <Label htmlFor={htmlFor}>{children}</Label>
+      {help ? <FieldHelp>{help}</FieldHelp> : null}
+    </div>
+  );
 }
 
 function routingCountLabel(count: number, noun: string): string {
@@ -265,7 +311,7 @@ export function AgentsWorkspace() {
   const [inspectingServers, setInspectingServers] = useState<string[]>([]);
   const [selectedName, setSelectedName] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "draft">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
   const [form, setForm] = useState<AgentFormState>(toAgentForm(null));
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -352,13 +398,12 @@ export function AgentsWorkspace() {
   const sampleAgents = useMemo(() => buildSampleAgents(defaultLocalTools), [defaultLocalTools]);
   const displayAgents = draftAgents.length ? draftAgents : sampleAgents;
   const selectedAgent = useMemo(() => displayAgents.find((agent) => agent.name === selectedName) ?? displayAgents[0] ?? null, [displayAgents, selectedName]);
-  const selectedRuntime = useMemo(() => (selectedName ? runtimeByName.get(selectedName) ?? null : null), [runtimeByName, selectedName]);
   const defaultProviderEntry = useMemo(
     () => providers.find((provider) => (provider.default_model || "").trim()) ?? providers.find((provider) => provider.is_default) ?? null,
     [providers],
   );
   const defaultRouteModelLabel = (defaultProviderEntry?.default_model || "").trim();
-  const defaultRouteOptionLabel = defaultRouteModelLabel ? `(Use default route · ${defaultRouteModelLabel})` : "(Use default route)";
+  const defaultRouteOptionLabel = defaultRouteModelLabel ? `(Use default route: ${defaultRouteModelLabel})` : "(Use default route)";
   const providerForModelDiscovery = form.providerName || defaultProviderEntry?.name || "";
 
   useEffect(() => {
@@ -446,11 +491,11 @@ export function AgentsWorkspace() {
   const filteredAgents = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     return displayAgents.filter((agent) => {
-      const runtimeLoaded = runtimeByName.has(agent.name);
-      if (statusFilter === "active" && !runtimeLoaded) {
+      const enabled = isAgentEnabled(agent);
+      if (statusFilter === "active" && !enabled) {
         return false;
       }
-      if (statusFilter === "draft" && runtimeLoaded) {
+      if (statusFilter === "inactive" && enabled) {
         return false;
       }
       if (!query) {
@@ -459,10 +504,10 @@ export function AgentsWorkspace() {
       const effectiveModel = agent.provider.model;
       return `${agent.name} ${agent.description} ${effectiveModel}`.toLowerCase().includes(query);
     });
-  }, [displayAgents, runtimeByName, searchQuery, statusFilter]);
+  }, [displayAgents, searchQuery, statusFilter]);
 
-  const activeCount = useMemo(() => displayAgents.filter((agent) => runtimeByName.has(agent.name)).length, [displayAgents, runtimeByName]);
-  const draftCount = useMemo(() => Math.max(displayAgents.length - activeCount, 0), [activeCount, displayAgents.length]);
+  const activeCount = useMemo(() => displayAgents.filter((agent) => isAgentEnabled(agent)).length, [displayAgents]);
+  const inactiveCount = useMemo(() => Math.max(displayAgents.length - activeCount, 0), [activeCount, displayAgents.length]);
 
   const skillOptions = useMemo(() => {
     const options = new Map<string, MultiSelectOption>();
@@ -471,7 +516,7 @@ export function AgentsWorkspace() {
       options.set(skill.name, {
         value: skill.name,
         label: skill.name,
-        hint: skill.enabled ? `Enabled · ${skill.version}` : `Disabled · ${skill.version}`,
+        hint: skill.enabled ? `Enabled (${skill.version})` : `Disabled (${skill.version})`,
       });
     }
 
@@ -494,7 +539,7 @@ export function AgentsWorkspace() {
       label: tool.name,
       hint: tool.enabled_by_default
         ? tool.description
-          ? `Default · ${tool.description}`
+          ? `Default: ${tool.description}`
           : "Enabled by default"
         : tool.description || undefined,
     }));
@@ -737,6 +782,9 @@ export function AgentsWorkspace() {
       ...selectedAgent,
       name: form.name.trim() || selectedAgent.name,
       description: form.description.trim(),
+      enabled: form.enabled,
+      visibility: form.visibility,
+      publication_status: form.visibility === "public" ? "approved" : "draft",
       system_prompt: form.systemPrompt.trim(),
       reasoning_prompt: form.reasoningPrompt.trim(),
       reasoning_level: form.reasoningLevel,
@@ -863,11 +911,10 @@ export function AgentsWorkspace() {
         >
               <ConsolePanel className="skill-inventory-panel agent-inventory-panel">
                 <PanelHeader
-                  badge={<Badge>{activeCount} active</Badge>}
                   meta={
                     loading
                       ? "Loading agent inventory..."
-                      : `${filteredAgents.length} shown · ${displayAgents.length} total · ${activeCount} active · ${draftCount} draft`
+                      : <ConsoleMetaRail aria-label="Agent inventory summary" items={[`${filteredAgents.length} shown`, `${displayAgents.length} total`, `${activeCount} active`, `${inactiveCount} inactive`]} />
                   }
                   title="Configured agents"
                 />
@@ -885,7 +932,7 @@ export function AgentsWorkspace() {
                       [
                         ["all", "All"],
                         ["active", "Active"],
-                        ["draft", "Draft"],
+                        ["inactive", "Inactive"],
                       ] as const
                     }
                     value={statusFilter}
@@ -899,7 +946,7 @@ export function AgentsWorkspace() {
                   {!loading
                     ? filteredAgents.map((agent) => {
                         const runtime = runtimeByName.get(agent.name);
-                        const isActive = Boolean(runtime);
+                        const isActive = isAgentEnabled(agent);
                         const effectiveModel = runtime?.provider.model || agent.provider.model || "No model";
 
                         return (
@@ -911,7 +958,6 @@ export function AgentsWorkspace() {
                               <>
                                 <Badge variant="outline">{effectiveModel}</Badge>
                                 <Badge variant="outline">{routingCountLabel(agent.skills.length, "skills")}</Badge>
-                                <Badge variant="outline">{routingCountLabel(agent.local_tools?.length || 0, "local tools")}</Badge>
                               </>
                             }
                             onClick={() => setSelectedName(agent.name)}
@@ -945,16 +991,19 @@ export function AgentsWorkspace() {
               <ConsolePanel className="skill-detail-panel agent-detail-panel" id="agent-detail-panel">
                 {selectedAgent ? (
                   <div className="agent-detail-scroll stack-gap-sm">
-                    <div className="skill-detail-header">
+                    <div className="skill-detail-header agent-detail-header">
                       <div className="stack-gap-xs grow-block">
-                        <div className="skill-detail-title-row">
-                          <h2 className="panel-title">{selectedAgent.name}</h2>
-                          <Badge variant={Boolean(selectedRuntime) ? "default" : "secondary"}>
-                            {agentStatusLabel(Boolean(selectedRuntime))}
-                          </Badge>
-                        </div>
-                        <p className="entity-meta skill-detail-description">{selectedAgent.description || "No description provided."}</p>
-                        <p className="skill-inline-copy">Active agents are currently visible to the runtime. Draft agents exist in config and can still be edited before they are picked up.</p>
+                        <p className="section-kicker">Agent settings</p>
+                        <Label className="sr-only" htmlFor="agent-title-name">
+                          Agent name
+                        </Label>
+                        <Input
+                          className="agent-title-input"
+                          id="agent-title-name"
+                          onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                          placeholder="Agent name"
+                          value={form.name}
+                        />
                       </div>
 
                       <div className="page-action-row skill-detail-actions">
@@ -977,18 +1026,12 @@ export function AgentsWorkspace() {
                           {busyAction === "save" ? "Saving" : "Save agent"}
                         </Button>
                       </div>
-                      <PublicationControls
-                        disabled={!!busyAction || formDirty}
-                        kind="agents"
-                        metadata={selectedAgent}
-                        onError={(nextError) => setError(nextError || null)}
-                        onMessage={setMessage}
-                        onUpdated={refresh}
-                        resourceName={selectedAgent.internal_name || selectedAgent.name}
-                      />
                     </div>
 
                     <div className="skill-meta-rail" role="list" aria-label="Agent metadata">
+                      <div className="skill-meta-chip" role="listitem" aria-label={`Visibility ${formVisibilityLabel(form.visibility, selectedAgent)}`} title={`Visibility ${formVisibilityLabel(form.visibility, selectedAgent)}`}>
+                        <Badge variant={form.visibility === "public" ? "default" : "outline"}>{formVisibilityLabel(form.visibility, selectedAgent)}</Badge>
+                      </div>
                       <div
                         className="skill-meta-chip"
                         role="listitem"
@@ -1020,100 +1063,152 @@ export function AgentsWorkspace() {
                     {formDirty ? <ConsoleAlert variant="info">You have unsaved edits in this agent definition.</ConsoleAlert> : null}
 
                     <div className="mcp-form-grid">
-                      <FormSection
-                        action={<Badge variant={Boolean(selectedRuntime) ? "default" : "secondary"}>{agentStatusLabel(Boolean(selectedRuntime))}</Badge>}
-                        title="Basics"
-                      >
-                        <div className="form-field">
-                          <Label htmlFor="agent-name">Name</Label>
-                          <Input id="agent-name" onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} value={form.name} />
-                        </div>
-                        <div className="form-field">
-                          <Label htmlFor="agent-description">Description</Label>
-                          <Textarea id="agent-description" onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} rows={4} value={form.description} />
-                        </div>
-                        <div className="form-field">
-                          <Label htmlFor="agent-provider">Provider</Label>
-                          <ShadcnSelect
-                            value={form.providerName}
-                            onValueChange={(value) => setForm((current) => ({ ...current, providerName: value ?? "" }))}
-                          >
-                            <SelectTrigger className="console-select-trigger w-full">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent align="start" alignItemWithTrigger>
-                              <SelectItem value="">{defaultRouteOptionLabel}</SelectItem>
-                              {providers.map((p) => (
-                                <SelectItem key={p.name} value={p.name}>
-                                  {p.name}{(p.default_model || "").trim() ? ` (default: ${p.default_model})` : ""}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </ShadcnSelect>
-                          <small className="entity-meta">Leave this on the default route to inherit the configured provider endpoint, then choose a model below only if this agent should override the default model.</small>
-                        </div>
-                        <div className="form-field">
-                          <Label htmlFor="agent-model">Model</Label>
-                          {availableModels.length > 0 ? (
+                      <FormSection title="Basics">
+                        <div className="agent-basics-grid">
+                          <div className="form-field">
+                            <FieldLabel help="Inactive agents stay editable but are hidden from chat and runtime routing.">
+                              Runtime
+                            </FieldLabel>
+                            <div className="agent-segmented-control" role="group" aria-label="Agent runtime status">
+                              <button
+                                aria-pressed={form.enabled}
+                                className={form.enabled ? "is-active" : undefined}
+                                onClick={() => setForm((current) => ({ ...current, enabled: true }))}
+                                type="button"
+                              >
+                                Active
+                              </button>
+                              <button
+                                aria-pressed={!form.enabled}
+                                className={!form.enabled ? "is-active" : undefined}
+                                onClick={() => setForm((current) => ({ ...current, enabled: false }))}
+                                type="button"
+                              >
+                                Inactive
+                              </button>
+                            </div>
+                          </div>
+                          <div className="form-field agent-form-span-2">
+                            <FieldLabel htmlFor="agent-description">Description</FieldLabel>
+                            <Textarea id="agent-description" onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} rows={3} value={form.description} />
+                          </div>
+                          <div className="form-field">
+                            <FieldLabel htmlFor="agent-provider" help="Use the default route unless this agent needs a provider override.">
+                              Provider
+                            </FieldLabel>
                             <ShadcnSelect
-                              value={form.model}
-                              onValueChange={(value) => setForm((current) => ({ ...current, model: value ?? "" }))}
+                              value={form.providerName}
+                              onValueChange={(value) => setForm((current) => ({ ...current, providerName: value ?? "" }))}
                             >
                               <SelectTrigger className="console-select-trigger w-full">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent align="start" alignItemWithTrigger>
-                                <SelectItem value="">{form.providerName ? "Select a model..." : "Use configured default model"}</SelectItem>
-                                {!availableModels.includes(form.model) && form.model && (
-                                  <SelectItem value={form.model}>{form.model} (current)</SelectItem>
-                                )}
-                                {availableModels.map((m) => (
-                                  <SelectItem key={m} value={m}>{m}</SelectItem>
+                                <SelectItem value="">{defaultRouteOptionLabel}</SelectItem>
+                                {providers.map((p) => (
+                                  <SelectItem key={p.name} value={p.name}>
+                                    {p.name}{(p.default_model || "").trim() ? ` (default: ${p.default_model})` : ""}
+                                  </SelectItem>
                                 ))}
                               </SelectContent>
                             </ShadcnSelect>
-                          ) : (
-                            <Input
-                              id="agent-model"
-                              type="text"
-                              value={form.model}
-                              onChange={(e) => setForm((current) => ({ ...current, model: e.target.value }))}
-                              placeholder="e.g. gpt-4.1"
-                            />
-                          )}
-                          {loadingModels && <small className="entity-meta">Loading models...</small>}
-                          <small className="entity-meta">
-                            {form.providerName
-                              ? "Choose from available models for the selected provider."
-                              : defaultProviderEntry
-                                ? "Choose a model for the default route, or leave this blank to inherit the configured default model."
-                                : "Type a model name, or configure a provider default model first so agents can inherit it from the default route."}
-                          </small>
-                        </div>
-                        <div className="form-field">
-                          <Label htmlFor="agent-reasoning-level">Reasoning level</Label>
-                          <ShadcnSelect
-                            value={form.reasoningLevel}
-                            onValueChange={(value) => setForm((current) => ({ ...current, reasoningLevel: value ?? "none" }))}
-                          >
-                            <SelectTrigger className="console-select-trigger w-full">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent align="start" alignItemWithTrigger>
-                              {REASONING_LEVEL_OPTIONS.map((level) => (
-                                <SelectItem key={level} value={level}>{level}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </ShadcnSelect>
-                          <small className="text-[13px] text-muted-foreground">Controls the model reasoning setting for this agent. Defaults to `none`.</small>
+                          </div>
+                          <div className="form-field">
+                            <FieldLabel
+                              htmlFor="agent-model"
+                              help={
+                                form.providerName
+                                  ? "Choose from available models for the selected provider."
+                                  : defaultProviderEntry
+                                    ? "Leave blank to inherit the configured default model."
+                                    : "Type a model name, or configure a provider default model first."
+                              }
+                            >
+                              Model
+                            </FieldLabel>
+                            {availableModels.length > 0 ? (
+                              <ShadcnSelect
+                                value={form.model}
+                                onValueChange={(value) => setForm((current) => ({ ...current, model: value ?? "" }))}
+                              >
+                                <SelectTrigger className="console-select-trigger w-full">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent align="start" alignItemWithTrigger>
+                                  <SelectItem value="">{form.providerName ? "Select a model..." : "Use configured default model"}</SelectItem>
+                                  {!availableModels.includes(form.model) && form.model && (
+                                    <SelectItem value={form.model}>{form.model} (current)</SelectItem>
+                                  )}
+                                  {availableModels.map((m) => (
+                                    <SelectItem key={m} value={m}>{m}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </ShadcnSelect>
+                            ) : (
+                              <Input
+                                id="agent-model"
+                                type="text"
+                                value={form.model}
+                                onChange={(e) => setForm((current) => ({ ...current, model: e.target.value }))}
+                                placeholder="e.g. gpt-4.1"
+                              />
+                            )}
+                            {loadingModels && <small className="entity-meta">Loading models...</small>}
+                          </div>
+                          <div className="form-field">
+                            <FieldLabel
+                              htmlFor="agent-visibility"
+                              help={
+                                form.visibility === "public"
+                                  ? "Public access may require approval depending on your role."
+                                  : "Private agents are visible only to the owner and admins."
+                              }
+                            >
+                              Visibility
+                            </FieldLabel>
+                            <ShadcnSelect
+                              value={form.visibility}
+                              onValueChange={(value) => setForm((current) => ({ ...current, visibility: value as ResourceVisibility }))}
+                            >
+                              <SelectTrigger className="console-select-trigger w-full">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent align="start" alignItemWithTrigger>
+                                <SelectItem value="private">Private</SelectItem>
+                                <SelectItem value="public">Public</SelectItem>
+                              </SelectContent>
+                            </ShadcnSelect>
+                          </div>
+                          <div className="form-field">
+                            <FieldLabel htmlFor="agent-reasoning-level" help="Controls the model reasoning setting for this agent.">
+                              Reasoning level
+                            </FieldLabel>
+                            <ShadcnSelect
+                              value={form.reasoningLevel}
+                              onValueChange={(value) => setForm((current) => ({ ...current, reasoningLevel: value ?? "none" }))}
+                            >
+                              <SelectTrigger className="console-select-trigger w-full">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent align="start" alignItemWithTrigger>
+                                {REASONING_LEVEL_OPTIONS.map((level) => (
+                                  <SelectItem key={level} value={level}>{level}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </ShadcnSelect>
+                          </div>
                         </div>
                       </FormSection>
-
                     </div>
 
-                    <FormSection title="Limits">
+                    <FormSection className="agent-limits-section" title="Limits">
                       <div className="form-field">
-                        <Label htmlFor="agent-max-iterations">Max iterations</Label>
+                        <FieldLabel
+                          htmlFor="agent-max-iterations"
+                          help={`Maximum number of ReAct loop turns (${MAX_ITERATIONS_MIN}-${MAX_ITERATIONS_MAX}). Leave blank to use the default of ${DEFAULT_AGENT_MAX_ITERATIONS}.`}
+                        >
+                          Max iterations
+                        </FieldLabel>
                         <Input
                           id="agent-max-iterations"
                           type="number"
@@ -1123,12 +1218,14 @@ export function AgentsWorkspace() {
                           value={form.maxIterations || ""}
                           onChange={(event) => setForm((current) => ({ ...current, maxIterations: Number(event.target.value) }))}
                         />
-                        <small className="entity-meta">
-                          Maximum number of ReAct loop turns ({MAX_ITERATIONS_MIN}–{MAX_ITERATIONS_MAX}). Leave blank to use the default of {DEFAULT_AGENT_MAX_ITERATIONS}.
-                        </small>
                       </div>
                       <div className="form-field">
-                        <Label htmlFor="agent-timeout-seconds">Call timeout (seconds)</Label>
+                        <FieldLabel
+                          htmlFor="agent-timeout-seconds"
+                          help={`Maximum seconds to wait for a single model request (${TIMEOUT_SECONDS_MIN}-${TIMEOUT_SECONDS_MAX}). Leave blank to use the default of ${DEFAULT_PROVIDER_TIMEOUT_SECONDS}.`}
+                        >
+                          Call timeout (seconds)
+                        </FieldLabel>
                         <Input
                           id="agent-timeout-seconds"
                           type="number"
@@ -1138,22 +1235,21 @@ export function AgentsWorkspace() {
                           value={form.timeoutSeconds || ""}
                           onChange={(event) => setForm((current) => ({ ...current, timeoutSeconds: Number(event.target.value) }))}
                         />
-                        <small className="entity-meta">
-                          Maximum seconds to wait for a single model request ({TIMEOUT_SECONDS_MIN}–{TIMEOUT_SECONDS_MAX}). Leave blank to use the default of {DEFAULT_PROVIDER_TIMEOUT_SECONDS}.
-                        </small>
                       </div>
                     </FormSection>
 
                     <FormSection title="Prompts">
                       <div className="form-field">
-                        <Label htmlFor="agent-system-prompt">System prompt</Label>
+                        <FieldLabel htmlFor="agent-system-prompt" help="Sets the agent's role, tone, boundaries, and output expectations.">
+                          System prompt
+                        </FieldLabel>
                         <Textarea id="agent-system-prompt" onChange={(event) => setForm((current) => ({ ...current, systemPrompt: event.target.value }))} rows={8} value={form.systemPrompt} />
-                        <small className="entity-meta">Sets the agent&apos;s role, tone, boundaries, and output expectations.</small>
                       </div>
                       <div className="form-field">
-                        <Label htmlFor="agent-reasoning-prompt">Reasoning prompt</Label>
+                        <FieldLabel htmlFor="agent-reasoning-prompt" help="Defines the agent's built-in working method, such as when to reason explicitly or use tools. This is not a skill.">
+                          Reasoning prompt
+                        </FieldLabel>
                         <Textarea id="agent-reasoning-prompt" onChange={(event) => setForm((current) => ({ ...current, reasoningPrompt: event.target.value }))} rows={5} value={form.reasoningPrompt} />
-                        <small className="text-[13px] text-muted-foreground">Defines the agent&apos;s built-in working method, such as when to reason explicitly or use tools. This is not a skill.</small>
                       </div>
                     </FormSection>
 
@@ -1161,6 +1257,7 @@ export function AgentsWorkspace() {
                       <div className="form-grid console-routing-grid">
                         <MultiSelectField
                           helper="Attach reusable skill packages that add domain-specific instructions, files, or executable tools."
+                          helperVariant="tooltip"
                           label="Skills"
                           onChange={(skills) => setForm((current) => ({ ...current, skills }))}
                           options={skillOptions}
@@ -1168,13 +1265,19 @@ export function AgentsWorkspace() {
                         />
                         <MultiSelectField
                           helper="Expose registered built-in tools directly to this agent without wrapping them as a skill."
+                          helperVariant="tooltip"
                           label="Local tools"
                           onChange={(localTools) => setForm((current) => ({ ...current, localTools }))}
                           options={localToolOptions}
                           value={form.localTools}
                         />
                         <div className="space-y-2">
-                          <Label htmlFor="allowed-outbound">Allowed outbound hosts</Label>
+                          <FieldLabel
+                            htmlFor="allowed-outbound"
+                            help="Comma-separated fnmatch host patterns. When non-empty, the agent's sandbox container switches to bridge networking and the skill SDK enforces these patterns. Leave empty for no outbound (network_mode=none)."
+                          >
+                            Allowed outbound hosts
+                          </FieldLabel>
                           <Input
                             id="allowed-outbound"
                             placeholder="api.example.com, *.openai.com"
@@ -1189,11 +1292,6 @@ export function AgentsWorkspace() {
                               }))
                             }
                           />
-                          <p className="text-muted-foreground text-xs">
-                            Comma-separated fnmatch host patterns. When non-empty, the agent's sandbox
-                            container switches to bridge networking and the skill SDK enforces these
-                            patterns. Leave empty for no outbound (network_mode=none).
-                          </p>
                         </div>
                         <MultiSelectField
                           label="Sub-agents"
@@ -1203,6 +1301,7 @@ export function AgentsWorkspace() {
                         />
                         <MultiSelectField
                           helper="Choose which configured MCP servers this agent can access at runtime."
+                          helperVariant="tooltip"
                           label="MCP servers"
                           onChange={handleMcpServerSelection}
                           options={mcpServerOptions}
@@ -1210,6 +1309,7 @@ export function AgentsWorkspace() {
                         />
                         <MultiSelectField
                           helper={mcpToolHelper}
+                          helperVariant="tooltip"
                           isDisabled={form.mcpServers.length === 0}
                           label="MCP tools"
                           noOptionsMessage={mcpToolNoOptionsMessage}

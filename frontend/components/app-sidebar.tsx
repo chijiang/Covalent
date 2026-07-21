@@ -22,6 +22,7 @@ import {
 import { useAuth } from "@/components/auth-provider";
 import { ChatSidebarSessions } from "@/components/chat-sidebar-sessions";
 import { useChatSessions } from "@/components/chat-sessions-provider";
+import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Sidebar,
@@ -337,9 +338,10 @@ export function AppSidebar() {
             <PopoverContent align="start" className="w-64 p-1.5" side="top">
               <div className="border-b border-border/70 px-2 py-2">
                 <p className="truncate text-sm font-medium">{user.display_name || user.email}</p>
-                <p className="truncate text-xs text-muted-foreground">
-                  {user.role === "admin" ? "Administrator" : "Member"} · {user.workspace_name}
-                </p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  <Badge variant="outline">{user.role === "admin" ? "Administrator" : "Member"}</Badge>
+                  <Badge variant="outline">{user.workspace_name}</Badge>
+                </div>
               </div>
               <div className="grid gap-0.5 pt-1">
                 <Link

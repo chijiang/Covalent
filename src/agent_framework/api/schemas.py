@@ -321,6 +321,7 @@ class AgentSummaryResponse(BaseModel):
     system_prompt: str
     reasoning_prompt: str
     reasoning_level: str
+    enabled: bool = True
     skills: list[str]
     local_tools: list[str]
     allowed_outbound: list[str] = Field(default_factory=list)

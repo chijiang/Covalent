@@ -72,14 +72,9 @@ export function AppTopBar() {
           {meta.title}
         </h1>
         {meta.subtitle ? (
-          <>
-            <span aria-hidden="true" className="hidden text-muted-foreground/50 sm:inline">
-              ·
-            </span>
-            <p className="hidden min-w-0 truncate text-[length:var(--text-sm)] text-muted-foreground sm:block">
-              {meta.subtitle}
-            </p>
-          </>
+          <p className="hidden min-w-0 truncate text-[length:var(--text-sm)] text-muted-foreground sm:block">
+            {meta.subtitle}
+          </p>
         ) : null}
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">

@@ -5,6 +5,7 @@ import { Activity, AlertTriangle, Fingerprint, KeyRound, RotateCcw, Search, User
 
 import { ConsoleAlert } from "@/components/console/console-alert";
 import { ConsolePanel } from "@/components/console/console-panel";
+import { ConsoleMetaRail } from "@/components/console/panel-header";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -321,11 +322,10 @@ export function AuditLogsWorkspace() {
                 <div>
                   <span className="audit-log-eyebrow">Selected event</span>
                   <h2>{selectedLog.action}</h2>
-                  <p>
-                    <time dateTime={selectedLog.created_at}>{formatDate(selectedLog.created_at)}</time>
-                    <span aria-hidden>·</span>
-                    {selectedLog.target_type}
-                  </p>
+                  <ConsoleMetaRail
+                    aria-label="Selected event metadata"
+                    items={[<time dateTime={selectedLog.created_at} key="created-at">{formatDate(selectedLog.created_at)}</time>, selectedLog.target_type]}
+                  />
                 </div>
                 <Badge variant={outcomeVariant(selectedLog.outcome)}>{selectedLog.outcome}</Badge>
               </div>

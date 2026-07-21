@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, X } from "lucide-react";
 
+import { FieldHelp } from "@/components/console/field-help";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -26,6 +27,7 @@ type MultiSelectFieldProps = {
   placeholder?: string;
   noOptionsMessage?: string | ((inputValue: string) => string);
   isDisabled?: boolean;
+  helperVariant?: "inline" | "tooltip";
 };
 
 function dedupeStrings(values: string[]): string[] {
@@ -41,6 +43,7 @@ export function MultiSelectField({
   placeholder = "Choose one or more",
   noOptionsMessage = "No matching options",
   isDisabled = false,
+  helperVariant = "inline",
 }: MultiSelectFieldProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -90,7 +93,12 @@ export function MultiSelectField({
 
   return (
     <div className="multi-select-field space-y-1.5">
-      <Label>{label}</Label>
+      <div className="console-field-label-row">
+        <Label>{label}</Label>
+        {helper && helperVariant === "tooltip" ? (
+          <FieldHelp>{helper}</FieldHelp>
+        ) : null}
+      </div>
       <div className="w-full min-w-0" ref={anchorRef}>
         <Popover
           onOpenChange={(nextOpen) => {
@@ -204,7 +212,7 @@ export function MultiSelectField({
           </PopoverContent>
         </Popover>
       </div>
-      {helper ? <p className="text-[13px] leading-relaxed text-muted-foreground">{helper}</p> : null}
+      {helper && helperVariant === "inline" ? <p className="text-[13px] leading-relaxed text-muted-foreground">{helper}</p> : null}
     </div>
   );
 }

@@ -7,7 +7,7 @@ import { ConsoleAlert } from "@/components/console/console-alert";
 import { ConsolePanel } from "@/components/console/console-panel";
 import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
-import { PanelHeader } from "@/components/console/panel-header";
+import { ConsoleMetaRail, PanelHeader } from "@/components/console/panel-header";
 import { PublicationControls } from "@/components/console/publication-controls";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
@@ -681,11 +681,10 @@ export function McpWorkspace() {
         >
               <ConsolePanel className="mcp-inventory-panel">
                 <PanelHeader
-                  badge={<Badge>{inspectedCount} tested</Badge>}
                   meta={
                     loading
                       ? "Loading MCP inventory..."
-                      : `${filteredServers.length} shown · ${draftServers.length} total · ${remoteCount} remote · ${authCount} auth`
+                      : <ConsoleMetaRail aria-label="MCP inventory summary" items={[`${filteredServers.length} shown`, `${draftServers.length} total`, `${inspectedCount} tested`, `${remoteCount} remote`, `${authCount} auth`]} />
                   }
                   title="Registered services"
                 />

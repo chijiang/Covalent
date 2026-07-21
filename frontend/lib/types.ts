@@ -59,8 +59,10 @@ export type AgentConfig = {
   reasoning_prompt?: string;
   reasoning_level?: string;
   provider: ProviderConfig;
+  enabled?: boolean;
   skills: string[];
   local_tools?: string[];
+  allowed_outbound?: string[];
   delegate_agents: string[];
   mcp_servers?: string[];
   mcp_tools?: McpToolReference[];
@@ -80,8 +82,10 @@ export type AgentDetail = {
   system_prompt: string;
   reasoning_prompt: string;
   reasoning_level: string;
+  enabled: boolean;
   skills: string[];
   local_tools: string[];
+  allowed_outbound: string[];
   delegate_agents: string[];
   capabilities: Capability[];
   max_iterations: number;
