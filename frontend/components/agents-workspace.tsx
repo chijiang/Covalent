@@ -214,6 +214,7 @@ function toAgentForm(
     reasoningLevel: agent?.reasoning_level || "none",
     skills: agent?.skills || [],
     localTools: agent?.local_tools || [],
+    allowedOutbound: agent?.allowed_outbound || [],
     delegates: agent?.delegate_agents || [],
     mcpServers: agent?.mcp_servers || [],
     mcpToolKeys: (agent?.mcp_tools || []).map((tool) => encodeMcpToolKey(tool.server_name, tool.tool_name)),
@@ -748,6 +749,7 @@ export function AgentsWorkspace() {
       provider: nextProvider,
       skills: dedupeStrings(form.skills),
       local_tools: dedupeStrings(form.localTools),
+      allowed_outbound: dedupeStrings(form.allowedOutbound),
       delegate_agents: dedupeStrings(form.delegates),
       mcp_servers: dedupeStrings(form.mcpServers),
       mcp_tools: dedupeMcpToolReferences(form.mcpToolKeys),
@@ -1171,6 +1173,28 @@ export function AgentsWorkspace() {
                           options={localToolOptions}
                           value={form.localTools}
                         />
+                        <div className="space-y-2">
+                          <Label htmlFor="allowed-outbound">Allowed outbound hosts</Label>
+                          <Input
+                            id="allowed-outbound"
+                            placeholder="api.example.com, *.openai.com"
+                            value={form.allowedOutbound.join(", ")}
+                            onChange={(event) =>
+                              setForm((current) => ({
+                                ...current,
+                                allowedOutbound: event.target.value
+                                  .split(",")
+                                  .map((s) => s.trim())
+                                  .filter(Boolean),
+                              }))
+                            }
+                          />
+                          <p className="text-muted-foreground text-xs">
+                            Comma-separated fnmatch host patterns. When non-empty, the agent's sandbox
+                            container switches to bridge networking and the skill SDK enforces these
+                            patterns. Leave empty for no outbound (network_mode=none).
+                          </p>
+                        </div>
                         <MultiSelectField
                           label="Sub-agents"
                           onChange={(delegates) => setForm((current) => ({ ...current, delegates }))}
