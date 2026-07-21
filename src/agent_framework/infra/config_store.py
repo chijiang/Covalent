@@ -243,6 +243,7 @@ class PersistedAgentConfig(BaseModel):
     publication_requested_at: datetime | None = None
     publication_reviewed_at: datetime | None = None
     publication_reviewed_by_user_id: str | None = None
+    enabled: bool = True
 
 
 class PersistedSkillSourceConfig(BaseModel):
@@ -631,6 +632,7 @@ class ConfigStore:
                     capabilities={Capability(value) for value in capability_map.get(row.name, [])},
                     max_iterations=row.max_iterations,
                     metadata=row.metadata_json or {},
+                    enabled=row.enabled,
                     **_resource_metadata_from_row(row),
                 ).model_dump(mode="json")
             )
@@ -714,6 +716,7 @@ class ConfigStore:
                     existing_visibility = row.visibility
                     existing_status = row.publication_status
                     row.position = position
+                    row.enabled = agent.enabled
                     row.description = agent.description
                     row.system_prompt = agent.system_prompt
                     row.reasoning_prompt = agent.reasoning_prompt

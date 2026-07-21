@@ -12,10 +12,13 @@ import { ConsoleAlert } from "@/components/console/console-alert";
 import { ConsolePanel } from "@/components/console/console-panel";
 import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
-import { PanelHeader } from "@/components/console/panel-header";
+import { ConsoleMetaRail, PanelHeader } from "@/components/console/panel-header";
 import { PublicationControls } from "@/components/console/publication-controls";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
+import { SkillFileExplorer } from "@/components/skills/skill-file-explorer";
+import { SkillFilePreview } from "@/components/skills/skill-file-preview";
+import { buildSkillPreviewTree } from "@/lib/skill-preview-tree";
 import {
   disableSkill,
   enableSkill,
@@ -28,119 +31,15 @@ import {
   uninstallSkill,
   uploadSkill,
 } from "@/lib/client-api";
-import type { SkillPreviewResponse, SkillSummary } from "@/lib/types";
+import type { SkillPreviewFile, SkillPreviewResponse, SkillSummary } from "@/lib/types";
 
 type SkillModalMode = "new" | null;
-type PreviewFile = SkillPreviewResponse["files"][number];
-const EMPTY_PREVIEW_FILES: PreviewFile[] = [];
+const EMPTY_PREVIEW_FILES: SkillPreviewFile[] = [];
 const SKILL_LIST_PANEL_STORAGE_KEY = "agent-framework.service-console.skills-list-width";
 const DEFAULT_SKILL_LIST_PANEL_WIDTH = 324;
 const MIN_SKILL_LIST_PANEL_WIDTH = 272;
 const MAX_SKILL_LIST_PANEL_WIDTH = 500;
 const MIN_SKILL_DETAIL_PANEL_WIDTH = 560;
-
-type PreviewTreeNode = {
-  name: string;
-  path: string;
-  kind: "directory" | "file";
-  file?: PreviewFile;
-  children: PreviewTreeNode[];
-};
-
-function buildPreviewTree(files: PreviewFile[]): PreviewTreeNode[] {
-  type MutablePreviewTreeNode = {
-    name: string;
-    path: string;
-    kind: "directory" | "file";
-    file?: PreviewFile;
-    children: Map<string, MutablePreviewTreeNode>;
-  };
-
-  const root = new Map<string, MutablePreviewTreeNode>();
-
-  for (const file of [...files].sort((left, right) => left.path.localeCompare(right.path))) {
-    const segments = file.path.split("/").filter(Boolean);
-    let current = root;
-    let currentPath = "";
-
-    for (const [index, segment] of segments.entries()) {
-      const isLeaf = index === segments.length - 1;
-      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-      const existing = current.get(segment);
-
-      if (existing) {
-        if (isLeaf) {
-          existing.kind = "file";
-          existing.file = file;
-        }
-        current = existing.children;
-        continue;
-      }
-
-      const nextNode: MutablePreviewTreeNode = {
-        name: segment,
-        path: currentPath,
-        kind: isLeaf ? "file" : "directory",
-        file: isLeaf ? file : undefined,
-        children: new Map<string, MutablePreviewTreeNode>(),
-      };
-      current.set(segment, nextNode);
-      current = nextNode.children;
-    }
-  }
-
-  function finalize(nodes: Map<string, MutablePreviewTreeNode>): PreviewTreeNode[] {
-    return [...nodes.values()]
-      .sort((left, right) => {
-        if (left.kind !== right.kind) {
-          return left.kind === "directory" ? -1 : 1;
-        }
-        return left.name.localeCompare(right.name);
-      })
-      .map((node) => ({
-        name: node.name,
-        path: node.path,
-        kind: node.kind,
-        file: node.file,
-        children: finalize(node.children),
-      }));
-  }
-
-  return finalize(root);
-}
-
-function collectPreviewDirectories(nodes: PreviewTreeNode[]): string[] {
-  const paths: string[] = [];
-
-  function visit(entries: PreviewTreeNode[]) {
-    for (const node of entries) {
-      if (node.kind !== "directory") {
-        continue;
-      }
-      paths.push(node.path);
-      visit(node.children);
-    }
-  }
-
-  visit(nodes);
-  return paths;
-}
-
-function parentPreviewDirectories(path: string): string[] {
-  const segments = path.split("/").filter(Boolean);
-  const parents: string[] = [];
-  for (let index = 1; index < segments.length; index += 1) {
-    parents.push(segments.slice(0, index).join("/"));
-  }
-  return parents;
-}
-
-function equalStringArrays(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-  return left.every((value, index) => value === right[index]);
-}
 
 function isGitSkill(skill: SkillSummary): boolean {
   return skill.source_type === "git" || skill.category === "github_synced";
@@ -180,7 +79,6 @@ export function SkillsWorkspace() {
   const [gitUrl, setGitUrl] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [selectedPreviewPath, setSelectedPreviewPath] = useState("");
-  const [expandedPreviewDirs, setExpandedPreviewDirs] = useState<string[]>([]);
 
   async function refresh() {
     setLoading(true);
@@ -275,13 +173,7 @@ export function SkillsWorkspace() {
   }, [selectedSkillName]);
 
   const previewFiles = preview?.files ?? EMPTY_PREVIEW_FILES;
-  const previewTree = useMemo(() => buildPreviewTree(previewFiles), [previewFiles]);
-  const expandedPreviewDirSet = useMemo(() => new Set(expandedPreviewDirs), [expandedPreviewDirs]);
-
-  useEffect(() => {
-    const nextDirectories = collectPreviewDirectories(previewTree);
-    setExpandedPreviewDirs((current) => (equalStringArrays(current, nextDirectories) ? current : nextDirectories));
-  }, [previewTree]);
+  const previewTree = useMemo(() => buildSkillPreviewTree(previewFiles), [previewFiles]);
 
   useEffect(() => {
     if (!previewFiles.length) {
@@ -298,72 +190,9 @@ export function SkillsWorkspace() {
     [previewFiles, selectedPreviewPath],
   );
 
-  useEffect(() => {
-    if (!selectedPreviewPath) {
-      return;
-    }
-    const parents = parentPreviewDirectories(selectedPreviewPath);
-    if (parents.length === 0) {
-      return;
-    }
-    setExpandedPreviewDirs((current) => {
-      const next = new Set(current);
-      let changed = false;
-      for (const path of parents) {
-        if (!next.has(path)) {
-          next.add(path);
-          changed = true;
-        }
-      }
-      return changed ? Array.from(next) : current;
-    });
-  }, [selectedPreviewPath]);
-
   const enabledCount = useMemo(() => skills.filter((skill) => skill.enabled).length, [skills]);
   const gitCount = useMemo(() => skills.filter((skill) => isGitSkill(skill)).length, [skills]);
   const canDeleteSelectedSkill = selectedSkill?.category !== "built_in";
-
-  function togglePreviewDirectory(path: string) {
-    setExpandedPreviewDirs((current) => (current.includes(path) ? current.filter((value) => value !== path) : [...current, path]));
-  }
-
-  function renderPreviewTree(nodes: PreviewTreeNode[], depth = 0) {
-    return nodes.map((node) => {
-      const paddingInlineStart = `${10 + depth * 14}px`;
-      if (node.kind === "directory") {
-        const isExpanded = expandedPreviewDirSet.has(node.path);
-        return (
-          <div className="skill-tree-group" key={node.path}>
-            <button
-              aria-expanded={isExpanded}
-              className="skill-tree-toggle"
-              onClick={() => togglePreviewDirectory(node.path)}
-              style={{ paddingInlineStart }}
-              title={node.path}
-              type="button"
-            >
-              <span aria-hidden="true" className="skill-tree-prefix">{isExpanded ? "v" : ">"}</span>
-              <span className="skill-tree-label">{node.name}/</span>
-            </button>
-            {isExpanded ? renderPreviewTree(node.children, depth + 1) : null}
-          </div>
-        );
-      }
-
-      return (
-        <button
-          className={node.path === selectedPreviewFile?.path ? "skill-file-item is-active" : "skill-file-item"}
-          key={node.path}
-          onClick={() => setSelectedPreviewPath(node.path)}
-          style={{ paddingInlineStart }}
-          title={node.file?.path || node.path}
-          type="button"
-        >
-          <span className="skill-tree-label">{node.name}</span>
-        </button>
-      );
-    });
-  }
 
   async function runAction(action: string, runner: () => Promise<void>) {
     setBusyAction(action);
@@ -545,11 +374,10 @@ export function SkillsWorkspace() {
         >
               <ConsolePanel className="skill-inventory-panel">
                 <PanelHeader
-                  badge={<Badge>{enabledCount} active</Badge>}
                   meta={
                     loading
                       ? "Loading skill inventory..."
-                      : `${filteredSkills.length} shown · ${skills.length} total · ${enabledCount} enabled · ${gitCount} git`
+                      : <ConsoleMetaRail aria-label="Skill inventory summary" items={[`${filteredSkills.length} shown`, `${skills.length} total`, `${enabledCount} enabled`, `${gitCount} git`]} />
                   }
                   title="Installed skills"
                 />
@@ -628,7 +456,7 @@ export function SkillsWorkspace() {
                             {skillStatusLabel(selectedSkill.enabled)}
                           </Badge>
                         </div>
-                        <p className="entity-meta skill-detail-description">{selectedSkill.description || "No description provided."}</p>
+                        {/* <p className="entity-meta skill-detail-description">{selectedSkill.description || "No description provided."}</p> */}
                         <p className="skill-inline-copy">
                           {selectedSkill.enabled
                             ? "Visible to agents and included in prompt and tool resolution."
@@ -718,17 +546,16 @@ export function SkillsWorkspace() {
 
                       {!previewLoading && previewFiles.length > 0 ? (
                         <div className="skill-source-workbench">
-                          <aside className="skill-file-list">
-                            {renderPreviewTree(previewTree)}
-                          </aside>
-
-                          <section className="skill-file-preview">
-                            <div className="skill-file-preview-head">
-                              <strong>{selectedPreviewFile?.path || "Preview"}</strong>
-                              <span>{selectedPreviewFile?.language || "text"}</span>
-                            </div>
-                            <pre className="code-preview skill-source-preview">{selectedPreviewFile?.content ?? ""}</pre>
-                          </section>
+                          <SkillFileExplorer
+                            fileCount={previewFiles.length}
+                            onSelectPath={setSelectedPreviewPath}
+                            selectedPath={selectedPreviewFile?.path ?? null}
+                            tree={previewTree}
+                          />
+                          <SkillFilePreview
+                            file={selectedPreviewFile}
+                            key={selectedPreviewFile?.path ?? "none"}
+                          />
                         </div>
                       ) : null}
                     </section>

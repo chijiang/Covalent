@@ -7,7 +7,7 @@ import { ConsoleAlert } from "@/components/console/console-alert";
 import { ConsolePanel } from "@/components/console/console-panel";
 import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
-import { PanelHeader } from "@/components/console/panel-header";
+import { ConsoleMetaRail, PanelHeader } from "@/components/console/panel-header";
 import { PublicationControls } from "@/components/console/publication-controls";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
@@ -354,11 +354,10 @@ export function ProviderWorkspace() {
         >
                 <ConsolePanel className="skill-inventory-panel">
                   <PanelHeader
-                    badge={<Badge>{readyCount} ready</Badge>}
                     meta={
                       loading
                         ? "Loading provider inventory..."
-                        : `${filteredProviders.length} shown · ${providers.length} total · ${defaultCount} default · ${keyedCount} with key`
+                        : <ConsoleMetaRail aria-label="Provider inventory summary" items={[`${filteredProviders.length} shown`, `${providers.length} total`, `${readyCount} ready`, `${defaultCount} default`, `${keyedCount} with key`]} />
                     }
                     title="Configured providers"
                   />

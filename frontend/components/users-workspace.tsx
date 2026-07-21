@@ -6,7 +6,7 @@ import { useAuth } from "@/components/auth-provider";
 import { ConsoleAlert } from "@/components/console/console-alert";
 import { ConsolePanel } from "@/components/console/console-panel";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
-import { PanelHeader } from "@/components/console/panel-header";
+import { ConsoleMetaRail, PanelHeader } from "@/components/console/panel-header";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,11 +25,6 @@ function formatDate(value?: string | null): string {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
-}
-
-function userDescription(user: ConsoleUserSummary): string {
-  const workspace = user.workspace_name || "No workspace";
-  return `${user.email} · ${workspace} · ${formatDate(user.created_at)}`;
 }
 
 export function UsersWorkspace() {
@@ -116,8 +111,7 @@ export function UsersWorkspace() {
       <section className="console-split-layout min-h-0 flex-1">
         <ConsolePanel className="skill-inventory-panel">
           <PanelHeader
-            badge={<Badge>{users.filter((user) => user.status === "active").length} active</Badge>}
-            meta={loading ? "Loading users..." : `${filteredUsers.length} shown · ${users.length} total`}
+            meta={loading ? "Loading users..." : <ConsoleMetaRail aria-label="User inventory summary" items={[`${filteredUsers.length} shown`, `${users.length} total`, `${users.filter((user) => user.status === "active").length} active`]} />}
             title="Users"
           />
 
@@ -135,12 +129,14 @@ export function UsersWorkspace() {
                 ? filteredUsers.map((user) => (
                     <InventoryListItem
                       active={user.user_id === selectedId}
-                      description={userDescription(user)}
+                      description={user.email}
                       key={user.user_id}
                       meta={
                         <>
                           <Badge variant={user.status === "active" ? "outline" : "destructive"}>{user.status}</Badge>
                           <Badge>{user.role}</Badge>
+                          <Badge variant="outline">{user.workspace_name || "No workspace"}</Badge>
+                          <Badge variant="outline">Created {formatDate(user.created_at)}</Badge>
                         </>
                       }
                       onClick={() => setSelectedId(user.user_id)}
@@ -236,7 +232,10 @@ export function UsersWorkspace() {
                         </Select>
                       </div>
                     </div>
-                    <p className="entity-meta">Created {formatDate(selectedUser.created_at)} · Updated {formatDate(selectedUser.updated_at)}</p>
+                    <div className="console-panel-meta-rail" aria-label="User timestamps">
+                      <Badge variant="outline">Created {formatDate(selectedUser.created_at)}</Badge>
+                      <Badge variant="outline">Updated {formatDate(selectedUser.updated_at)}</Badge>
+                    </div>
                   </div>
                 </div>
               ) : (

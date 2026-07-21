@@ -1097,7 +1097,7 @@ def create_app() -> FastAPI:
         return [
             {"name": str(agent.get("name") or ""), "description": str(agent.get("description") or "")}
             for agent in agents
-            if str(agent.get("name") or "")
+            if str(agent.get("name") or "") and agent.get("enabled", True) is not False
         ]
 
     @app.get("/local-tools")
@@ -1860,6 +1860,7 @@ def to_agent_summary(agent: AgentSpec) -> AgentSummaryResponse:
         system_prompt=agent.system_prompt,
         reasoning_prompt=agent.reasoning_prompt,
         reasoning_level=agent.reasoning_level,
+        enabled=True,
         skills=agent.skills,
         local_tools=agent.local_tools,
         allowed_outbound=getattr(agent, "allowed_outbound", []) or [],
@@ -4957,6 +4958,8 @@ def _build_agent_specs(
     agent_internal_by_public = _runtime_internal_name_map(payload)
     agents: list[AgentSpec] = []
     for item in payload:
+        if item.get("enabled", True) is False:
+            continue
         runtime_item = _runtime_agent_payload_item(
             item,
             mcp_internal_by_public=mcp_internal_by_public,

@@ -70,6 +70,7 @@ class AgentRow(TimestampMixin, Base):
     publication_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     publication_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     publication_reviewed_by_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)

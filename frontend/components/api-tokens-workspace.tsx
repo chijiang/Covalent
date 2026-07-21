@@ -19,6 +19,7 @@ import { ConsoleAlert } from "@/components/console/console-alert";
 import { ConsolePanel } from "@/components/console/console-panel";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
 import { MultiSelectField, type MultiSelectOption } from "@/components/console/multi-select-field";
+import { ConsoleMetaRail } from "@/components/console/panel-header";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -223,11 +224,11 @@ function formFromToken(token: ApiTokenSummary): TokenFormState {
   };
 }
 
-function usageDescription(usage?: ApiTokenUsageByToken): string {
+function usageMetaLabels(usage?: ApiTokenUsageByToken): string[] {
   if (!usage || usage.requests === 0) {
-    return "No requests in this period";
+    return ["No requests"];
   }
-  return `${usage.requests.toLocaleString()} requests · ${compactNumber(usage.total_tokens)} tokens`;
+  return [`${usage.requests.toLocaleString()} requests`, `${compactNumber(usage.total_tokens)} tokens`];
 }
 
 export function ApiTokensWorkspace({ embedded = false }: { embedded?: boolean }) {
@@ -577,7 +578,7 @@ export function ApiTokensWorkspace({ embedded = false }: { embedded?: boolean })
           <div className="api-token-section-heading api-token-inventory-heading">
             <div>
               <h2 className="panel-title">API tokens</h2>
-              <p className="entity-meta">{filteredTokens.length} shown · {tokens.length} total</p>
+              <ConsoleMetaRail aria-label="API token inventory summary" items={[`${filteredTokens.length} shown`, `${tokens.length} total`]} />
             </div>
             <Button onClick={handleNewToken} size="sm" type="button">
               <Plus />
@@ -619,11 +620,14 @@ export function ApiTokensWorkspace({ embedded = false }: { embedded?: boolean })
                     return (
                       <InventoryListItem
                         active={token.id === selectedId && editorMode === "edit"}
-                        description={`${usageDescription(tokenUsage)} · Last used ${formatDate(token.last_used_at)}`}
                         key={token.id}
                         meta={
                           <>
-                            <Badge variant="outline">cvt_{token.token_prefix}</Badge>
+                            <Badge variant="outline">{`cvt_${token.token_prefix}`}</Badge>
+                            {usageMetaLabels(tokenUsage).map((label) => (
+                              <Badge key={label} variant="outline">{label}</Badge>
+                            ))}
+                            <Badge variant="outline">Last used {formatDate(token.last_used_at)}</Badge>
                             <Badge variant="outline">{agentPolicyLabel(token)}</Badge>
                             {tokenLimitLabels(token).slice(0, 1).map((label) => (
                               <Badge key={label} variant="outline">{label}</Badge>
@@ -656,13 +660,13 @@ export function ApiTokensWorkspace({ embedded = false }: { embedded?: boolean })
                   </Badge>
                 ) : null}
               </div>
-              <p className="entity-meta">
-                {editorMode === "create"
-                  ? "Configure access policy and quotas before generating the secret."
-                  : selectedToken
-                    ? `cvt_${selectedToken.token_prefix} · Created ${formatDate(selectedToken.created_at)}`
-                    : "Select a token or create a new one."}
-              </p>
+              {editorMode === "create" ? (
+                <p className="entity-meta">Configure access policy and quotas before generating the secret.</p>
+              ) : selectedToken ? (
+                <ConsoleMetaRail aria-label="Selected token summary" items={[`cvt_${selectedToken.token_prefix}`, `Created ${formatDate(selectedToken.created_at)}`]} />
+              ) : (
+                <p className="entity-meta">Select a token or create a new one.</p>
+              )}
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button onClick={handleNewToken} type="button" variant="outline">
@@ -837,9 +841,11 @@ export function ApiTokensWorkspace({ embedded = false }: { embedded?: boolean })
                                 <p className="text-sm font-semibold text-foreground">{run.agent_name}</p>
                                 <Badge variant={run.status === "completed" ? "default" : "outline"}>{run.status}</Badge>
                               </div>
-                              <p className="entity-meta">
-                                {formatDate(run.created_at)} · {run.memory_mode} · {run.model ?? run.provider ?? "provider n/a"}
-                              </p>
+                              <ConsoleMetaRail
+                                aria-label={`${run.agent_name} run metadata`}
+                                className="api-token-run-meta"
+                                items={[formatDate(run.created_at), run.memory_mode, run.model ?? run.provider ?? "provider n/a"]}
+                              />
                             </div>
                             <div className="api-token-run-metrics">
                               <span><Clock3 />{formatLatency(run.latency_ms)}</span>
