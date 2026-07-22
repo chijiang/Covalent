@@ -24,10 +24,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import struct
 import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -49,6 +52,9 @@ _HOST_PYTHON = sys.executable
 _HOST_ENV_DROP = {"PATH", "PYTHONPATH", "PYTHONHOME"}
 _SANDBOX_LABEL = "covalent.sandbox"
 _SESSION_LABEL = "covalent.session"
+_DOCKER_TIMESTAMP_RE = re.compile(
+    r"^(?P<base>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(?P<fraction>\d+))?(?P<tz>Z|[+-]\d{2}:\d{2})?$"
+)
 
 # Docker stream multiplexing (tty=False): 8-byte header [type, 0, 0, 0, len_be32].
 _FRAME = struct.Struct(">BxxxI")
@@ -59,6 +65,30 @@ _STREAM_STDERR = 2
 def _safe_name(value: str) -> str:
     safe = "".join(c if (c.isalnum() or c in "._-") else "-" for c in value).strip(".-")
     return safe or "session"
+
+
+def _docker_timestamp_to_unix(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw or raw.startswith("0001-01-01"):
+        return None
+    match = _DOCKER_TIMESTAMP_RE.match(raw)
+    if match is None:
+        return None
+    fraction = match.group("fraction")
+    tz = match.group("tz") or "Z"
+    normalized = match.group("base")
+    if fraction:
+        normalized += "." + fraction[:6].ljust(6, "0")
+    normalized += "+00:00" if tz == "Z" else tz
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
 
 
 def _recv_exact_blocking(sock, n: int) -> bytes | None:
@@ -123,26 +153,44 @@ class DockerBackend(ExecutionBackend):
         self._nano_cpus = int(settings.execution_backend_docker_cpus * 1e9)
         self._network_mode = settings.execution_backend_docker_network
         self._tmpfs_size = settings.execution_backend_docker_tmpfs_size
+        self._max_sessions = settings.execution_backend_docker_max_sessions
+        self._idle_timeout = settings.execution_backend_docker_idle_timeout_seconds
         self._client = docker_client  # lazily created on first use
         self._sessions: dict[str, object] = {}
         self._metrics = SandboxMetrics()
         # Per-session metadata: session_id → {agent_name, outbound, started_at}
         self._session_meta: dict[str, dict[str, object]] = {}
+        self._session_semaphore: asyncio.Semaphore | None = (
+            asyncio.Semaphore(self._max_sessions) if self._max_sessions > 0 else None
+        )
 
     # -- container lifecycle -------------------------------------------------
 
     def record_session(self, session_id: str, agent_name: str, allowed_outbound: list[str]) -> None:
         """Record per-session metadata before the container is created. Drives
         network mode (bridge if outbound) and the admin monitoring snapshot."""
-        import time
+        now = time.time()
         self._session_meta[session_id] = {
             "agent_name": agent_name,
             "outbound": list(allowed_outbound) if allowed_outbound else [],
-            "started_at": time.time(),
+            "started_at": now,
+            "last_activity": now,
         }
 
     def agent_outbound(self, session_id: str) -> list[str]:
         return self._session_meta.get(session_id, {}).get("outbound", [])
+
+    def is_session_tracked(self, session_id: str) -> bool:
+        """Whether this backend is actively managing the session's container."""
+        return session_id in self._sessions
+
+    def session_idle_seconds(self, session_id: str) -> float | None:
+        """Seconds since last activity for a tracked session, or None."""
+        meta = self._session_meta.get(session_id)
+        if meta is None:
+            return None
+        return time.time() - float(meta.get("last_activity", meta.get("started_at", time.time())))
+
     def _api(self):
         if self._client is None:
             self._client = docker.from_env()
@@ -164,21 +212,16 @@ class DockerBackend(ExecutionBackend):
     async def sandbox_snapshot(self) -> dict[str, object]:
         """Admin monitoring snapshot: per-session live status + config + metrics."""
         sessions: list[dict[str, object]] = []
+        now = time.time()
         for sid, container in list(self._sessions.items()):
             meta = self._session_meta.get(sid, {})
-            outbound = meta.get("outbound", [])
+            outbound = list(meta.get("outbound", []) or [])
             alive = await self.is_alive(sid)
-            sessions.append({
-                "session_id": sid,
-                "agent_name": meta.get("agent_name", ""),
-                "started_at": meta.get("started_at"),
-                "status": "running" if alive else "stopped",
-                "network_mode": "bridge" if outbound else self._network_mode,
-                "allowed_outbound": outbound,
-            })
+            sessions.append(await asyncio.to_thread(self._session_snapshot, sid, container, meta, outbound, alive, now))
         return {
             "backend": self.name,
             "supported": True,
+            "snapshot_at": now,
             "live": len(self._sessions),
             "metrics": self._metrics.to_dict(),
             "config": {
@@ -189,21 +232,161 @@ class DockerBackend(ExecutionBackend):
                 "network": self._network_mode,
                 "tmpfs_size": self._tmpfs_size,
                 "reaper_interval_seconds": self._settings.execution_backend_docker_reaper_interval_seconds,
+                "max_sessions": self._max_sessions,
+                "idle_timeout_seconds": self._idle_timeout,
                 "shell_tool_enabled": getattr(self._settings, "execution_backend_shell_tool_enabled", False),
             },
             "sessions": sessions,
         }
 
+    def _session_snapshot(
+        self,
+        session_id: str,
+        container,
+        meta: dict[str, object],
+        outbound: list[str],
+        alive: bool,
+        now: float,
+    ) -> dict[str, object]:
+        attrs = self._container_attrs(container)
+        state = attrs.get("State") if isinstance(attrs.get("State"), dict) else {}
+        config = attrs.get("Config") if isinstance(attrs.get("Config"), dict) else {}
+        host_config = attrs.get("HostConfig") if isinstance(attrs.get("HostConfig"), dict) else {}
+        raw_started_at = state.get("StartedAt") if isinstance(state, dict) else None
+        raw_created_at = attrs.get("Created")
+        started_at = _docker_timestamp_to_unix(raw_started_at) or self._float_or_none(meta.get("started_at"))
+        created_at = _docker_timestamp_to_unix(raw_created_at)
+        last_activity_at = self._float_or_none(meta.get("last_activity"))
+        network_mode = str(host_config.get("NetworkMode") or ("bridge" if outbound else self._network_mode))
+        network_policy = "allowlist" if outbound else "disabled" if network_mode == "none" else "custom"
+        return {
+            "session_id": session_id,
+            "agent_name": str(meta.get("agent_name") or ""),
+            "container_id": str(getattr(container, "id", "") or ""),
+            "container_name": str(getattr(container, "name", "") or ""),
+            "container_created_at": created_at,
+            "image_id": str(attrs.get("Image") or ""),
+            "image_name": str(config.get("Image") or self._image),
+            "started_at": started_at or created_at,
+            "last_activity_at": last_activity_at,
+            "idle_seconds": max(0.0, now - last_activity_at) if last_activity_at else None,
+            "status": "running" if alive else str(getattr(container, "status", "") or "stopped"),
+            "exit_code": state.get("ExitCode") if isinstance(state, dict) else None,
+            "error": state.get("Error") if isinstance(state, dict) else None,
+            "network_mode": network_mode,
+            "network_policy": network_policy,
+            "allowed_outbound": outbound,
+            "resources": self._container_resource_snapshot(container),
+        }
+
+    def _container_attrs(self, container) -> dict[str, object]:
+        attrs = getattr(container, "attrs", None)
+        return attrs if isinstance(attrs, dict) else {}
+
+    def _container_resource_snapshot(self, container) -> dict[str, object]:
+        resources: dict[str, object] = {
+            "cpu_limit": self._nano_cpus / 1e9,
+            "memory_limit_config": self._mem_limit,
+            "pids_limit": self._pids_limit,
+            "tmpfs_size": self._tmpfs_size,
+        }
+        stats_fn = getattr(container, "stats", None)
+        if not callable(stats_fn):
+            return resources
+        try:
+            stats = stats_fn(stream=False)
+        except Exception as exc:
+            resources["usage_error"] = str(exc)
+            return resources
+        if not isinstance(stats, dict):
+            return resources
+
+        memory_stats = stats.get("memory_stats") if isinstance(stats.get("memory_stats"), dict) else {}
+        memory_usage = self._int_or_none(memory_stats.get("usage"))
+        memory_limit = self._int_or_none(memory_stats.get("limit"))
+        if memory_usage is not None:
+            resources["memory_usage_bytes"] = memory_usage
+        if memory_limit is not None:
+            resources["memory_limit_bytes"] = memory_limit
+        if memory_usage is not None and memory_limit:
+            resources["memory_percent"] = (memory_usage / memory_limit) * 100
+
+        pids_stats = stats.get("pids_stats") if isinstance(stats.get("pids_stats"), dict) else {}
+        pids_current = self._int_or_none(pids_stats.get("current"))
+        if pids_current is not None:
+            resources["pids_current"] = pids_current
+
+        cpu_percent = self._cpu_percent(stats)
+        if cpu_percent is not None:
+            resources["cpu_percent"] = cpu_percent
+        return resources
+
+    @staticmethod
+    def _cpu_percent(stats: dict[str, object]) -> float | None:
+        cpu_stats = stats.get("cpu_stats") if isinstance(stats.get("cpu_stats"), dict) else {}
+        precpu_stats = stats.get("precpu_stats") if isinstance(stats.get("precpu_stats"), dict) else {}
+        cpu_usage = cpu_stats.get("cpu_usage") if isinstance(cpu_stats.get("cpu_usage"), dict) else {}
+        precpu_usage = precpu_stats.get("cpu_usage") if isinstance(precpu_stats.get("cpu_usage"), dict) else {}
+        total_usage = DockerBackend._int_or_none(cpu_usage.get("total_usage"))
+        prev_total_usage = DockerBackend._int_or_none(precpu_usage.get("total_usage"))
+        system_usage = DockerBackend._int_or_none(cpu_stats.get("system_cpu_usage"))
+        prev_system_usage = DockerBackend._int_or_none(precpu_stats.get("system_cpu_usage"))
+        if None in {total_usage, prev_total_usage, system_usage, prev_system_usage}:
+            return None
+        cpu_delta = total_usage - prev_total_usage
+        system_delta = system_usage - prev_system_usage
+        if cpu_delta <= 0 or system_delta <= 0:
+            return None
+        online_cpus = DockerBackend._int_or_none(cpu_stats.get("online_cpus"))
+        if online_cpus is None:
+            percpu = cpu_usage.get("percpu_usage")
+            online_cpus = len(percpu) if isinstance(percpu, list) and percpu else 1
+        return (cpu_delta / system_delta) * online_cpus * 100
+
+    @staticmethod
+    def _int_or_none(value: object) -> int | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _float_or_none(value: object) -> float | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     async def ensure(self, session_id: str):
         existing = self._sessions.get(session_id)
         if existing is not None:
+            self._touch_activity(session_id)
             return existing
-        container = await asyncio.to_thread(
-            self._translate_unavailable, self._create_session_container, session_id
-        )
+        # New session — queue if at capacity (asyncio.Semaphore blocks until a slot frees).
+        if self._session_semaphore is not None:
+            await self._session_semaphore.acquire()
+        try:
+            container = await asyncio.to_thread(
+                self._translate_unavailable, self._create_session_container, session_id
+            )
+        except BaseException:
+            if self._session_semaphore is not None:
+                self._session_semaphore.release()
+            raise
         self._sessions[session_id] = container
         self._metrics.containers_started += 1
+        self._touch_activity(session_id)
         return container
+
+    def _touch_activity(self, session_id: str) -> None:
+        """Update last_activity timestamp for a tracked session."""
+        meta = self._session_meta.get(session_id)
+        if meta is not None:
+            meta["last_activity"] = time.time()
 
     def workspace(self, session_id: str | None) -> HostPathWorkspace:
         # The session workspace is bind-mounted into the container at this host
@@ -271,9 +454,12 @@ class DockerBackend(ExecutionBackend):
         """Stop+remove the session's container. Robust to untracked containers
         (e.g. created by a previous process) by falling back to a name lookup."""
         container = self._sessions.pop(session_id, None)
+        self._session_meta.pop(session_id, None)
         if container is not None:
             await asyncio.to_thread(self._remove_container, container)
             self._metrics.containers_stopped += 1
+            if self._session_semaphore is not None:
+                self._session_semaphore.release()
             return
         await asyncio.to_thread(self._remove_container_by_name, session_id)
 

@@ -78,6 +78,11 @@ class AppSettings(BaseSettings):
     execution_backend_docker_network: Literal["none", "bridge"] = "none"
     execution_backend_docker_tmpfs_size: str = "128m"
     execution_backend_docker_reaper_interval_seconds: float = 60.0
+    # 0 = unlimited; >0 = queue new sessions when at capacity (asyncio.Semaphore).
+    execution_backend_docker_max_sessions: int = 0
+    # Idle timeout: stop a sandbox container if no skill/script/shell activity
+    # for this many seconds. 0 = never auto-stop (session DELETE / reaper only).
+    execution_backend_docker_idle_timeout_seconds: float = 1800.0
     # Shell tool: an opt-in, sandbox-only tool that runs a shell command in the
     # session's container. Never registered on the filesystem backend.
     execution_backend_shell_tool_enabled: bool = False
