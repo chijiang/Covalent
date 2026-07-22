@@ -377,6 +377,7 @@ async def lifespan(app: FastAPI):
             execution_backend,
             app.state.session_store,
             settings.execution_backend_docker_reaper_interval_seconds,
+            settings.execution_backend_docker_idle_timeout_seconds,
         )
     )
 
@@ -486,7 +487,9 @@ def create_app() -> FastAPI:
         snapshot_fn = getattr(backend, "sandbox_snapshot", None)
         if not callable(snapshot_fn):
             return {"backend": getattr(backend, "name", "unknown"), "supported": False}
-        return await snapshot_fn()
+        snapshot = await snapshot_fn()
+        session_store: SessionStore = app.state.session_store
+        return await _augment_sandbox_snapshot(snapshot, session_store)
 
     @app.delete("/sandbox/sessions/{session_id}")
     async def stop_sandbox_session(request: Request, session_id: str) -> dict[str, str]:
@@ -777,12 +780,9 @@ def create_app() -> FastAPI:
             execution_backend=getattr(app.state, "execution_backend", None),
         )
 
-        # Record agent-level outbound whitelist before the first container is
-        # created (affects network_mode + SKILL_NET_ALLOW merge).
-        backend_ref = getattr(app.state, "execution_backend", None)
-        outbound = getattr(agent, "allowed_outbound", None)
-        if backend_ref is not None and outbound:
-            backend_ref.record_session(context.session_id or "", agent.name, outbound)
+        # Record sandbox metadata before the first container is created
+        # (agent name for monitoring; outbound affects network mode).
+        _record_sandbox_session(getattr(app.state, "execution_backend", None), context.session_id or "", agent)
 
         if invoke_request.stream:
             async def event_stream():
@@ -1130,13 +1130,10 @@ def create_app() -> FastAPI:
         resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
         await _ensure_console_principal_can_access_agent(db_manager, principal, resolved_agent_name)
         session_id = run_request.session_id or _new_chat_item_id("session")
-        # Record agent-level outbound before the container is created.
+        # Record sandbox metadata before the container is created.
         try:
             agent = registry.get_agent(resolved_agent_name)
-            backend_ref = getattr(app.state, "execution_backend", None)
-            outbound = getattr(agent, "allowed_outbound", None)
-            if backend_ref is not None and outbound:
-                backend_ref.record_session(session_id, agent.name, outbound)
+            _record_sandbox_session(getattr(app.state, "execution_backend", None), session_id, agent)
         except Exception:
             pass
         try:
@@ -1172,13 +1169,10 @@ def create_app() -> FastAPI:
         resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
         await _ensure_console_principal_can_access_agent(db_manager, principal, resolved_agent_name)
         session_id = run_request.session_id or _new_chat_item_id("session")
-        # Record agent-level outbound before the container is created.
+        # Record sandbox metadata before the container is created.
         try:
             agent = registry.get_agent(resolved_agent_name)
-            backend_ref = getattr(app.state, "execution_backend", None)
-            outbound = getattr(agent, "allowed_outbound", None)
-            if backend_ref is not None and outbound:
-                backend_ref.record_session(session_id, agent.name, outbound)
+            _record_sandbox_session(getattr(app.state, "execution_backend", None), session_id, agent)
         except Exception:
             pass
         try:
@@ -1912,6 +1906,59 @@ def to_chat_session_response(record: ChatSessionRecord) -> ChatSessionResponse:
         messages=[ChatSessionMessageResponse(**message.model_dump()) for message in record.messages],
         activity=[ChatSessionActivityResponse(**item.model_dump()) for item in record.activity],
     )
+
+
+def _record_sandbox_session(backend: ExecutionBackend | None, session_id: str, agent: AgentSpec) -> None:
+    if backend is None or not session_id:
+        return
+    record_fn = getattr(backend, "record_session", None)
+    if not callable(record_fn):
+        return
+    outbound = list(getattr(agent, "allowed_outbound", None) or [])
+    try:
+        record_fn(session_id, agent.name, outbound)
+    except Exception as exc:
+        logger.debug("Failed to record sandbox metadata for session %s: %s", session_id, exc)
+
+
+async def _augment_sandbox_snapshot(snapshot: dict[str, Any], session_store: SessionStore) -> dict[str, Any]:
+    sessions = snapshot.get("sessions")
+    if not isinstance(sessions, list):
+        return snapshot
+
+    async def enrich(raw_session: object) -> object:
+        if not isinstance(raw_session, dict):
+            return raw_session
+        session = dict(raw_session)
+        session_id = str(session.get("session_id") or "")
+        if not session_id:
+            return session
+        try:
+            record = await session_store.get_session(session_id)
+        except Exception as exc:
+            session["session_lookup_error"] = str(exc)
+            return session
+        if record is None:
+            session["session_missing"] = True
+            return session
+        if not session.get("agent_name") and record.agent_name:
+            session["agent_name"] = record.agent_name
+        session.update(
+            {
+                "chat_title": record.title,
+                "chat_message_count": record.message_count,
+                "owner_user_id": record.owner_user_id,
+                "workspace_id": record.workspace_id,
+                "created_by_token_id": record.created_by_token_id,
+                "session_created_at": record.created_at.isoformat(),
+                "session_updated_at": record.updated_at.isoformat(),
+            }
+        )
+        return session
+
+    augmented = dict(snapshot)
+    augmented["sessions"] = await asyncio.gather(*(enrich(session) for session in sessions))
+    return augmented
 
 
 def _normalize_token_scopes(scopes: list[str]) -> list[str]:
@@ -5069,18 +5116,35 @@ async def _sandbox_reaper_loop(
     backend: ExecutionBackend,
     session_store: SessionStore,
     interval_seconds: float,
+    idle_timeout_seconds: float = 0.0,
 ) -> None:
-    """Periodically remove sandbox containers whose session no longer exists.
+    """Periodically reclaim sandbox containers.
 
-    Belt-and-suspenders for the session DELETE hook: catches containers leaked by
-    a crash or race. No-op for the FileSystem backend (``list_sandbox_sessions``
-    returns ``[]``).
+    For sessions **actively tracked** by the backend: stop them if idle beyond
+    ``idle_timeout_seconds`` (0 = never auto-stop). For sessions **not tracked**
+    (orphans from a previous process): stop if the session is gone from the store.
+    No-op for the FileSystem backend (``list_sandbox_sessions`` returns ``[]``).
     """
+    import time
+
     while True:
         try:
             await asyncio.sleep(interval_seconds)
             for session_id in await backend.list_sandbox_sessions():
                 try:
+                    is_tracked = getattr(backend, "is_session_tracked", lambda _: False)(session_id)
+                    if is_tracked:
+                        # Active session — only stop if idle beyond the timeout.
+                        if idle_timeout_seconds > 0:
+                            idle = getattr(backend, "session_idle_seconds", lambda _: None)(session_id)
+                            if idle is not None and idle >= idle_timeout_seconds:
+                                logger.info(
+                                    "Stopping idle sandbox for session %s (idle %ds >= %ds)",
+                                    session_id, int(idle), int(idle_timeout_seconds),
+                                )
+                                await backend.stop(session_id)
+                        continue
+                    # Untracked (orphan from a previous run) — reap if session is gone.
                     if await session_store.get_session(session_id) is None:
                         logger.info("Reaping orphan sandbox container for session %s", session_id)
                         await backend.stop(session_id)

@@ -186,16 +186,48 @@ export type HealthResponse = {
 
 export type SandboxSessionSummary = {
   session_id: string;
-  agent_name: string;
+  agent_name?: string | null;
+  chat_title?: string | null;
+  chat_message_count?: number | null;
+  owner_user_id?: string | null;
+  workspace_id?: string | null;
+  created_by_token_id?: string | null;
+  session_created_at?: string | null;
+  session_updated_at?: string | null;
+  session_missing?: boolean;
+  session_lookup_error?: string | null;
+  container_id?: string;
+  container_name?: string;
+  container_created_at?: number | null;
+  image_id?: string;
+  image_name?: string;
   started_at: number | null;
+  last_activity_at?: number | null;
+  idle_seconds?: number | null;
   status: string;
+  exit_code?: number | null;
+  error?: string | null;
   network_mode: string;
+  network_policy?: "disabled" | "allowlist" | "custom" | string;
   allowed_outbound: string[];
+  resources?: {
+    cpu_limit?: number | null;
+    cpu_percent?: number | null;
+    memory_limit_config?: string | null;
+    memory_usage_bytes?: number | null;
+    memory_limit_bytes?: number | null;
+    memory_percent?: number | null;
+    pids_current?: number | null;
+    pids_limit?: number | null;
+    tmpfs_size?: string | null;
+    usage_error?: string | null;
+  };
 };
 
 export type SandboxStatus = {
   backend: string;
   supported: boolean;
+  snapshot_at?: number;
   live?: number;
   metrics?: Record<string, number>;
   config?: Record<string, unknown>;

@@ -60,7 +60,11 @@ def _frame(stream_type: int, payload: bytes) -> bytes:
 # --------------------------------------------------------------------------- #
 class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
     def _make_backend(self, tmpdir: Path, *, source_dirs=None, client=None) -> DockerBackend:
-        settings = AppSettings(workspace_root_dir=str(tmpdir))
+        settings = AppSettings(
+            workspace_root_dir=str(tmpdir),
+            execution_backend_docker_max_sessions=0,
+            execution_backend_docker_idle_timeout_seconds=1800.0,
+        )
         return DockerBackend(
             settings,
             skill_source_dirs_provider=lambda: list(source_dirs or []),
@@ -308,10 +312,18 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(session["session_id"], "s-snap")
             self.assertEqual(session["agent_name"], "my-agent")
             self.assertEqual(session["network_mode"], "bridge")
+            self.assertEqual(session["network_policy"], "allowlist")
             self.assertEqual(session["allowed_outbound"], ["api.example.com"])
             self.assertIsNotNone(session["started_at"])
+            self.assertEqual(session["container_name"], "covalent-sandbox-s-snap")
+            self.assertEqual(session["image_name"], "covalent-sandbox:dev")
+            self.assertEqual(session["resources"]["pids_current"], 7)
+            self.assertEqual(session["resources"]["memory_usage_bytes"], 64 * 1024 * 1024)
+            self.assertAlmostEqual(session["resources"]["cpu_percent"], 50.0)
             self.assertIn("config", snapshot)
             self.assertEqual(snapshot["config"]["image"], "covalent-sandbox:dev")
+            self.assertEqual(snapshot["config"]["max_sessions"], 0)
+            self.assertEqual(snapshot["config"]["idle_timeout_seconds"], 1800.0)
 
 
 def settings_session_workspace_dir(workspace_root: Path, session_id: str) -> Path:
@@ -320,12 +332,12 @@ def settings_session_workspace_dir(workspace_root: Path, session_id: str) -> Pat
 
 
 class _FakeContainer:
-    def __init__(self, name: str, labels: dict[str, str] | None = None) -> None:
+    def __init__(self, name: str, labels: dict[str, str] | None = None, attrs: dict | None = None) -> None:
         self.id = "cid-" + name
         self.name = name
         self.status = "running"
         self.labels = labels or {}
-        self.attrs = types.SimpleNamespace(load=lambda: None)
+        self.attrs = attrs or {}
         self.removed = False
 
     def reload(self) -> None:
@@ -341,6 +353,21 @@ class _FakeContainer:
     def exec_run(self, *_args, **_kwargs):
         return types.SimpleNamespace(exit_code=0, output=(b"", b""))
 
+    def stats(self, **_kwargs) -> dict:
+        return {
+            "memory_stats": {"usage": 64 * 1024 * 1024, "limit": 512 * 1024 * 1024},
+            "pids_stats": {"current": 7},
+            "cpu_stats": {
+                "cpu_usage": {"total_usage": 2_000_000_000, "percpu_usage": [1, 1]},
+                "system_cpu_usage": 8_000_000_000,
+                "online_cpus": 2,
+            },
+            "precpu_stats": {
+                "cpu_usage": {"total_usage": 1_000_000_000},
+                "system_cpu_usage": 4_000_000_000,
+            },
+        }
+
 
 class _FakeContainers:
     def __init__(self) -> None:
@@ -350,7 +377,21 @@ class _FakeContainers:
     def run(self, **kwargs) -> _FakeContainer:
         self.run_calls.append(kwargs)
         name = kwargs.get("name", "anon")
-        container = _FakeContainer(name, labels=kwargs.get("labels"))
+        container = _FakeContainer(
+            name,
+            labels=kwargs.get("labels"),
+            attrs={
+                "Created": "2026-07-21T01:02:00.123456789Z",
+                "Image": "sha256:fake-image",
+                "Config": {"Image": kwargs.get("image")},
+                "HostConfig": {"NetworkMode": kwargs.get("network_mode")},
+                "State": {
+                    "StartedAt": "2026-07-21T01:02:03.123456789Z",
+                    "ExitCode": 0,
+                    "Error": "",
+                },
+            },
+        )
         self._by_name[name] = container
         return container
 
