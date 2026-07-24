@@ -6241,6 +6241,10 @@ textarea::placeholder {
   border-left-color: var(--surface-accent-strong);
 }
 
+.chat-page-shell .chat-trace-panel .trace-step.is-actor-model {
+  border-left-color: #2563eb;
+}
+
 .chat-page-shell .chat-trace-panel .trace-step.is-actor-system {
   border-left-color: #64748b;
 }
@@ -6287,6 +6291,12 @@ textarea::placeholder {
   background: rgba(220, 38, 38, 0.1);
   border-color: rgba(220, 38, 38, 0.2);
   color: #b91c1c;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-actor.is-model {
+  background: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.22);
+  color: #1d4ed8;
 }
 
 .chat-page-shell .chat-trace-panel .trace-step-actor.is-system {
@@ -6372,12 +6382,16 @@ textarea::placeholder {
   max-height: none;
 }
 
+.chat-page-shell .chat-trace-panel .trace-step-details {
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface-secondary);
+}
+
 .chat-page-shell .chat-trace-panel .trace-step-payload {
   margin: 0;
   padding: 6px 8px 8px;
   max-height: 220px;
   overflow: auto;
-  border-top: 1px solid var(--border-soft);
   background: var(--surface-secondary);
   color: var(--fg-secondary);
   font-family: var(--font-mono), monospace;
@@ -6385,6 +6399,43 @@ textarea::placeholder {
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-raw {
+  border-top: 1px solid var(--border-soft);
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-raw-controls {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--surface-primary);
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-raw-toggle {
+  margin: 0;
+  padding: 3px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--surface-secondary);
+  color: var(--fg-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-raw-toggle:hover,
+.chat-page-shell .chat-trace-panel .trace-step-raw-toggle:focus-visible,
+.chat-page-shell .chat-trace-panel .trace-step-raw-toggle.is-active {
+  border-color: rgba(37, 99, 235, 0.35);
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-raw-payload {
+  border-top: 1px solid var(--border-soft);
+  max-height: 360px;
 }
 
 .dark {

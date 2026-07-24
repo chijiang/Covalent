@@ -15,6 +15,7 @@ from agent_framework.skills.permissions import PermissionChecker
 from agent_framework.skills.spec import ManifestSkillSpec, ScriptDeclaration
 
 LIST_SKILL_FILES_TOOL = "list_skill_files"
+READ_SKILL_INSTRUCTIONS_TOOL = "read_skill_instructions"
 READ_SKILL_RESOURCE_TOOL = "read_skill_resource"
 RUN_SKILL_SCRIPT_TOOL = "run_skill_script"
 
@@ -45,6 +46,31 @@ def register_skill_meta_tools(registry: Any, settings: Any = None, backend: Exec
             },
         },
         handler=lambda args, _ctx: _list_skill_files(registry, args),
+    )
+    registry.register_local_tool(
+        READ_SKILL_INSTRUCTIONS_TOOL,
+        {
+            "type": "function",
+            "function": {
+                "name": READ_SKILL_INSTRUCTIONS_TOOL,
+                "description": (
+                    "Reads the full instructions for an enabled skill when its prompt index "
+                    "indicates the skill may be relevant."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill": {
+                            "type": "string",
+                            "description": "Registered skill name, case-insensitive variant, or title-style alias.",
+                        },
+                        "max_chars": {"type": "integer", "default": 60000, "minimum": 1},
+                    },
+                    "required": ["skill"],
+                },
+            },
+        },
+        handler=lambda args, _ctx: _read_skill_instructions(registry, args),
     )
     registry.register_local_tool(
         READ_SKILL_RESOURCE_TOOL,
@@ -125,6 +151,36 @@ def _list_skill_files(registry: Any, args: dict[str, Any]) -> str:
     _spec, bundle = _bundle_for_skill(registry, str(args.get("skill", "")))
     kind = str(args.get("kind", "all"))
     return json.dumps(bundle.list_files(kind=kind), ensure_ascii=False, indent=2)
+
+
+def _read_skill_instructions(registry: Any, args: dict[str, Any]) -> str:
+    skill_name = str(args.get("skill", ""))
+    resolved_skill_name = skill_name
+    resolve_skill_name = getattr(registry, "resolve_skill_name", None)
+    if callable(resolve_skill_name):
+        resolved_skill_name = resolve_skill_name(skill_name) or skill_name
+    is_skill_enabled = getattr(registry, "is_skill_enabled", None)
+    if callable(is_skill_enabled) and not is_skill_enabled(resolved_skill_name):
+        raise SkillBundleError(f"Skill '{resolved_skill_name}' is disabled")
+    skill = getattr(registry, "skills", {}).get(resolved_skill_name)
+    if skill is None:
+        raise SkillBundleError(f"Unknown skill: {skill_name}")
+
+    max_chars = int(args.get("max_chars", 60_000))
+    instructions = str(getattr(skill, "instructions", "") or "")
+    truncated = len(instructions) > max_chars
+    if truncated:
+        instructions = instructions[:max_chars]
+    return json.dumps(
+        {
+            "name": getattr(skill, "name", resolved_skill_name),
+            "description": getattr(skill, "description", ""),
+            "instructions": instructions,
+            "truncated": truncated,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _read_skill_resource(registry: Any, args: dict[str, Any]) -> str:

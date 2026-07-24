@@ -459,7 +459,7 @@ export function SkillsWorkspace() {
                         {/* <p className="entity-meta skill-detail-description">{selectedSkill.description || "No description provided."}</p> */}
                         <p className="skill-inline-copy">
                           {selectedSkill.enabled
-                            ? "Visible to agents and included in prompt and tool resolution."
+                            ? "Visible to agents through the prompt index and on-demand skill tools."
                             : "Hidden from agents and excluded from prompt and tool resolution."}
                         </p>
                       </div>

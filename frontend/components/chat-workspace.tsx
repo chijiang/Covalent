@@ -101,7 +101,8 @@ const CODE_BLOCK_COPY_RESET_MS = 1600;
 const TRACE_PAYLOAD_PREVIEW_CHARS = 600;
 
 type ChatCodeBlockTone = "inbound" | "outbound";
-type TraceActor = "agent" | "system" | "tool" | "user";
+type TraceActor = "agent" | "model" | "system" | "tool" | "user";
+type ModelRawPanel = "request" | "response";
 
 type EnrichedTraceEntry = ActivityItem & {
   label: string;
@@ -1080,6 +1081,29 @@ function formatTracePayload(payload: unknown): string {
   return typeof payload === "string" ? payload : `${JSON.stringify(payload, null, 2)}\n`;
 }
 
+function getTraceDisplayPayload(title: string, payload: unknown): unknown {
+  if (getBaseEventTitle(title) !== "model_call") {
+    return payload;
+  }
+  const record = asTracePayloadRecord(payload);
+  if (!record) {
+    return payload;
+  }
+  const displayPayload = { ...record };
+  delete displayPayload.raw_request;
+  delete displayPayload.raw_response;
+  return displayPayload;
+}
+
+function getModelCallRawPayload(payload: unknown, panel: ModelRawPanel): unknown | null {
+  const record = asTracePayloadRecord(payload);
+  if (!record) {
+    return null;
+  }
+  const rawPayload = panel === "request" ? record.raw_request : record.raw_response;
+  return rawPayload === undefined || rawPayload === null ? null : rawPayload;
+}
+
 function buildSyntheticMessageTraceEntries(
   messages: Message[],
   activityItems: ActivityItem[] = [],
@@ -1148,6 +1172,9 @@ function isAskUserToolResult(payload: Record<string, unknown> | null): boolean {
 
 function getTraceActor(title: string, rawPayload?: unknown): TraceActor {
   const baseTitle = getBaseEventTitle(title);
+  if (baseTitle === "model_call") {
+    return "model";
+  }
   if (baseTitle === "user_message" || baseTitle === "input_resolved") {
     return "user";
   }
@@ -1165,8 +1192,7 @@ function getTraceActor(title: string, rawPayload?: unknown): TraceActor {
     baseTitle === "input_required" ||
     baseTitle === "context_window" ||
     baseTitle === "error" ||
-    baseTitle === "iteration" ||
-    baseTitle === "model_call"
+    baseTitle === "iteration"
   ) {
     return "system";
   }
@@ -1174,6 +1200,9 @@ function getTraceActor(title: string, rawPayload?: unknown): TraceActor {
 }
 
 function getTraceActorLabel(actor: TraceActor): string {
+  if (actor === "model") {
+    return "Model";
+  }
   if (actor === "system") {
     return "System";
   }
@@ -1209,7 +1238,7 @@ function getTraceEventLabel(title: string, rawPayload?: unknown): string {
     return payload?.kind === "model_reasoning" ? "Reasoning" : "Event";
   }
   if (baseTitle === "model_call") {
-    return "Model";
+    return "Call";
   }
   if (baseTitle === "context_window") {
     return "Context";
@@ -1294,7 +1323,14 @@ function TraceStepEntry({
   summary: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const payloadText = formatTracePayload(item.payload);
+  const [rawPanel, setRawPanel] = useState<ModelRawPanel | null>(null);
+  const isModelCall = getBaseEventTitle(item.title) === "model_call";
+  const rawRequest = isModelCall ? getModelCallRawPayload(item.payload, "request") : null;
+  const rawResponse = isModelCall ? getModelCallRawPayload(item.payload, "response") : null;
+  const visiblePayload = getTraceDisplayPayload(item.title, item.payload);
+  const payloadText = formatTracePayload(visiblePayload);
+  const rawPayload = rawPanel === "request" ? rawRequest : rawPanel === "response" ? rawResponse : null;
+  const rawPayloadText = rawPayload === null ? "" : formatTracePayload(rawPayload);
   const isLongPayload = payloadText.length > TRACE_PAYLOAD_PREVIEW_CHARS;
   const displayPayload =
     isLongPayload && !expanded
@@ -1320,7 +1356,36 @@ function TraceStepEntry({
           {expanded ? "hide" : "payload"}
         </button>
       </div>
-      {expanded ? <pre className="trace-step-payload">{displayPayload}</pre> : null}
+      {expanded ? (
+        <div className="trace-step-details">
+          <pre className="trace-step-payload">{displayPayload}</pre>
+          {isModelCall && (rawRequest !== null || rawResponse !== null) ? (
+            <div className="trace-step-raw">
+              <div className="trace-step-raw-controls" aria-label="Model call raw payload controls">
+                {rawRequest !== null ? (
+                  <button
+                    className={cn("trace-step-raw-toggle", rawPanel === "request" && "is-active")}
+                    onClick={() => setRawPanel((current) => current === "request" ? null : "request")}
+                    type="button"
+                  >
+                    Raw request
+                  </button>
+                ) : null}
+                {rawResponse !== null ? (
+                  <button
+                    className={cn("trace-step-raw-toggle", rawPanel === "response" && "is-active")}
+                    onClick={() => setRawPanel((current) => current === "response" ? null : "response")}
+                    type="button"
+                  >
+                    Raw response
+                  </button>
+                ) : null}
+              </div>
+              {rawPayload !== null ? <pre className="trace-step-payload trace-step-raw-payload">{rawPayloadText}</pre> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
