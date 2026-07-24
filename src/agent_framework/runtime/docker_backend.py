@@ -168,14 +168,23 @@ class DockerBackend(ExecutionBackend):
 
     def record_session(self, session_id: str, agent_name: str, allowed_outbound: list[str]) -> None:
         """Record per-session metadata before the container is created. Drives
-        network mode (bridge if outbound) and the admin monitoring snapshot."""
+        network mode (bridge if outbound) and the admin monitoring snapshot.
+
+        If the outbound list changes in a way that flips the network mode and a
+        container already exists, marks it for recreation on the next ``ensure()``.
+        """
         now = time.time()
+        old_outbound = self._session_meta.get(session_id, {}).get("outbound", [])
+        new_outbound = list(allowed_outbound) if allowed_outbound else []
+        needs_recreate = bool(old_outbound) != bool(new_outbound) and session_id in self._sessions
         self._session_meta[session_id] = {
             "agent_name": agent_name,
-            "outbound": list(allowed_outbound) if allowed_outbound else [],
+            "outbound": new_outbound,
             "started_at": now,
             "last_activity": now,
         }
+        if needs_recreate:
+            self._session_meta[session_id]["needs_recreate"] = True
 
     def agent_outbound(self, session_id: str) -> list[str]:
         return self._session_meta.get(session_id, {}).get("outbound", [])
@@ -364,9 +373,21 @@ class DockerBackend(ExecutionBackend):
     async def ensure(self, session_id: str):
         existing = self._sessions.get(session_id)
         if existing is not None:
-            self._touch_activity(session_id)
-            return existing
-        # New session — queue if at capacity (asyncio.Semaphore blocks until a slot frees).
+            meta = self._session_meta.get(session_id, {})
+            if meta.get("needs_recreate"):
+                # Network mode changed — remove the old container but keep the
+                # (updated) meta so the new one gets the correct network_mode.
+                self._sessions.pop(session_id, None)
+                meta.pop("needs_recreate", None)
+                await asyncio.to_thread(self._remove_container, existing)
+                self._metrics.containers_stopped += 1
+                if self._session_semaphore is not None:
+                    self._session_semaphore.release()
+                # Fall through to create a fresh container.
+            else:
+                self._touch_activity(session_id)
+                return existing
+        # New (or recreated) session — queue if at capacity.
         if self._session_semaphore is not None:
             await self._session_semaphore.acquire()
         try:
