@@ -176,5 +176,28 @@ class SkillErrorTests(unittest.IsolatedAsyncioTestCase):
             await spm.acquire(spec)
 
 
+class ConcurrentToolCallTests(unittest.IsolatedAsyncioTestCase):
+    """Concurrent tool calls within the same session do not corrupt dispatch."""
+
+    async def test_concurrent_tool_calls_complete_without_corruption(self) -> None:
+        """Two tool calls dispatched concurrently → both results returned, no errors."""
+        from tests.helpers import tool_call_response
+
+        model = ScriptedModelAdapter([
+            tool_call_response("echo_tool", arguments={"msg": "first"}, call_id="c1"),
+            tool_call_response("echo_tool", arguments={"msg": "second"}, call_id="c2"),
+            text_response("Both done."),
+        ])
+        agent = make_test_agent(local_tools=["echo_tool"])
+        registry = make_test_registry(agent, model=model, tools={"echo_tool": (
+            {"type": "function", "function": {"name": "echo_tool", "description": "echo", "parameters": {"type": "object", "properties": {"msg": {"type": "string"}}, "required": ["msg"]}}},
+            lambda args, ctx: json.dumps({"echo": args.get("msg", "")}),
+        )})
+        runtime = make_test_runtime(registry)
+        response = await runtime.run(agent, "Echo both", RunContext(agent_name="test", session_id="s1"))
+        self.assertIn("done", response.output_text.lower())
+        self.assertEqual(model.call_count, 3)
+
+
 if __name__ == "__main__":
     unittest.main()
