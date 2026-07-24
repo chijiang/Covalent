@@ -178,9 +178,24 @@ class _FakeSessionStore:
     def __init__(self, sessions: dict | None = None):
         self._sessions = dict(sessions or {})
         self.deleted: list[str] = []
+        self.renamed: list[tuple[str, str]] = []
+
+    async def list_sessions(self, **filters):
+        owner = filters.get("owner_user_id")
+        results = list(self._sessions.values())
+        if owner:
+            results = [r for r in results if getattr(r, "owner_user_id", None) == owner]
+        return results
 
     async def get_session(self, session_id):
         return self._sessions.get(session_id)
+
+    async def update_title(self, session_id, title, title_source="manual"):
+        self.renamed.append((session_id, title))
+        record = self._sessions.get(session_id)
+        if record:
+            record.title = title
+        return record
 
     async def delete_session(self, session_id) -> bool:
         self.deleted.append(session_id)
@@ -279,18 +294,88 @@ class SessionDeleteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
 
+class SessionListAndRenameTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.settings = AppSettings(console_auth_mode="local", workspace_root_dir="/tmp")
+        self.backend = _FakeSandboxBackend()
+        self.session_store = _FakeSessionStore({
+            "s-1": _SessionRecord("s-1", user_id="member-1", title="Alpha"),
+            "s-2": _SessionRecord("s-2", user_id="admin-1", title="Beta"),
+        })
+        self.app, self.client = _build_app(
+            sandbox_backend=self.backend,
+            session_store=self.session_store,
+            settings=self.settings,
+        )
+
+    def test_list_sessions_admin_sees_all(self) -> None:
+        resp = self.client.get(
+            "/sessions",
+            headers={"Cookie": _admin_cookie(self.settings)},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertGreaterEqual(len(data), 1)
+        titles = {r["title"] for r in data}
+        self.assertIn("Alpha", titles)
+
+    def test_list_sessions_member_sees_own_only(self) -> None:
+        resp = self.client.get(
+            "/sessions",
+            headers={"Cookie": _member_cookie(self.settings)},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        titles = {r["title"] for r in data}
+        self.assertIn("Alpha", titles)
+        self.assertNotIn("Beta", titles)
+
+    def test_get_session_returns_record(self) -> None:
+        resp = self.client.get(
+            "/sessions/s-1",
+            headers={"Cookie": _member_cookie(self.settings)},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["title"], "Alpha")
+
+    def test_get_session_404_when_missing(self) -> None:
+        resp = self.client.get(
+            "/sessions/no-such",
+            headers={"Cookie": _member_cookie(self.settings)},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_rename_session_updates_title(self) -> None:
+        resp = self.client.patch(
+            "/sessions/s-1",
+            json={"title": "Renamed"},
+            headers={"Cookie": _member_cookie(self.settings)},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["title"], "Renamed")
+
 class _SessionRecord:
+    """A duck-type session record compatible with to_chat_session_summary_response."""
     def __init__(self, session_id: str, *, user_id: str = "member-1",
-                 workspace_id: str = "ws-1", owner_user_id: str | None = None):
+                 workspace_id: str = "ws-1", owner_user_id: str | None = None,
+                 title: str = "Test Session"):
         self.id = session_id
         self.owner_user_id = owner_user_id or user_id
         self.workspace_id = workspace_id
         self.user_id = user_id
-        self.title = "Test Session"
+        self.title = title
         self.created_at = "2024-01-01T00:00:00Z"
         self.updated_at = "2024-01-01T00:00:00Z"
         self.memory_messages = []
         self.memory_messages_json = []
+        self.messages = []  # ChatSessionResponse needs this
+        self.activity = []  # ChatSessionResponse needs this
+
+    def model_dump(self, **kw):
+        return {"id": self.id, "owner_user_id": self.owner_user_id,
+                "workspace_id": self.workspace_id, "title": self.title,
+                "created_at": self.created_at, "updated_at": self.updated_at,
+                "messages": [], "activity": []}
 
 
 if __name__ == "__main__":

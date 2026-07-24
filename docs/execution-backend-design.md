@@ -456,17 +456,29 @@ Phase 2 decouples the workspace. Phase 3 unlocks cloud. Phase 4 hardens both.
 
 ## Testing Strategy
 
-- **Unit:** each backend against a fake client (no daemon/cluster). `make_backend`
-  factory, `ensure` idempotency, `exec` timeout, `stop`/teardown, orphan listing.
-- **Parameterized suite:** the existing `tests/test_workspace_tools.py`, skill,
-  and public-invoke tests run against **each** available backend (FS always;
-  Docker/k8s behind a `@pytest.mark.docker` / `@pytest.mark.k8s` gate when the
-  environment provides them). This is the regression contract: identical agent
-  behavior across backends.
-- **Adversarial (Phase 4):** a fixture skill attempting outbound network,
-  fork-bomb, and path escape — each contained within budget on Docker and k8s.
-- **Lifecycle:** kill backend mid-session, restart, assert reaper reclaims
-  orphaned sandbox resources.
+Current coverage: **156 tests** (up from 109 at Phase 1b). The suite covers:
+
+- **ReAct E2E** (`test_agent_react.py`) — agent loop with canned model, tool calling, session persistence, memory=none.
+- **Skill lifecycle** (`test_skill_lifecycle.py`) — spawn→ready→call→shutdown, pool reuse, timeouts, per-session isolation, health eviction.
+- **Script execution** (`test_script_execution.py`) — basic, exit codes, args, timeout, stdin, execution_backend marker.
+- **Docker backend** (`test_docker_backend.py`) — container lifecycle, exec, metrics, sweep, kill, snapshot, network mode, outbound change, max-sessions semaphore.
+- **HTTP CRUD** (`test_sandbox_admin_api.py`, `test_agent_crud_api.py`) — sandbox admin endpoints, session delete→backend.stop, agent CRUD with allowed_outbound round-trip.
+- **Resilience** (`test_production_readiness.py`) — BackendUnavailable→clean error, input validation, schema guards, concurrent tool calls.
+- **Unit:** each backend against a fake client. `make_backend` factory, `ensure` idempotency, `exec` timeout, `stop`/teardown, orphan listing.
+- **Adversarial (Phase 4, gated):** path escape, network egress blocked.
+
+### Remaining test gaps (tracked for future iterations)
+
+| Priority | Area | What's missing |
+|---|---|---|
+| High | Skill HTTP CRUD | `POST /skills/install`, `DELETE /skills/{name}`, upload zip, git source — need real skill directory fixture + config_store |
+| High | Skill preview / enable / disable | `GET /skills/{name}/preview`, `POST /skills/{name}/enable` + `/disable` HTTP — need registry + skill fixture |
+| Mid | Config publication flow | `POST /config/*/publish-request` + `publication-review` HTTP — need multi-user setup |
+| Mid | Management export/import | `GET/POST /management/*` HTTP |
+| Mid | MCP inspect/call | `POST /mcp/inspect` + `/mcp/call` HTTP — need MCP server fixture |
+| Low | Attachments / Downloads | `POST /attachments/upload`, `GET /downloads/{sid}/{name}` HTTP |
+| Low | Frontend E2E | Playwright smoke — login → agent config → run → verify |
+| Low | Load / long-running | 20 concurrent sessions, 24h soak |
 
 ## Risks and Open Decisions
 
