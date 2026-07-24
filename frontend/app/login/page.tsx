@@ -1,5 +1,11 @@
+import { Suspense } from "react";
+
 import { AuthPage } from "@/components/auth-page";
 
 export default function LoginPage() {
-  return <AuthPage mode="login" />;
+  return (
+    <Suspense fallback={null}>
+      <AuthPage mode="login" />
+    </Suspense>
+  );
 }

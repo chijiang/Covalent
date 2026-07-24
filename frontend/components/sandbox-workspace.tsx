@@ -135,7 +135,7 @@ function SummaryCard({
   detail?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-border/70 bg-background/70 p-3">
+    <div className="min-h-[98px] rounded-2xl border border-border/70 bg-background/70 p-3">
       <div className="flex items-start gap-3">
         <Icon className="mt-0.5 size-4 text-primary" aria-hidden="true" />
         <div className="min-w-0">
@@ -150,7 +150,7 @@ function SummaryCard({
 
 function ConfigItem({ label, value, detail }: { label: string; value: string | number; detail?: string }) {
   return (
-    <div className="flex min-w-0 flex-col gap-1 rounded-2xl border border-border/70 bg-background/70 p-3">
+    <div className="flex min-h-[104px] min-w-0 flex-col gap-1 rounded-2xl border border-border/70 bg-background/70 p-3">
       <span className="text-muted-foreground text-[0.68rem] font-medium uppercase tracking-wide">{label}</span>
       <span className="truncate font-mono text-sm">{value}</span>
       {detail ? <span className="text-muted-foreground truncate text-[0.7rem]">{detail}</span> : null}
@@ -319,7 +319,7 @@ export function SandboxWorkspace() {
   }
 
   return (
-    <section className="page-section console-page-shell sandbox-workspace flex min-h-0 flex-1 flex-col gap-4">
+    <section className="page-section console-page-shell sandbox-workspace flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-6 pr-1">
       <PageHeaderActions>
         <span className="text-muted-foreground text-xs">Last updated {formatRelativeTime(lastUpdatedAt)}</span>
         <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
@@ -334,7 +334,7 @@ export function SandboxWorkspace() {
         </div>
       )}
 
-      <ConsolePanel>
+      <ConsolePanel className="shrink-0 overflow-visible">
         <div className="console-panel-header">
           <div>
             <h2 className="panel-title text-base">Sandbox Health</h2>
@@ -351,7 +351,7 @@ export function SandboxWorkspace() {
         </div>
       </ConsolePanel>
 
-      <ConsolePanel>
+      <ConsolePanel className="shrink-0 overflow-visible">
         <div className="console-panel-header">
           <div>
             <h2 className="panel-title text-base">Policy & Limits</h2>
@@ -371,7 +371,7 @@ export function SandboxWorkspace() {
         </div>
       </ConsolePanel>
 
-      <ConsolePanel>
+      <ConsolePanel className="shrink-0">
         <div className="console-panel-header">
           <div>
             <h2 className="panel-title text-base">Live Sessions ({sessions.length})</h2>
@@ -489,6 +489,7 @@ export function SandboxWorkspace() {
                                   size="icon-sm"
                                   title="Open chat"
                                   aria-label="Open chat"
+                                  nativeButton={false}
                                   render={<Link href={buildChatHref(session.session_id)} />}
                                 >
                                   <ExternalLink className="size-4" />
