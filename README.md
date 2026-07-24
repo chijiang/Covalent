@@ -1,23 +1,64 @@
 # Covalent - A Multi-UI Agentic Framework
 
+<p align="center">
+  <img src="frontend/public/logos/covalent-logo-horizontal-512.png" alt="Covalent" width="280" />
+</p>
+
 ![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Covalent is an agentic framework designed to bind autonomous agents together through seamless collaboration, much like the sharing of electrons in a covalent bond.
 
-This is an agentic framework with subprocess-isolated skills, MCP integration, and ReAct-style execution.
+Run ReAct agents from a desktop-first control plane: chat with live traces, manage Anthropic-style skills, wire OpenAI-compatible providers and MCP servers, isolate execution in Docker sandboxes, and expose production invoke access through scoped API tokens.
+
+<p align="center">
+  <img src="docs/images/chat-workspace.png" alt="Covalent Chat Workspace" width="100%" />
+</p>
+<p align="center"><em>Chat Workspace — multi-panel chat with live Agent Trace (tool calls, model steps, and final answers)</em></p>
 
 ## Features
 
 - **Anthropic-style Skills** — `SKILL.md` is the primary skill format for model-facing instructions and compatible with Claude Code style skills
 - **Execution Overrides via `skill.yaml`** — Optional runtime config for process, permissions, and tool wiring when a skill needs executable behavior
-- **Sandboxed Execution** — Each skill runs as a separate process; permissions and environment are applied by the framework runner, with SDK support still available for custom RPC skills
+- **Sandboxed Execution** — Docker-backed session containers with resource limits and no outbound network by default; skills also run as isolated processes under the filesystem backend
 - **Process Pool** — Long-running skill processes managed with semaphore-based concurrency control, health checks, and idle eviction
 - **Ordinary Python & Node.js Scripts** — Export normal functions; the framework wraps them with a runner so skill authors do not need to implement JSON-RPC
 - **OpenAI-Compatible LLM Providers** — Register provider endpoints in the Service Console; agents resolve models through persisted `openai_compatible` configs with env fallbacks
 - **MCP Client** — Connect to external tool servers via stdio, SSE, or streamable HTTP
+- **Production API Tokens** — Scoped `cvt_...` tokens for `/v1/*` agent invoke, with usage and audit in the control plane
 - **Multi-Agent Delegation** — Agents can delegate work to other registered agents
 - **ReAct Runtime** — Iterative reasoning loop with tool calling, session history, and streaming SSE
+
+## Product Tour
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/skills-workspace.png" alt="Skill settings" />
+      <p><strong>Skills</strong> — browse bundled files and preview <code>SKILL.md</code> before enabling</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/agent-settings.png" alt="Agent settings" />
+      <p><strong>Agents</strong> — prompts, providers, tools, skills, and runtime wiring in one place</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/provider-settings.png" alt="Provider settings" />
+      <p><strong>Providers</strong> — register OpenAI-compatible endpoints and default model routes</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/sandbox.png" alt="Sandbox console" />
+      <p><strong>Sandbox</strong> — live Docker sessions with CPU/mem/PID limits and network locked down by default</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center" valign="top">
+      <img src="docs/images/api-tokens.png" alt="API tokens" width="70%" />
+      <p><strong>API tokens</strong> — scoped <code>cvt_...</code> tokens for production <code>/v1/*</code> invoke, with usage overview</p>
+    </td>
+  </tr>
+</table>
 
 ## Quick Start
 
