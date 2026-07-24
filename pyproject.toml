@@ -1,7 +1,7 @@
 [project]
 name = "agent-framework"
 version = "0.1.0"
-description = "Add your description here"
+description = "Run autonomous agents with sandboxed skills, live traces, and production API access."
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.16.0",

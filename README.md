@@ -1,4 +1,6 @@
-# Covalent - A Multi-UI Agentic Framework
+# Covalent
+
+Run autonomous agents with sandboxed skills, live traces, and production API access.
 
 <p align="center">
   <img src="frontend/public/logos/covalent-logo-horizontal-512.png" alt="Covalent" width="280" />
@@ -7,9 +9,7 @@
 ![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Covalent is an agentic framework designed to bind autonomous agents together through seamless collaboration, much like the sharing of electrons in a covalent bond.
-
-Run ReAct agents from a desktop-first control plane: chat with live traces, manage Anthropic-style skills, wire OpenAI-compatible providers and MCP servers, isolate execution in Docker sandboxes, and expose production invoke access through scoped API tokens.
+Much like atoms sharing electrons in a covalent bond, Covalent binds autonomous agents together through seamless collaboration. Chat with live traces, manage Anthropic-style skills, wire OpenAI-compatible providers and MCP servers, isolate execution in Docker sandboxes, and expose production invoke access through scoped API tokens.
 
 <p align="center">
   <img src="docs/images/chat-workspace.png" alt="Covalent Chat Workspace" width="100%" />
@@ -90,7 +90,7 @@ pnpm dev
 
 The frontend proxies the FastAPI backend and assumes `http://127.0.0.1:5170` by default. Override with `AGENT_FRAMEWORK_API_BASE_URL` or `NEXT_PUBLIC_AGENT_FRAMEWORK_API_BASE_URL`.
 
-Service Console routes include agent settings, provider settings, MCP services, and skill settings under `frontend/app/service-console/`.
+Service Console routes include agent settings, provider settings, MCP services, skill settings, and sandbox monitoring under `frontend/app/service-console/`.
 
 ## Configuration
 
@@ -181,9 +181,17 @@ AGENT_FRAMEWORK_EXECUTION_BACKEND_KIND=docker
 # AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_IMAGE=covalent-sandbox:dev
 # AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_MEM_LIMIT=512m
 # AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_NETWORK=none   # or "bridge" to allow outbound
+# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_MAX_SESSIONS=0  # 0=unlimited; >0 = queue when full
+# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_IDLE_TIMEOUT_SECONDS=1800  # 0=never auto-stop
 ```
 
-**Sandbox shell tool (opt-in).** Under the Docker backend, set `AGENT_FRAMEWORK_EXECUTION_BACKEND_SHELL_TOOL_ENABLED=true` to give agents a `run_shell` tool that runs a shell command inside the session container. The sandbox exists precisely to allow this — it inherits `network_mode=none`, the resource limits, and the ephemeral container, and it's the same trust boundary as the skill code already running there. It is never registered on the `filesystem` backend (where it would mean arbitrary host commands). The workspace file tools remain available in both modes; `run_shell` is an additive capability. Tune the binary (`sh`/`bash`), timeout, and output cap with the other `EXECUTION_BACKEND_SHELL_TOOL_*` vars.
+**Per-agent outbound whitelist.** Configure `allowed_outbound` on any agent (agent settings → "Allowed outbound hosts", e.g. `api.example.com, *.openai.com`). When non-empty, that agent's session containers switch to `bridge` networking and the skill SDK enforces the patterns via `SKILL_NET_ALLOW`. Leave empty for `network_mode=none` (no outbound). The container is automatically recreated if the outbound config changes mid-session.
+
+**Sandbox shell tool (opt-in).** Under the Docker backend, set `AGENT_FRAMEWORK_EXECUTION_BACKEND_SHELL_TOOL_ENABLED=true` to give agents a `run_shell` tool that runs a shell command inside the session container. It inherits the resource limits and network policy, and is the same trust boundary as the skill code already running there. It is never registered on the `filesystem` backend. Tune the binary (`sh`/`bash`), timeout, and output cap with the other `EXECUTION_BACKEND_SHELL_TOOL_*` vars.
+
+**Sandbox management.** The Service Console includes a **Sandbox** admin page (Administration section in the sidebar) for monitoring live containers: per-session status (running/idle), agent name, started time, network mode, outbound tags, resource usage, and a stop button. Metrics (containers started/stopped/swept/errors) are also exposed via `GET /healthz` under `checks.sandbox`.
+
+**Lifecycle.** Containers are created lazily (first skill/script/shell call), stopped on session delete, swept on startup, and reclaimed by a periodic reaper. Idle containers are auto-stopped after `IDLE_TIMEOUT_SECONDS` (default 30 min). New sessions queue when `MAX_SESSIONS` is reached (instead of being rejected).
 
 Full design — the pluggable `ExecutionBackend` interface, lifecycle, security model, and phase roadmap — is in [`docs/execution-backend-design.md`](docs/execution-backend-design.md).
 
@@ -509,23 +517,24 @@ graph TD
     API --> Runtime[ReactAgentRuntime]
     Runtime <--> LLM[LLM / Tool Calling]
     Runtime --> Registry[FrameworkRegistry]
-    
+
     subgraph Tool Resolution
-        Registry --> Resolve[resolve_tools]
+        Registry --> Resolve[resolve_tools_for_agent]
         Resolve --> Local[Local Tools]
         Resolve --> MCP[MCP Tools]
         Resolve --> SkillTools[Skill-owned Tools]
     end
-    
-    subgraph Execution
-        Registry --> Exec[execute_tool_call]
-        Exec --> Handler[Local Handler]
-        Exec --> MCPSrv[MCP Server]
-        Exec --> Subprocess[Skill Subprocess]
-    end
-    
-    Subprocess --> Pool[SkillProcessManager]
-    Pool --> Child[Child Process / stdio JSON-RPC]
+
+    Registry --> Exec[execute_tool_call]
+    Exec --> SPM[SkillProcessManager]
+    Exec --> Scripts[Scripts & Shell]
+
+    SPM --> Backend{ExecutionBackend<br/><code>EXECUTION_BACKEND_KIND</code>}
+    Scripts --> Backend
+
+    Backend -->|filesystem default| Host[Host Subprocess<br/>no isolation · fast]
+    Backend -->|docker| Docker[Docker Container per Session<br/>mem / cpu / pids limits · network=none<br/>idle-timeout · max-sessions queue]
+    Backend -.-> Admin[Sandbox Console<br/>monitor · stop · metrics]
 ```
 
 ## Bundled Skills
@@ -550,3 +559,38 @@ uv run python main.py serve
 ./dev.sh both
 cd frontend && pnpm install && pnpm exec tsc --noEmit
 ```
+
+## Acknowledgments
+
+Covalent is built on top of excellent open-source projects:
+
+**Backend**
+
+- [FastAPI](https://fastapi.tiangolo.com) — async web framework
+- [SQLAlchemy](https://www.sqlalchemy.org) + [Alembic](https://alembic.sqlalchemy.org) — ORM and migrations
+- [asyncpg](https://github.com/MagicStack/asyncpg) — PostgreSQL async driver
+- [Pydantic](https://pydantic.dev) + [pydantic-settings](https://github.com/pydantic/pydantic-settings) — data validation and settings
+- [Uvicorn](https://www.uvicorn.org) — ASGI server
+- [OpenAI Python SDK](https://github.com/openai/openai-python) — LLM provider client
+- [Model Context Protocol](https://github.com/modelcontextprotocol/python-sdk) — MCP client integration
+- [Docker SDK for Python](https://github.com/docker/docker-py) — sandbox container management
+- [httpx](https://www.python-httpx.org) — HTTP client
+- [PyJWT](https://github.com/jpadilla/pyjwt) — JWT authentication
+- [python-pptx](https://github.com/scanny/python-pptx) / [openpyxl](https://openpyxl.readthedocs.io) / [PyMuPDF](https://pymupdf.readthedocs.io) — document generation
+
+**Frontend**
+
+- [Next.js](https://nextjs.org) — React framework
+- [shadcn/ui](https://ui.shadcn.com) — UI component system
+- [Tailwind CSS](https://tailwindcss.com) — styling
+- [Lucide](https://lucide.dev) — icon library
+- [react-markdown](https://github.com/remarkjs/react-markdown) — markdown rendering
+
+**Tooling**
+
+- [uv](https://github.com/astral-sh/uv) — Python package manager
+- [pnpm](https://pnpm.io) — Node.js package manager
+
+## License
+
+MIT
