@@ -10,6 +10,12 @@ from __future__ import annotations
 import unittest
 
 from agent_framework.core.types import RunContext
+from agent_framework.skills.meta_tools import (
+    READ_SKILL_INSTRUCTIONS_TOOL,
+    READ_SKILL_RESOURCE_TOOL,
+    register_skill_meta_tools,
+)
+from agent_framework.skills.spec import ManifestSkillSpec
 
 from tests.helpers import (
     ScriptedModelAdapter,
@@ -106,6 +112,63 @@ class ReactLoopTests(unittest.IsolatedAsyncioTestCase):
         response = await runtime.run(agent, "Echo both", RunContext(agent_name="test", session_id="s1"))
         self.assertIn("done", response.output_text.lower())
         self.assertEqual(model.call_count, 2)  # tool-call turn + final turn
+
+    async def test_skill_prompt_uses_progressive_disclosure(self) -> None:
+        """Skill bodies stay out of the system prompt; instructions are readable on demand."""
+        full_instructions = "DETAILED_SECRET_WORKFLOW " * 50
+        model = ScriptedModelAdapter([text_response("Done.")])
+        agent = make_test_agent().model_copy(update={"skills": ["deep-skill"]})
+        registry = make_test_registry(agent, model=model)
+        registry.register_manifest_skill(
+            ManifestSkillSpec(
+                name="deep-skill",
+                description="Use for deep skill workflows.",
+                instructions=full_instructions,
+                source_dir="/tmp",
+                eager_resource_files=["references/quickstart.md"],
+            )
+        )
+        register_skill_meta_tools(registry)
+        runtime = make_test_runtime(registry)
+
+        await runtime.run(agent, "Use the deep skill", RunContext(agent_name="test", session_id="s1"))
+
+        request = model.received_requests[0]
+        system_prompt = request.system_prompt or ""
+        self.assertIn("deep-skill", system_prompt)
+        self.assertIn("Use for deep skill workflows.", system_prompt)
+        self.assertIn(READ_SKILL_INSTRUCTIONS_TOOL, system_prompt)
+        self.assertIn("references/quickstart.md", system_prompt)
+        self.assertNotIn("DETAILED_SECRET_WORKFLOW", system_prompt)
+        self.assertNotIn("## Resource:", system_prompt)
+        tool_names = {tool["function"]["name"] for tool in request.tools}
+        self.assertIn(READ_SKILL_INSTRUCTIONS_TOOL, tool_names)
+        self.assertIn(READ_SKILL_RESOURCE_TOOL, tool_names)
+
+    async def test_model_call_trace_includes_raw_request_and_response(self) -> None:
+        """Model call trace events include inspectable raw request/response details."""
+        response = text_response("Done.").model_copy(
+            update={"raw_response": {"id": "resp-1", "choices": [{"message": {"content": "Done."}}]}}
+        )
+        model = ScriptedModelAdapter([response])
+        agent = make_test_agent()
+        registry = make_test_registry(agent, model=model)
+        runtime = make_test_runtime(registry)
+
+        events = [
+            event
+            async for event in runtime.stream_events(
+                agent,
+                "Hello",
+                RunContext(agent_name="test", session_id="s1"),
+            )
+        ]
+        model_call = next(event for event in events if event["event"] == "model_call")
+        payload = model_call["payload"]
+
+        self.assertEqual(payload["raw_request"]["model"], "test-model")
+        self.assertEqual(payload["raw_request"]["messages"][0]["content"], "Hello")
+        self.assertEqual(payload["raw_response"]["id"], "resp-1")
 
 
 class SessionPersistenceTests(unittest.IsolatedAsyncioTestCase):

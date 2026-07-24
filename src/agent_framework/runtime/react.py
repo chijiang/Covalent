@@ -33,7 +33,7 @@ DELEGATE_FORWARDABLE_EVENTS = {
 
 DOWNLOAD_PUBLICATION_POLICY = (
     "If you create or modify a file that the user is expected to open or download, "
-    "you must call publish_downloadable_file for that file before claiming it is ready. "
+    "you must call publish_downloadable_file with file_path set to that file before claiming it is ready. "
     "Do not say a download link is available, or that a file has been delivered to the user, "
     "unless publish_downloadable_file succeeded in the current run. If publication fails, explain "
     "the failure instead of implying success."
@@ -81,6 +81,7 @@ Rules:
 """
 
 CHARS_PER_TOKEN_ESTIMATE = 3.5
+SKILL_PROMPT_DESCRIPTION_LIMIT = 500
 
 
 class ReactAgentRuntime(AgentRuntime):
@@ -110,6 +111,34 @@ class ReactAgentRuntime(AgentRuntime):
         self.context_summary_model = context_summary_model
         self.enable_llm_summarization = enable_llm_summarization
 
+    @staticmethod
+    def _compact_prompt_line(value: str, *, max_chars: int = SKILL_PROMPT_DESCRIPTION_LIMIT) -> str:
+        compacted = " ".join(value.split())
+        if len(compacted) <= max_chars:
+            return compacted
+        return compacted[: max_chars - 13].rstrip() + " [truncated]"
+
+    def _build_skill_prompt_block(self, name: str) -> str | None:
+        skill = self.registry.skills.get(name)
+        if not skill:
+            return None
+
+        lines = [f"## {skill.name}"]
+        if skill.description.strip():
+            lines.append(f"Description: {self._compact_prompt_line(skill.description)}")
+        if skill.instructions.strip():
+            lines.append("Instructions: on-demand.")
+        else:
+            lines.append("No additional instruction body is registered for this skill.")
+
+        manifest = self.registry.manifest_skills.get(name)
+        if manifest:
+            bundle = SkillBundle(manifest)
+            prompt_index = bundle.render_prompt_index()
+            if prompt_index:
+                lines.append(prompt_index)
+        return "\n".join(lines)
+
     async def run(self, agent: AgentSpec, user_input: PromptContent, context: RunContext | None = None) -> GenerationResponse:
         final_response: GenerationResponse | None = None
         async for event in self.stream_events(agent, user_input, context):
@@ -137,23 +166,19 @@ class ReactAgentRuntime(AgentRuntime):
         for name in agent.skills:
             if not self.registry.is_skill_enabled(name):
                 continue
-            skill = self.registry.skills.get(name)
-            if not skill:
-                continue
-            block = skill.instructions
-            manifest = self.registry.manifest_skills.get(name)
-            if manifest:
-                bundle = SkillBundle(manifest)
-                extras = [value for value in (bundle.render_prompt_index(), bundle.render_eager_resources()) if value]
-                if extras:
-                    block = f"{block}\n\n" + "\n\n".join(extras)
-            skill_blocks.append(block)
+            block = self._build_skill_prompt_block(name)
+            if block:
+                skill_blocks.append(block)
         prompt_sections = [agent.system_prompt]
         if agent.reasoning_prompt.strip():
             prompt_sections.append(agent.reasoning_prompt.strip())
         prompt_sections.append(DOWNLOAD_PUBLICATION_POLICY)
         if skill_blocks:
-            prompt_sections.append("Available skills:\n" + "\n\n".join(skill_blocks))
+            prompt_sections.append(
+                "Available skills (progressive disclosure): detailed instruction bodies are not preloaded. "
+                "Call read_skill_instructions for a relevant skill before applying its workflow.\n"
+                + "\n\n".join(skill_blocks)
+            )
         return "\n\n".join(section for section in prompt_sections if section)
 
     async def _execute_tool_calls(
@@ -666,6 +691,10 @@ class ReactAgentRuntime(AgentRuntime):
         except TypeError:
             return str(value)
 
+    @staticmethod
+    def _json_safe_value(value: Any) -> Any:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
     def _build_model_call_payload(
         self,
         *,
@@ -675,6 +704,7 @@ class ReactAgentRuntime(AgentRuntime):
         elapsed_ms: int,
         context_stats: dict[str, Any],
         status: str,
+        request: GenerationRequest | None = None,
         response: GenerationResponse | None = None,
         error: ModelProviderError | None = None,
     ) -> dict[str, Any]:
@@ -689,9 +719,14 @@ class ReactAgentRuntime(AgentRuntime):
             "request_char_count": context_stats["request_char_count"],
             "compacted": context_stats["compacted"],
         }
+        if request is not None:
+            payload["raw_request"] = self._json_safe_value(request.model_dump(mode="json", exclude_none=True))
         if response is not None:
             payload["tool_call_count"] = len(response.tool_calls)
             payload["output_char_count"] = len(response.output_text or "")
+            payload["raw_response"] = self._json_safe_value(
+                response.raw_response or response.model_dump(mode="json")
+            )
             if response.usage:
                 payload["prompt_tokens"] = response.usage.prompt_tokens
                 payload["completion_tokens"] = response.usage.completion_tokens
@@ -699,6 +734,13 @@ class ReactAgentRuntime(AgentRuntime):
         if error is not None:
             payload["status_code"] = error.status_code
             payload["detail"] = error.detail
+            payload["raw_response"] = self._json_safe_value(
+                {
+                    "error": error.detail,
+                    "status_code": error.status_code,
+                    "provider": error.provider,
+                }
+            )
         return payload
 
     @classmethod
@@ -1211,6 +1253,7 @@ class ReactAgentRuntime(AgentRuntime):
                         elapsed_ms=elapsed_ms,
                         context_stats=context_stats,
                         status="error",
+                        request=request,
                         error=exc,
                     ),
                 }
@@ -1225,6 +1268,7 @@ class ReactAgentRuntime(AgentRuntime):
                     elapsed_ms=elapsed_ms,
                     context_stats=context_stats,
                     status="ok",
+                    request=request,
                     response=response,
                 ),
             }

@@ -22,8 +22,9 @@ class SkillBundle:
     def list_files(self, kind: str = "all") -> dict[str, list[str]]:
         if kind not in {"all", "resources", "scripts"}:
             raise SkillBundleError(f"Unsupported bundle listing kind: {kind}")
+        resource_paths = sorted(set(self.spec.resource_files) | set(self.spec.eager_resource_files))
         payload = {
-            "resources": sorted(self.spec.resource_files),
+            "resources": resource_paths,
             "scripts": [script.path for script in self.spec.scripts],
         }
         if kind == "all":
@@ -78,8 +79,9 @@ class SkillBundle:
             sections.append(
                 "This skill exposes bundled scripts via run_skill_script:\n" + "\n".join(lines)
             )
-        if self.spec.resource_files:
-            lines = [f"- {path}" for path in self.spec.resource_files]
+        resource_paths = sorted(set(self.spec.resource_files) | set(self.spec.eager_resource_files))
+        if resource_paths:
+            lines = [f"- {path}" for path in resource_paths]
             sections.append(
                 "This skill exposes bundled resources via read_skill_resource:\n" + "\n".join(lines)
             )

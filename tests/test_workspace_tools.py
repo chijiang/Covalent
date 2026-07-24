@@ -11,6 +11,7 @@ from agent_framework.core.workspace_tools import (
     _copy_workspace_entry,
     _edit_workspace_file,
     _move_workspace_entry,
+    _publish_downloadable_file,
     _read_workspace_file,
     _search_workspace_files,
     _unzip_workspace_archive,
@@ -264,6 +265,42 @@ class WorkspaceToolTests(unittest.TestCase):
                 {"archive_path": "bad.zip", "output_dir": "out"},
             )
         self.assertFalse((self.root.parent / "escape.txt").exists())
+
+    def test_publish_downloadable_file_uses_file_path_and_description(self) -> None:
+        session_context = SimpleNamespace(session_id="sess-1")
+        session_root = self.root / "sess-1"
+        session_root.mkdir()
+        (session_root / "story.html").write_text("<h1>Story</h1>", encoding="utf-8")
+
+        result = json.loads(
+            _publish_downloadable_file(
+                self.settings,
+                session_context,
+                "/api/backend/downloads",
+                {
+                    "file_path": "story.html",
+                    "description": "Story HTML",
+                    "download_name": "story.html",
+                },
+            )
+        )
+
+        self.assertEqual(result["name"], "story.html")
+        self.assertEqual(result["summary"], "Story HTML")
+        self.assertEqual(result["download_url"], "/api/backend/downloads/sess-1/story.html")
+        self.assertTrue((self.root / ".agent_framework" / "downloads" / "sess-1" / "story.html").is_file())
+
+    def test_publish_downloadable_file_rejects_old_path_parameter(self) -> None:
+        session_context = SimpleNamespace(session_id="sess-1")
+        (self.root / "sess-1").mkdir()
+
+        with self.assertRaisesRegex(ValueError, "file_path"):
+            _publish_downloadable_file(
+                self.settings,
+                session_context,
+                "/api/backend/downloads",
+                {"path": "story.html"},
+            )
 
 
 if __name__ == "__main__":

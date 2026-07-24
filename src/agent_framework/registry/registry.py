@@ -16,7 +16,12 @@ from agent_framework.model.base import ModelAdapter, ProviderConfig
 from agent_framework.model.factory import build_provider
 from agent_framework.runtime.backend import BackendUnavailable
 from agent_framework.skills.exceptions import SkillProcessError, SkillStartupError
-from agent_framework.skills.meta_tools import LIST_SKILL_FILES_TOOL, READ_SKILL_RESOURCE_TOOL, RUN_SKILL_SCRIPT_TOOL
+from agent_framework.skills.meta_tools import (
+    LIST_SKILL_FILES_TOOL,
+    READ_SKILL_INSTRUCTIONS_TOOL,
+    READ_SKILL_RESOURCE_TOOL,
+    RUN_SKILL_SCRIPT_TOOL,
+)
 from agent_framework.skills.process import SkillProcessManager
 from agent_framework.skills.spec import ManifestSkillSpec, SkillSpec
 
@@ -147,14 +152,15 @@ class FrameworkRegistry:
         for skill_name in agent.skills:
             if not self.is_skill_enabled(skill_name):
                 continue
+            local_tool_names.add(READ_SKILL_INSTRUCTIONS_TOOL)
             manifest = self.manifest_skills.get(skill_name)
             if manifest:
                 for tool_decl in manifest.tools:
                     tool_schemas.append(tool_decl.to_openai_tool_schema())
                 local_tool_names.update(manifest.references)
-                if manifest.resource_files or manifest.scripts:
+                if manifest.resource_files or manifest.eager_resource_files or manifest.scripts:
                     local_tool_names.add(LIST_SKILL_FILES_TOOL)
-                if manifest.resource_files:
+                if manifest.resource_files or manifest.eager_resource_files:
                     local_tool_names.add(READ_SKILL_RESOURCE_TOOL)
                 if manifest.scripts:
                     local_tool_names.add(RUN_SKILL_SCRIPT_TOOL)

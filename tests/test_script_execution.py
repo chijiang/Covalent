@@ -14,8 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent_framework.runtime.filesystem_backend import FileSystemBackend
-from agent_framework.skills.meta_tools import _run_skill_script
-from agent_framework.skills.spec import ManifestSkillSpec, ScriptDeclaration
+from agent_framework.skills.meta_tools import _read_skill_instructions, _run_skill_script
+from agent_framework.skills.spec import ManifestSkillSpec, ScriptDeclaration, SkillSpec
 
 
 class _DummySettings:
@@ -149,6 +149,29 @@ class ScriptExecutionTests(unittest.IsolatedAsyncioTestCase):
             registry, {"skill": "test-skill", "name": "mark"}, self.context, self.settings, self.backend,
         ))
         self.assertEqual(result["execution_backend"], "filesystem")
+
+
+class SkillInstructionReadTests(unittest.TestCase):
+    def test_read_skill_instructions_returns_registered_body(self) -> None:
+        skill = SkillSpec(
+            name="test-skill",
+            description="Test skill",
+            instructions="abcdef",
+            tools=[],
+        )
+        registry = SimpleNamespace(
+            skills={"test-skill": skill},
+            resolve_skill_name=lambda name: "test-skill",
+            is_skill_enabled=lambda name: True,
+        )
+
+        result = json.loads(
+            _read_skill_instructions(registry, {"skill": "test-skill", "max_chars": 3})
+        )
+
+        self.assertEqual(result["name"], "test-skill")
+        self.assertEqual(result["instructions"], "abc")
+        self.assertTrue(result["truncated"])
 
 
 if __name__ == "__main__":
