@@ -325,6 +325,47 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snapshot["config"]["max_sessions"], 0)
             self.assertEqual(snapshot["config"]["idle_timeout_seconds"], 1800.0)
 
+    async def test_container_recreation_on_outbound_change(self) -> None:
+        """Changing outbound after container creation → old removed, new created with bridge."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake)
+            await backend.ensure("s1")
+            self.assertEqual(fake.containers.run_calls[0]["network_mode"], "none")
+            backend.record_session("s1", "agent", ["api.example.com"])
+            await backend.ensure("s1")
+            self.assertEqual(len(fake.containers.run_calls), 2)
+            self.assertEqual(fake.containers.run_calls[1]["network_mode"], "bridge")
+
+    async def test_session_idle_seconds_tracks_activity(self) -> None:
+        """session_idle_seconds reports time since last activity."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._make_backend(Path(tmp), client=_FakeDockerClient())
+            backend.record_session("s1", "agent", [])
+            await backend.ensure("s1")
+            idle = backend.session_idle_seconds("s1")
+            self.assertIsNotNone(idle)
+            self.assertLess(idle, 5.0)
+            backend._session_meta["s1"]["last_activity"] = 0.0
+            idle = backend.session_idle_seconds("s1")
+            self.assertGreater(idle, 1000.0)
+
+    async def test_max_sessions_queues_new_request(self) -> None:
+        """max_sessions=1 → second ensure blocks → stop frees slot → queued proceeds."""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = AppSettings(
+                workspace_root_dir=str(tmp),
+                execution_backend_docker_max_sessions=1,
+            )
+            backend = DockerBackend(settings, skill_source_dirs_provider=lambda: [], docker_client=_FakeDockerClient())
+            await backend.ensure("s1")
+            task = asyncio.create_task(backend.ensure("s2"))
+            await asyncio.sleep(0.1)
+            self.assertFalse(task.done(), "Second ensure should be queued")
+            await backend.stop("s1")
+            await asyncio.wait_for(task, timeout=2.0)
+            self.assertTrue(task.done())
+
 
 def settings_session_workspace_dir(workspace_root: Path, session_id: str) -> Path:
     """Mirror AppSettings.session_workspace_dir for assertion expectations."""
