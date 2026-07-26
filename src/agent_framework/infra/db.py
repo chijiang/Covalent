@@ -341,6 +341,25 @@ class ChatSessionRow(TimestampMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ChatMessageRow(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    attachments: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "position", name="uq_chat_messages_session_id_position"),
+    )
+
+
 async def run_session_operation(
     session_factory: async_sessionmaker[AsyncSession],
     operation: Callable[[AsyncSession], Awaitable[_T]],
