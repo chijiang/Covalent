@@ -201,3 +201,45 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
         by_id = {s.id: s.message_count for s in sessions}
         self.assertEqual(by_id.get("sess-1"), 2)
         self.assertEqual(by_id.get("sess-2"), 0)
+
+
+class RowsFromTranscriptTest(unittest.TestCase):
+    def test_maps_fields_and_assigns_position(self) -> None:
+        from scripts.backfill_chat_messages import rows_from_transcript
+
+        transcript = [
+            {"id": "user-1", "role": "user", "content": "hi", "attachments": []},
+            {"id": "assistant-1", "role": "assistant", "content": "hello", "attachments": [{"k": "v"}]},
+        ]
+        self.assertEqual(
+            rows_from_transcript("sess-1", transcript),
+            [
+                {
+                    "id": "user-1",
+                    "session_id": "sess-1",
+                    "role": "user",
+                    "content": "hi",
+                    "attachments": [],
+                    "position": 0,
+                },
+                {
+                    "id": "assistant-1",
+                    "session_id": "sess-1",
+                    "role": "assistant",
+                    "content": "hello",
+                    "attachments": [{"k": "v"}],
+                    "position": 1,
+                },
+            ],
+        )
+
+    def test_empty_transcript_returns_empty(self) -> None:
+        from scripts.backfill_chat_messages import rows_from_transcript
+
+        self.assertEqual(rows_from_transcript("sess-1", []), [])
+
+    def test_missing_attachments_defaults_to_empty_list(self) -> None:
+        from scripts.backfill_chat_messages import rows_from_transcript
+
+        rows = rows_from_transcript("sess-1", [{"id": "a", "role": "user", "content": "c"}])
+        self.assertEqual(rows[0]["attachments"], [])
