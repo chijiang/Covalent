@@ -354,6 +354,24 @@ class ChatMessageRow(Base):
     )
 
 
+class ChatActivityRow(Base):
+    __tablename__ = "chat_activity"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "position", name="uq_chat_activity_session_id_position"),
+    )
+
+
 async def run_session_operation(
     session_factory: async_sessionmaker[AsyncSession],
     operation: Callable[[AsyncSession], Awaitable[_T]],
