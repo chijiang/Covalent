@@ -68,6 +68,15 @@ class SessionStore(ABC):
 
     @abstractmethod
     async def save_session(self, record: ChatSessionRecord) -> ChatSessionRecord:
+        """Persist the session.
+
+        ``record.activity`` must be a superset of the currently-stored
+        activity items (append-only): existing items are kept by id and only
+        net-new items are added. Callers must NOT drop or reorder items, and
+        must NOT mutate an already-stored item's id — on the persistent store
+        a non-superset can raise ``IntegrityError`` on the
+        ``(session_id, position)`` unique constraint.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -227,6 +236,8 @@ class PersistentSessionStore(SessionStore):
                             position=position,
                         )
                     )
+                # Append-only: callers must pass a superset (see SessionStore.save_session).
+                # Existing ids are no-ops via ON CONFLICT; only net-new rows insert.
                 if record.activity:
                     await session.execute(
                         pg_insert(ChatActivityRow)

@@ -5,7 +5,7 @@ These tests run against a real PostgreSQL instance pointed at by
 unset, so it is safe to run as part of the normal unit-test suite without a DB.
 
 The harness applies Alembic migrations to the test database and truncates the
-``chat_messages``/``chat_sessions`` tables before and after each test.
+``chat_messages``/``chat_activity``/``chat_sessions`` tables before and after each test.
 """
 
 from __future__ import annotations
@@ -46,14 +46,14 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         async with self.session_factory() as session:
             await session.execute(
-                text("TRUNCATE chat_messages, chat_sessions RESTART IDENTITY CASCADE")
+                text("TRUNCATE chat_messages, chat_activity, chat_sessions RESTART IDENTITY CASCADE")
             )
             await session.commit()
 
     async def asyncTearDown(self) -> None:
         async with self.session_factory() as session:
             await session.execute(
-                text("TRUNCATE chat_messages, chat_sessions RESTART IDENTITY CASCADE")
+                text("TRUNCATE chat_messages, chat_activity, chat_sessions RESTART IDENTITY CASCADE")
             )
             await session.commit()
 
@@ -293,6 +293,42 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
                 text("select count(*) from chat_activity where session_id = 'act-3'")
             )).scalar()
         self.assertEqual(count, 0)
+
+    async def test_activity_append_does_not_rewrite_existing(self) -> None:
+        # ON CONFLICT (id) DO NOTHING must suppress updates to already-stored
+        # rows (append-only), proving the no-rewrite / O(new-items) behavior.
+        from datetime import UTC, datetime
+
+        from agent_framework.infra.memory import ChatActivityItem, ChatSessionRecord
+
+        store = self._store()
+        now = datetime.now(UTC)
+        await store.save_session(
+            ChatSessionRecord(
+                id="act-mut", title="t", created_at=now, updated_at=now,
+                activity=[
+                    ChatActivityItem(id="a", title="t1", payload={"v": "orig"}),
+                    ChatActivityItem(id="b", title="t2", payload=None),
+                ],
+            )
+        )
+        # re-save with a MUTATED payload on "a" plus a new "c"
+        await store.save_session(
+            ChatSessionRecord(
+                id="act-mut", title="t", created_at=now, updated_at=now,
+                activity=[
+                    ChatActivityItem(id="a", title="t1", payload={"v": "changed"}),
+                    ChatActivityItem(id="b", title="t2", payload=None),
+                    ChatActivityItem(id="c", title="t3", payload=None),
+                ],
+            )
+        )
+
+        loaded = await store.get_session("act-mut")
+        by_id = {a.id: a for a in loaded.activity}
+        self.assertEqual([a.id for a in loaded.activity], ["a", "b", "c"])  # order preserved, c appended
+        self.assertEqual(by_id["a"].payload, {"v": "orig"})  # NOT overwritten to "changed"
+        self.assertIn("c", by_id)  # new item added
 
 
 class RowsFromTranscriptTest(unittest.TestCase):
