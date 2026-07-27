@@ -4,7 +4,7 @@
 
 **Goal:** Normalize the `transcript_messages` JSONB column on `chat_sessions` into a dedicated `chat_messages` table, migrate existing data, and drop the old column.
 
-**Architecture:** Add a `chat_messages` table (one row per `ChatTranscriptMessage`, ordered by `position`, cascading on session delete). Rewrite only `PersistentSessionStore` to read/write the new table via explicit SQLAlchemy queries (no relationship, matching codebase style). All Pydantic models, `InMemorySessionStore`, and `app.py` stay unchanged. A two-migration cutover (create table → backfill → drop column) with an ad hoc backfill script in between.
+**Architecture:** Add a `chat_messages` table (one row per `ChatTranscriptMessage`, ordered by `position`, cascading on session delete). Rewrite only `PersistentSessionStore` to read/write the new table via explicit SQLAlchemy queries (no relationship, matching codebase style). All Pydantic models, `InMemorySessionStore`, and `app.py` stay unchanged. Two migrations: #1 creates `chat_messages`; #2 copies `transcript_messages` into `chat_messages` and drops the column **atomically** (the app auto-migrates to head on startup, so the copy is folded in to avoid data loss). A standalone backfill script is kept as a manual fallback, not a required step.
 
 **Tech Stack:** Python 3.12, SQLAlchemy 2.x async (`asyncpg`), PostgreSQL (JSONB), Alembic, `unittest.IsolatedAsyncioTestCase` for async tests, `anyio`.
 
@@ -25,7 +25,7 @@
 - **Modify** `src/agent_framework/infra/db.py` — add `ChatMessageRow` model; (Task 7) remove `transcript_messages_json` from `ChatSessionRow`.
 - **Create** `tests/test_persistent_session_store.py` — opt-in Postgres integration tests (`@unittest.skipUnless(TEST_DATABASE_URL)`).
 - **Modify** `src/agent_framework/infra/memory.py` — rewrite `PersistentSessionStore` methods to use `chat_messages`; only this class changes.
-- **Create** `scripts/backfill_chat_messages.py` — ad hoc data migration: `transcript_messages` JSONB → `chat_messages` rows (idempotent, runs between the two migrations).
+- **Create** `scripts/backfill_chat_messages.py` — manual fallback: copies `transcript_messages` JSONB → `chat_messages` rows (idempotent). Not required for the cutover, since migration #2 copies atomically.
 - **Create** `alembic/versions/20260724_000022_drop_chat_sessions_transcript_messages.py` — DDL: drop the old column (idempotent).
 
 ---
@@ -977,13 +977,18 @@ Stage only; **do not commit**.
 
 ---
 
-## Rollout (operator runbook, not code)
+## Rollout
 
-After the code is deployed, perform in order on each environment:
+The data copy is folded into migration 20260724_000022, so `upgrade head`
+(create table -> copy transcript_messages into chat_messages -> drop column)
+is data-safe and atomic. On deploy, just restart the app — its startup runs
+`run_database_migrations` to head automatically.
 
-1. `run_database_migrations` (applies migration #1 → `chat_messages` exists).
-2. Deploy the new store code (reads/writes `chat_messages`).
-3. `DATABASE_URL=... python -m scripts.backfill_chat_messages` (copies historical JSONB → rows).
-4. `run_database_migrations` again (applies migration #2 → drops `transcript_messages`).
+The standalone `scripts/backfill_chat_messages.py` is now an optional manual
+fallback (re-run or partial backfill); it is no longer required for the
+cutover. If used, run it with `AGENT_FRAMEWORK_DATABASE_URL=...` pointing at
+the same DB the app uses.
 
-Between steps 2 and 3, pre-existing sessions appear empty until backfilled; new conversations work from step 2.
+Rollback (emergency): the downgrade re-adds an empty transcript_messages
+column (lossy); restore from a DB backup taken before the upgrade to recover
+history.
