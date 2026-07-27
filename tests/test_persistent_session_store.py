@@ -231,6 +231,69 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(loaded.activity[1].payload)
         self.assertEqual(loaded.activity[2].payload, {"code": 500})
 
+    async def test_activity_append_is_idempotent(self) -> None:
+        from datetime import UTC, datetime
+
+        from agent_framework.infra.memory import ChatActivityItem, ChatSessionRecord
+
+        store = self._store()
+        now = datetime.now(UTC)
+        await store.save_session(
+            ChatSessionRecord(
+                id="act-2", title="t", created_at=now, updated_at=now,
+                activity=[
+                    ChatActivityItem(id="a", title="t1", payload=None),
+                    ChatActivityItem(id="b", title="t2", payload={"n": 1}),
+                ],
+            )
+        )
+        # re-save with a superset (a, b already exist; c, d are new)
+        await store.save_session(
+            ChatSessionRecord(
+                id="act-2", title="t", created_at=now, updated_at=now,
+                activity=[
+                    ChatActivityItem(id="a", title="t1", payload=None),
+                    ChatActivityItem(id="b", title="t2", payload={"n": 1}),
+                    ChatActivityItem(id="c", title="t3", payload=None),
+                    ChatActivityItem(id="d", title="t4", payload={"n": 2}),
+                ],
+            )
+        )
+
+        loaded = await store.get_session("act-2")
+        self.assertEqual([a.id for a in loaded.activity], ["a", "b", "c", "d"])
+        async with self.session_factory() as session:
+            count = (await session.execute(
+                text("select count(*) from chat_activity where session_id = 'act-2'")
+            )).scalar()
+        self.assertEqual(count, 4)  # a, b NOT duplicated
+
+    async def test_delete_session_removes_activity_via_cascade(self) -> None:
+        from datetime import UTC, datetime
+
+        from agent_framework.infra.memory import ChatActivityItem, ChatSessionRecord
+
+        store = self._store()
+        now = datetime.now(UTC)
+        await store.save_session(
+            ChatSessionRecord(
+                id="act-3", title="t", created_at=now, updated_at=now,
+                activity=[
+                    ChatActivityItem(id="x", title="t1", payload=None),
+                    ChatActivityItem(id="y", title="t2", payload=None),
+                ],
+            )
+        )
+
+        deleted = await store.delete_session("act-3")
+        self.assertTrue(deleted)
+
+        async with self.session_factory() as session:
+            count = (await session.execute(
+                text("select count(*) from chat_activity where session_id = 'act-3'")
+            )).scalar()
+        self.assertEqual(count, 0)
+
 
 class RowsFromTranscriptTest(unittest.TestCase):
     def test_maps_fields_and_assigns_position(self) -> None:
