@@ -331,12 +331,6 @@ class ChatSessionRow(TimestampMixin, Base):
     agent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     preview_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     memory_messages_json: Mapped[list[dict[str, Any]]] = mapped_column("memory_messages", JSONB, nullable=False, default=list)
-    transcript_messages_json: Mapped[list[dict[str, Any]]] = mapped_column(
-        "transcript_messages",
-        JSONB,
-        nullable=False,
-        default=list,
-    )
     activity_json: Mapped[list[dict[str, Any]]] = mapped_column("activity", JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
