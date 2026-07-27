@@ -5,11 +5,11 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_framework.core.types import Message
-from agent_framework.infra.db import ChatSessionRow, run_session_operation
+from agent_framework.infra.db import ChatMessageRow, ChatSessionRow, run_session_operation
 
 
 SessionTitleSource = Literal["auto", "manual"]
@@ -167,23 +167,27 @@ class PersistentSessionStore(SessionStore):
         await run_session_operation(self._session_factory, _save)
 
     async def list_sessions(self, *, owner_user_id: str | None = None, workspace_id: str | None = None) -> list[ChatSessionSummary]:
-        async def _list(session: AsyncSession) -> list[ChatSessionRow]:
+        async def _list(session: AsyncSession) -> list[ChatSessionSummary]:
             stmt = select(ChatSessionRow).order_by(desc(ChatSessionRow.updated_at))
             if owner_user_id is not None:
                 stmt = stmt.where(ChatSessionRow.owner_user_id == owner_user_id)
             if workspace_id is not None:
                 stmt = stmt.where(ChatSessionRow.workspace_id == workspace_id)
-            return list(await session.scalars(stmt))
+            rows = list(await session.scalars(stmt))
+            summaries: list[ChatSessionSummary] = []
+            for row in rows:
+                count = await self._count_messages(session, row.id)
+                summaries.append(self._summary_from_row(row, message_count=count))
+            return summaries
 
-        rows = await run_session_operation(self._session_factory, _list)
-        return [self._summary_from_row(row) for row in rows]
+        return await run_session_operation(self._session_factory, _list)
 
     async def get_session(self, session_id: str) -> ChatSessionRecord | None:
         async def _get(session: AsyncSession) -> ChatSessionRecord | None:
             row = await session.get(ChatSessionRow, session_id)
             if row is None:
                 return None
-            return self._record_from_row(row)
+            return await self._record_from_row(session, row)
 
         return await run_session_operation(self._session_factory, _get)
 
@@ -204,11 +208,29 @@ class PersistentSessionStore(SessionStore):
                 row.title_source = record.title_source
                 row.agent_name = record.agent_name
                 row.preview_text = record.preview_text
-                row.memory_messages_json = [message.model_dump(mode="json") for message in record.memory_messages]
-                row.transcript_messages_json = [message.model_dump(mode="json") for message in record.messages]
+                row.memory_messages_json = [
+                    message.model_dump(mode="json") for message in record.memory_messages
+                ]
                 row.activity_json = [item.model_dump(mode="json") for item in record.activity]
+
+                await session.execute(
+                    delete(ChatMessageRow).where(ChatMessageRow.session_id == record.id)
+                )
+                for position, message in enumerate(record.messages):
+                    session.add(
+                        ChatMessageRow(
+                            id=message.id,
+                            session_id=record.id,
+                            role=message.role,
+                            content=message.content,
+                            attachments=list(message.attachments),
+                            position=position,
+                        )
+                    )
             await session.refresh(row)
-            return self._record_from_row(row)
+            return await self._record_from_row(
+                session, row, messages=list(record.messages), message_count=len(record.messages)
+            )
 
         return await run_session_operation(self._session_factory, _save)
 
@@ -221,7 +243,7 @@ class PersistentSessionStore(SessionStore):
                 row.title = title
                 row.title_source = title_source
             await session.refresh(row)
-            return self._record_from_row(row)
+            return await self._record_from_row(session, row)
 
         return await run_session_operation(self._session_factory, _update)
 
@@ -237,7 +259,34 @@ class PersistentSessionStore(SessionStore):
         return await run_session_operation(self._session_factory, _delete)
 
     @staticmethod
-    def _summary_from_row(row: ChatSessionRow) -> ChatSessionSummary:
+    async def _load_messages(session: AsyncSession, session_id: str) -> list[ChatTranscriptMessage]:
+        stmt = (
+            select(ChatMessageRow)
+            .where(ChatMessageRow.session_id == session_id)
+            .order_by(ChatMessageRow.position)
+        )
+        rows = list(await session.scalars(stmt))
+        return [
+            ChatTranscriptMessage(
+                id=row.id,
+                role=row.role,
+                content=row.content,
+                attachments=list(row.attachments or []),
+            )
+            for row in rows
+        ]
+
+    @staticmethod
+    async def _count_messages(session: AsyncSession, session_id: str) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(ChatMessageRow)
+            .where(ChatMessageRow.session_id == session_id)
+        )
+        return int(await session.scalar(stmt) or 0)
+
+    @staticmethod
+    def _summary_from_row(row: ChatSessionRow, *, message_count: int) -> ChatSessionSummary:
         return ChatSessionSummary(
             id=row.id,
             title=row.title,
@@ -247,16 +296,27 @@ class PersistentSessionStore(SessionStore):
             workspace_id=row.workspace_id,
             created_by_token_id=row.created_by_token_id,
             preview_text=row.preview_text,
-            message_count=len(row.transcript_messages_json or []),
+            message_count=message_count,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
 
     @classmethod
-    def _record_from_row(cls, row: ChatSessionRow) -> ChatSessionRecord:
+    async def _record_from_row(
+        cls,
+        session: AsyncSession,
+        row: ChatSessionRow,
+        *,
+        messages: list[ChatTranscriptMessage] | None = None,
+        message_count: int | None = None,
+    ) -> ChatSessionRecord:
+        if messages is None:
+            messages = await cls._load_messages(session, row.id)
+        if message_count is None:
+            message_count = len(messages)
         return ChatSessionRecord(
-            **cls._summary_from_row(row).model_dump(),
+            **cls._summary_from_row(row, message_count=message_count).model_dump(),
             memory_messages=[Message.model_validate(item) for item in row.memory_messages_json],
-            messages=[ChatTranscriptMessage.model_validate(item) for item in row.transcript_messages_json],
+            messages=messages,
             activity=[ChatActivityItem.model_validate(item) for item in row.activity_json],
         )

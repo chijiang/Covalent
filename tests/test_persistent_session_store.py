@@ -68,3 +68,34 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
                 text("select count(*) from pg_tables where tablename = 'chat_messages'")
             )
         self.assertEqual(result.scalar(), 1)
+
+    async def test_save_then_get_round_trips_messages_in_order(self) -> None:
+        from datetime import UTC, datetime
+
+        from agent_framework.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+
+        store = self._store()
+        now = datetime.now(UTC)
+        record = ChatSessionRecord(
+            id="sess-1",
+            title="t",
+            created_at=now,
+            updated_at=now,
+            messages=[
+                ChatTranscriptMessage(id="m1", role="user", content="hi", attachments=[]),
+                ChatTranscriptMessage(
+                    id="m2", role="assistant", content="hello", attachments=[{"k": "v"}]
+                ),
+            ],
+        )
+
+        saved = await store.save_session(record)
+        self.assertEqual(saved.message_count, 2)
+
+        loaded = await store.get_session("sess-1")
+        self.assertIsNotNone(loaded)
+        self.assertEqual([m.id for m in loaded.messages], ["m1", "m2"])
+        self.assertEqual([m.role for m in loaded.messages], ["user", "assistant"])
+        self.assertEqual(loaded.messages[0].content, "hi")
+        self.assertEqual(loaded.messages[1].attachments, [{"k": "v"}])
+        self.assertEqual(loaded.message_count, 2)
