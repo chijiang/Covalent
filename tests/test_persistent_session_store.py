@@ -99,3 +99,105 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded.messages[0].content, "hi")
         self.assertEqual(loaded.messages[1].attachments, [{"k": "v"}])
         self.assertEqual(loaded.message_count, 2)
+
+    async def test_resave_replaces_messages_without_duplicates(self) -> None:
+        from datetime import UTC, datetime
+
+        from agent_framework.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+
+        store = self._store()
+        now = datetime.now(UTC)
+        await store.save_session(
+            ChatSessionRecord(
+                id="sess-1",
+                title="t",
+                created_at=now,
+                updated_at=now,
+                messages=[
+                    ChatTranscriptMessage(id="m1", role="user", content="hi"),
+                    ChatTranscriptMessage(id="m2", role="assistant", content="hello"),
+                ],
+            )
+        )
+        await store.save_session(
+            ChatSessionRecord(
+                id="sess-1",
+                title="t",
+                created_at=now,
+                updated_at=now,
+                messages=[ChatTranscriptMessage(id="m3", role="user", content="again")],
+            )
+        )
+
+        loaded = await store.get_session("sess-1")
+        self.assertEqual([m.id for m in loaded.messages], ["m3"])
+        self.assertEqual(loaded.message_count, 1)
+
+        async with self.session_factory() as session:
+            result = await session.execute(
+                text("select count(*) from chat_messages where session_id = 'sess-1'")
+            )
+        self.assertEqual(result.scalar(), 1)
+
+    async def test_delete_session_removes_messages_via_cascade(self) -> None:
+        from datetime import UTC, datetime
+
+        from agent_framework.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+
+        store = self._store()
+        now = datetime.now(UTC)
+        await store.save_session(
+            ChatSessionRecord(
+                id="sess-1",
+                title="t",
+                created_at=now,
+                updated_at=now,
+                messages=[
+                    ChatTranscriptMessage(id="m1", role="user", content="hi"),
+                    ChatTranscriptMessage(id="m2", role="assistant", content="hello"),
+                ],
+            )
+        )
+
+        deleted = await store.delete_session("sess-1")
+        self.assertTrue(deleted)
+
+        async with self.session_factory() as session:
+            result = await session.execute(
+                text("select count(*) from chat_messages where session_id = 'sess-1'")
+            )
+        self.assertEqual(result.scalar(), 0)
+
+    async def test_list_sessions_reports_message_count(self) -> None:
+        from datetime import UTC, datetime
+
+        from agent_framework.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+
+        store = self._store()
+        now = datetime.now(UTC)
+        await store.save_session(
+            ChatSessionRecord(
+                id="sess-1",
+                title="one",
+                created_at=now,
+                updated_at=now,
+                messages=[
+                    ChatTranscriptMessage(id="m1", role="user", content="hi"),
+                    ChatTranscriptMessage(id="m2", role="assistant", content="hello"),
+                ],
+            )
+        )
+        await store.save_session(
+            ChatSessionRecord(
+                id="sess-2",
+                title="two",
+                created_at=now,
+                updated_at=now,
+                messages=[],
+            )
+        )
+
+        sessions = await store.list_sessions()
+        by_id = {s.id: s.message_count for s in sessions}
+        self.assertEqual(by_id.get("sess-1"), 2)
+        self.assertEqual(by_id.get("sess-2"), 0)
