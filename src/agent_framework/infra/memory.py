@@ -6,10 +6,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, desc, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_framework.core.types import Message
-from agent_framework.infra.db import ChatMessageRow, ChatSessionRow, run_session_operation
+from agent_framework.infra.db import ChatActivityRow, ChatMessageRow, ChatSessionRow, run_session_operation
 
 
 SessionTitleSource = Literal["auto", "manual"]
@@ -211,7 +212,6 @@ class PersistentSessionStore(SessionStore):
                 row.memory_messages_json = [
                     message.model_dump(mode="json") for message in record.memory_messages
                 ]
-                row.activity_json = [item.model_dump(mode="json") for item in record.activity]
 
                 await session.execute(
                     delete(ChatMessageRow).where(ChatMessageRow.session_id == record.id)
@@ -227,9 +227,30 @@ class PersistentSessionStore(SessionStore):
                             position=position,
                         )
                     )
+                if record.activity:
+                    await session.execute(
+                        pg_insert(ChatActivityRow)
+                        .values(
+                            [
+                                {
+                                    "id": item.id,
+                                    "session_id": record.id,
+                                    "title": item.title,
+                                    "payload": item.payload,
+                                    "position": position,
+                                }
+                                for position, item in enumerate(record.activity)
+                            ]
+                        )
+                        .on_conflict_do_nothing(index_elements=["id"])
+                    )
             await session.refresh(row)
             return await self._record_from_row(
-                session, row, messages=list(record.messages), message_count=len(record.messages)
+                session,
+                row,
+                messages=list(record.messages),
+                message_count=len(record.messages),
+                activity=list(record.activity),
             )
 
         return await run_session_operation(self._session_factory, _save)
@@ -277,6 +298,19 @@ class PersistentSessionStore(SessionStore):
         ]
 
     @staticmethod
+    async def _load_activity(session: AsyncSession, session_id: str) -> list[ChatActivityItem]:
+        stmt = (
+            select(ChatActivityRow)
+            .where(ChatActivityRow.session_id == session_id)
+            .order_by(ChatActivityRow.position)
+        )
+        rows = list(await session.scalars(stmt))
+        return [
+            ChatActivityItem(id=row.id, title=row.title, payload=row.payload)
+            for row in rows
+        ]
+
+    @staticmethod
     async def _count_messages(session: AsyncSession, session_id: str) -> int:
         stmt = (
             select(func.count())
@@ -309,14 +343,17 @@ class PersistentSessionStore(SessionStore):
         *,
         messages: list[ChatTranscriptMessage] | None = None,
         message_count: int | None = None,
+        activity: list[ChatActivityItem] | None = None,
     ) -> ChatSessionRecord:
         if messages is None:
             messages = await cls._load_messages(session, row.id)
+        if activity is None:
+            activity = await cls._load_activity(session, row.id)
         if message_count is None:
             message_count = len(messages)
         return ChatSessionRecord(
             **cls._summary_from_row(row, message_count=message_count).model_dump(),
             memory_messages=[Message.model_validate(item) for item in row.memory_messages_json],
             messages=messages,
-            activity=[ChatActivityItem.model_validate(item) for item in row.activity_json],
+            activity=activity,
         )

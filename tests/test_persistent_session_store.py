@@ -202,6 +202,35 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_id.get("sess-1"), 2)
         self.assertEqual(by_id.get("sess-2"), 0)
 
+    async def test_activity_round_trips_in_order(self) -> None:
+        from datetime import UTC, datetime
+
+        from agent_framework.infra.memory import ChatActivityItem, ChatSessionRecord
+
+        store = self._store()
+        now = datetime.now(UTC)
+        await store.save_session(
+            ChatSessionRecord(
+                id="act-1",
+                title="t",
+                created_at=now,
+                updated_at=now,
+                activity=[
+                    ChatActivityItem(id="e1", title="tool.result", payload={"a": 1}),
+                    ChatActivityItem(id="e2", title="trace", payload=None),
+                    ChatActivityItem(id="e3", title="error", payload={"code": 500}),
+                ],
+            )
+        )
+
+        loaded = await store.get_session("act-1")
+        self.assertIsNotNone(loaded)
+        self.assertEqual([a.id for a in loaded.activity], ["e1", "e2", "e3"])
+        self.assertEqual([a.title for a in loaded.activity], ["tool.result", "trace", "error"])
+        self.assertEqual(loaded.activity[0].payload, {"a": 1})
+        self.assertIsNone(loaded.activity[1].payload)
+        self.assertEqual(loaded.activity[2].payload, {"code": 500})
+
 
 class RowsFromTranscriptTest(unittest.TestCase):
     def test_maps_fields_and_assigns_position(self) -> None:
