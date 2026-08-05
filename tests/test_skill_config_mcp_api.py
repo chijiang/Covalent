@@ -6,6 +6,8 @@ skill_loader stubs. Covers routes that were previously untested at the HTTP leve
 
 from __future__ import annotations
 
+import pathlib
+import tempfile
 import unittest
 from types import SimpleNamespace
 
@@ -210,13 +212,22 @@ class SkillExportTests(unittest.TestCase):
     def setUp(self) -> None:
         self.settings = AppSettings(console_auth_mode="local", workspace_root_dir="/tmp")
         self.registry = FrameworkRegistry()
-        self.manifest = _make_manifest_skill("export-1", source_dir="/tmp")
+        # Use an isolated temp dir instead of system /tmp: export walks the
+        # source dir to zip it, and system /tmp may contain unreadable files
+        # (e.g. com.symantec.daemon.launches on macOS) that break the export.
+        self._source_dir = tempfile.TemporaryDirectory()
+        source_dir = self._source_dir.name
+        pathlib.Path(source_dir, "main.py").write_text("# skill entry\n", encoding="utf-8")
+        self.manifest = _make_manifest_skill("export-1", source_dir=source_dir)
         self.registry.register_manifest_skill(self.manifest)
         self.app, self.client = _build_app(
             registry=self.registry,
             config_store=_FakeConfigStore({"skill_sources": []}),
             settings=self.settings,
         )
+
+    def tearDown(self) -> None:
+        self._source_dir.cleanup()
 
     def test_export_skill(self) -> None:
         resp = self.client.get("/skills/export-1/export", headers={"Cookie": _admin_cookie(self.settings)})
