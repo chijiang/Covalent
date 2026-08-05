@@ -6253,6 +6253,41 @@ textarea::placeholder {
   border-left-color: #d97706;
 }
 
+.chat-page-shell .chat-trace-panel .trace-delegate-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat-page-shell .chat-trace-panel .trace-delegate-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  background: var(--surface-secondary, var(--surface-primary));
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 3px solid #7c3aed;
+  padding: 0;
+  min-height: 1.5rem;
+}
+
+.chat-page-shell .chat-trace-panel .trace-delegate-header:hover {
+  background: var(--surface-hover, var(--surface-primary));
+}
+
+.chat-page-shell .chat-trace-panel .trace-delegate-children {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-left: 2px solid var(--border-soft);
+  margin-left: 0.25rem;
+}
+
 .chat-page-shell .chat-trace-panel .trace-step.is-actor-user {
   border-left-color: #0f766e;
 }

@@ -112,11 +112,208 @@ type EnrichedTraceEntry = ActivityItem & {
   eventTitle: string;
 };
 
+type TraceNode =
+  | { kind: "event"; entry: EnrichedTraceEntry }
+  | {
+      kind: "delegate";
+      toolCallId: string;
+      agentName: string;
+      delegatedBy: string;
+      depth: number;
+      firstItemId: string;
+      children: TraceNode[];
+    };
+
 type TraceTurnGroup = {
   turnIndex: number;
   userPreview: string;
-  entries: EnrichedTraceEntry[];
+  entries: TraceNode[];
 };
+
+const MAX_DELEGATE_NESTING_DEPTH = 5;
+
+type DelegateTraceMetadata = {
+  agent_name?: string | null;
+  delegated_by?: string | null;
+  delegate_tool_name?: string | null;
+  delegate_tool_call_id?: string | null;
+  delegation_depth?: number | null;
+  parent_iteration?: number | null;
+};
+
+function readDelegateMeta(payload: unknown): DelegateTraceMetadata | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  const id = record.delegate_tool_call_id;
+  if (typeof id !== "string" || id.length === 0) {
+    return null;
+  }
+  return {
+    agent_name: typeof record.agent_name === "string" ? record.agent_name : null,
+    delegated_by: typeof record.delegated_by === "string" ? record.delegated_by : null,
+    delegate_tool_name: typeof record.delegate_tool_name === "string" ? record.delegate_tool_name : null,
+    delegate_tool_call_id: id,
+    delegation_depth: typeof record.delegation_depth === "number" ? record.delegation_depth : null,
+    parent_iteration: typeof record.parent_iteration === "number" ? record.parent_iteration : null,
+  };
+}
+
+function readChildToolCallIdsFromPayload(payload: unknown): string[] {
+  // A delegate_tool_calls event carries the child tool calls its subagent issued;
+  // those child ids are the only way to reconstruct parent→child nesting because
+  // each delegate event only carries its immediate parent's tool_call_id.
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+  const record = payload as Record<string, unknown>;
+  const calls = record.tool_calls;
+  if (!Array.isArray(calls)) {
+    return [];
+  }
+  const ids: string[] = [];
+  for (const call of calls) {
+    if (call && typeof call === "object") {
+      const id = (call as Record<string, unknown>).id;
+      if (typeof id === "string" && id.length > 0) {
+        ids.push(id);
+      }
+    }
+  }
+  return ids;
+}
+
+// Build a trace tree from a flat, possibly-interleaved list of entries.
+// Entries whose payload carries a non-empty delegate_tool_call_id are grouped
+// into per-id delegate nodes; all other entries stay as top-level event nodes.
+// Parent→child nesting is reconstructed from delegate_tool_calls payloads.
+// Beyond MAX_DELEGATE_NESTING_DEPTH, deeper delegate nodes flatten into their
+// parent's children list rather than nesting further.
+// ancestorIds is the set of delegate ids currently being built up the call
+// stack — those ids' own events are rendered as plain children inside the
+// current node, never re-grouped into another delegate node (prevents infinite
+// recursion: a delegate's own events all carry its own id).
+function buildTraceTree(
+  items: EnrichedTraceEntry[],
+  depth = 1,
+  ancestorIds: ReadonlySet<string> = new Set(),
+): TraceNode[] {
+  if (items.length === 0) {
+    return [];
+  }
+
+  // Pre-pass: map parent tool_call_id → list of child tool_call_ids declared in
+  // any delegate_tool_calls event inside this slice.
+  const declaredChildren = new Map<string, Set<string>>();
+  for (const item of items) {
+    if (getBaseEventTitle(item.title) !== "tool_calls") {
+      continue;
+    }
+    const meta = readDelegateMeta(item.payload);
+    if (!meta?.delegate_tool_call_id) {
+      continue;
+    }
+    const childIds = readChildToolCallIdsFromPayload(item.payload);
+    if (childIds.length === 0) {
+      continue;
+    }
+    const parentId = meta.delegate_tool_call_id;
+    const existing = declaredChildren.get(parentId) ?? new Set<string>();
+    for (const cid of childIds) {
+      existing.add(cid);
+    }
+    declaredChildren.set(parentId, existing);
+  }
+
+  // Determine which ids belong "inside" some other id in this slice.
+  const nestedIds = new Set<string>();
+  for (const childSet of declaredChildren.values()) {
+    for (const cid of childSet) {
+      nestedIds.add(cid);
+    }
+  }
+
+  const buckets = new Map<string, EnrichedTraceEntry[]>();
+  const bucketMeta = new Map<string, DelegateTraceMetadata>();
+  // For each top-level position, either an event entry or a delegate id to expand.
+  const topLevelPlan: Array<{ kind: "event"; entry: EnrichedTraceEntry } | { kind: "delegate"; id: string }> = [];
+  const seenDelegateIds = new Set<string>();
+
+  for (const item of items) {
+    const isDelegateTitle = isDelegateEventTitle(item.title);
+    const meta = isDelegateTitle ? readDelegateMeta(item.payload) : null;
+
+    if (!meta?.delegate_tool_call_id) {
+      topLevelPlan.push({ kind: "event", entry: item });
+      continue;
+    }
+
+    const id = meta.delegate_tool_call_id;
+    // An id currently being built up the stack is this node's own id (or an
+    // ancestor's): its events are rendered inline, not re-grouped.
+    if (ancestorIds.has(id)) {
+      topLevelPlan.push({ kind: "event", entry: item });
+      continue;
+    }
+    if (!buckets.has(id)) {
+      buckets.set(id, []);
+      bucketMeta.set(id, meta);
+    }
+    buckets.get(id)!.push(item);
+
+    // Emit one top-level slot per id at its first-seen position. Ids that are
+    // declared as children of another id in this slice are NOT emitted at top
+    // level — buildTraceTree recursing into the parent bucket will attach them.
+    if (!seenDelegateIds.has(id) && !nestedIds.has(id)) {
+      seenDelegateIds.add(id);
+      topLevelPlan.push({ kind: "delegate", id });
+    }
+  }
+
+  const result: TraceNode[] = [];
+  for (const slot of topLevelPlan) {
+    if (slot.kind === "event") {
+      result.push({ kind: "event", entry: slot.entry });
+    } else {
+      result.push(buildDelegateNode(slot.id, bucketMeta.get(slot.id)!, buckets.get(slot.id)!, depth));
+    }
+  }
+  return result;
+}
+
+function buildDelegateNode(
+  id: string,
+  meta: DelegateTraceMetadata,
+  items: EnrichedTraceEntry[],
+  depth: number,
+  ancestorIds: ReadonlySet<string> = new Set(),
+): Extract<TraceNode, { kind: "delegate" }> {
+  const childAncestors = new Set(ancestorIds);
+  childAncestors.add(id);
+  // Beyond the max depth, flatten: stop recursing, render children as a flat
+  // event list inside this node to avoid runaway nesting.
+  if (depth >= MAX_DELEGATE_NESTING_DEPTH) {
+    return {
+      kind: "delegate",
+      toolCallId: id,
+      agentName: meta.agent_name ?? "",
+      delegatedBy: meta.delegated_by ?? "",
+      depth,
+      firstItemId: items[0]?.id ?? "",
+      children: items.map((entry) => ({ kind: "event" as const, entry })),
+    };
+  }
+  return {
+    kind: "delegate",
+    toolCallId: id,
+    agentName: meta.agent_name ?? "",
+    delegatedBy: meta.delegated_by ?? "",
+    depth,
+    firstItemId: items[0]?.id ?? "",
+    children: buildTraceTree(items, depth + 1, childAncestors),
+  };
+}
 
 function getMaxTracePanelWidth(containerWidth: number): number {
   if (!Number.isFinite(containerWidth) || containerWidth <= 0) {
@@ -1289,16 +1486,18 @@ function buildTraceTurnGroups(
       {
         turnIndex: 1,
         userPreview: "Initial run",
-        entries: items,
+        entries: buildTraceTree(items),
       },
     ];
   }
 
-  const groups: TraceTurnGroup[] = userMessages.map((message, index) => ({
-    turnIndex: index + 1,
-    userPreview: getTurnUserPreview(message),
-    entries: [],
-  }));
+  const groups: Array<{ turnIndex: number; userPreview: string; items: EnrichedTraceEntry[] }> = userMessages.map(
+    (message, index) => ({
+      turnIndex: index + 1,
+      userPreview: getTurnUserPreview(message),
+      items: [],
+    }),
+  );
 
   for (const item of items) {
     const itemTimestamp = getTimestampFromId(item.id, 0);
@@ -1309,17 +1508,23 @@ function buildTraceTurnGroups(
         assignedIndex = index;
       }
     }
-    groups[assignedIndex]?.entries.push(item);
+    groups[assignedIndex]?.items.push(item);
   }
 
-  return groups.filter((group) => group.entries.length > 0);
+  return groups
+    .filter((group) => group.items.length > 0)
+    .map((group) => ({
+      turnIndex: group.turnIndex,
+      userPreview: group.userPreview,
+      entries: buildTraceTree(group.items),
+    }));
 }
 
 function TraceStepEntry({
-  item,
+  entry: item,
   summary,
 }: {
-  item: EnrichedTraceEntry;
+  entry: EnrichedTraceEntry;
   summary: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1396,6 +1601,64 @@ function truncateTraceSummaryText(value: string, maxChars = 240): string {
     return normalized;
   }
   return `${normalized.slice(0, Math.max(maxChars - 3, 1)).trimEnd()}...`;
+}
+
+function TraceNodeList({ nodes }: { nodes: TraceNode[] }) {
+  return (
+    <>
+      {nodes.map((node) => {
+        if (node.kind === "event") {
+          return (
+            <TraceStepEntry
+              entry={node.entry}
+              key={node.entry.id}
+              summary={getTraceSummary(node.entry)}
+            />
+          );
+        }
+        return <TraceDelegateGroup key={`delegate-${node.firstItemId}`} node={node} />;
+      })}
+    </>
+  );
+}
+
+function TraceDelegateGroup({ node }: { node: Extract<TraceNode, { kind: "delegate" }> }) {
+  // Count children for the badge (event-kind children only; nested delegate
+  // groups count as 1 each for display purposes).
+  const eventCount = node.children.length;
+  const [expanded, setExpanded] = useState(false);
+  const sourceLabel = node.agentName
+    ? node.delegatedBy
+      ? `${node.agentName} via ${node.delegatedBy}`
+      : node.agentName
+    : "delegate";
+  const indentStyle = { marginLeft: `${Math.min(node.depth - 1, MAX_DELEGATE_NESTING_DEPTH - 1) * 12}px` };
+
+  return (
+    <div className="trace-delegate-group" style={indentStyle}>
+      <button
+        aria-expanded={expanded}
+        className="trace-step trace-delegate-header"
+        onClick={() => setExpanded((current) => !current)}
+        type="button"
+      >
+        <span className="trace-step-actor shrink-0 is-tool">Delegate</span>
+        <span className="trace-step-event w-[52px] shrink-0 truncate">delegate</span>
+        <span className="trace-step-summary min-w-0 flex-1 truncate">
+          {sourceLabel} · {eventCount} event{eventCount === 1 ? "" : "s"}
+        </span>
+        <span className="trace-step-time w-14 shrink-0 text-right">depth {node.depth}</span>
+        <span className="trace-step-payload-toggle w-14 shrink-0 truncate text-right">
+          {expanded ? "hide" : "show"}
+        </span>
+      </button>
+      {expanded ? (
+        <div className="trace-delegate-children">
+          <TraceNodeList nodes={node.children} />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 const DELEGATE_EVENT_PREFIX = "delegate_";
@@ -2675,13 +2938,7 @@ export function ChatWorkspace() {
 
                         {!isCollapsed ? (
                           <div className="trace-turn-steps">
-                            {turn.entries.map((item) => (
-                              <TraceStepEntry
-                                item={item}
-                                key={item.id}
-                                summary={getTraceSummary(item)}
-                              />
-                            ))}
+                            <TraceNodeList nodes={turn.entries} />
                           </div>
                         ) : null}
                       </section>

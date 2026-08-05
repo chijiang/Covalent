@@ -189,22 +189,6 @@ class ReactAgentRuntime(AgentRuntime):
         context: RunContext | None = None,
         event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> list[ToolResult]:
-        if event_sink is not None:
-            results: list[ToolResult] = []
-            for tool_call in tool_calls:
-                if self._is_delegate_tool_name(agent, tool_call.name):
-                    result = await self._execute_delegate_tool_call(
-                        agent,
-                        tool_call,
-                        context,
-                        parent_iteration=iteration,
-                        event_sink=event_sink,
-                    )
-                else:
-                    result = await self.registry.execute_tool_call(agent, tool_call, context)
-                results.append(result)
-            return results
-
         async def _run_single(tc: ToolCall) -> ToolResult:
             if self._is_delegate_tool_name(agent, tc.name):
                 return await self._execute_delegate_tool_call(
@@ -212,9 +196,16 @@ class ReactAgentRuntime(AgentRuntime):
                     tc,
                     context,
                     parent_iteration=iteration,
+                    event_sink=event_sink,
                 )
             return await self.registry.execute_tool_call(agent, tc, context)
 
+        # Delegate subagents run concurrently: events from each are tagged with
+        # delegate_tool_call_id by _delegate_trace_metadata, so interleaved events
+        # can be regrouped into per-subagent traces downstream. Both delegate and
+        # plain tool branches convert exceptions into error ToolResults internally,
+        # so gather's default (no return_exceptions) cannot be short-circuited by a
+        # sibling failure.
         results = await asyncio.gather(*[_run_single(tc) for tc in tool_calls])
         return list(results)
 
