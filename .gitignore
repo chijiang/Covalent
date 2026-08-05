@@ -46,6 +46,9 @@ frontend/.pnpm-store/
 *.tsbuildinfo
 .agent_framework/
 
+# Local .git backups (e.g. from history rewrites)
+.git-backup-*
+
 # local skills
 skills/uploaded
 
