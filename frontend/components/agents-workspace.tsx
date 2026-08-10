@@ -968,7 +968,7 @@ export function AgentsWorkspace() {
                 </div>
 
                 <ScrollArea className="skill-list agent-list min-h-0 flex-1">
-                  <div className="flex flex-col gap-2 pr-2">
+                  <div className="flex flex-col gap-2 pt-1 pb-1 pr-2 pl-0.5">
                   {loading ? <p className="empty-copy padded-empty">Loading agents...</p> : null}
                   {!loading && filteredAgents.length === 0 ? <p className="empty-copy padded-empty">No agents match the current filter.</p> : null}
                   {!loading

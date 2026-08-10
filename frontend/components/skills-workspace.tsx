@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,11 +22,9 @@ import { buildSkillPreviewTree } from "@/lib/skill-preview-tree";
 import {
   disableSkill,
   enableSkill,
-  exportManagementConfig,
   exportSkillBundle,
   getSkillPreview,
   getSkills,
-  importManagementConfig,
   installSkill,
   uninstallSkill,
   uploadSkill,
@@ -53,18 +51,7 @@ function skillSourceLabel(skill: SkillSummary): string {
   return isGitSkill(skill) ? "Git" : "Local";
 }
 
-function downloadTextFile(filename: string, content: string, contentType = "text/plain;charset=utf-8") {
-  const blob = new Blob([content], { type: contentType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 export function SkillsWorkspace() {
-  const importInputRef = useRef<HTMLInputElement | null>(null);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [selectedSkillName, setSelectedSkillName] = useState("");
   const [preview, setPreview] = useState<SkillPreviewResponse | null>(null);
@@ -294,29 +281,6 @@ export function SkillsWorkspace() {
     });
   }
 
-  function promptImportFile() {
-    importInputRef.current?.click();
-  }
-
-  async function handleExport() {
-    await runAction("export", async () => {
-      const exported = await exportManagementConfig("skills", "yaml");
-      downloadTextFile(exported.file_name, exported.content, exported.content_type);
-      setMessage(`Exported ${exported.item_count} skills.`);
-    });
-  }
-
-  async function handleImportFile(file: File | null) {
-    if (!file) {
-      return;
-    }
-    await runAction("import-file", async () => {
-      const result = await importManagementConfig("skills", file);
-      setMessage(result.warnings.length ? `${result.summary} ${result.warnings.join(" ")}` : result.summary);
-      await refresh();
-    });
-  }
-
   const {
     handleResizeKeyDown,
     handleResizeStart,
@@ -337,24 +301,7 @@ export function SkillsWorkspace() {
 
   return (
     <section className="page-section console-page-shell skill-settings-page skill-settings-shell flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-        <input
-          accept=".yaml,.yml,.json"
-          hidden
-          onChange={(event) => {
-            const file = event.target.files?.[0] || null;
-            event.currentTarget.value = "";
-            void handleImportFile(file);
-          }}
-          ref={importInputRef}
-          type="file"
-        />
         <PageHeaderActions>
-          <Button variant="outline" disabled={busyAction === "export"} onClick={() => void handleExport()} type="button">
-            {busyAction === "export" ? "Exporting" : "Export YAML"}
-          </Button>
-          <Button variant="outline" disabled={busyAction === "import-file"} onClick={promptImportFile} type="button">
-            {busyAction === "import-file" ? "Importing" : "Import file"}
-          </Button>
           <Button onClick={openCreateSkillModal} type="button">
             Add skill
           </Button>
@@ -400,7 +347,7 @@ export function SkillsWorkspace() {
                 </div>
 
                 <ScrollArea className="skill-list min-h-0 flex-1">
-                  <div className="flex flex-col gap-2 pr-2">
+                  <div className="flex flex-col gap-2 pt-1 pb-1 pr-2 pl-0.5">
                   {loading ? <p className="empty-copy padded-empty">Loading skills...</p> : null}
                   {!loading && filteredSkills.length === 0 ? <p className="empty-copy padded-empty">No skills match the current filter.</p> : null}
                   {!loading

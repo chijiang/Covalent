@@ -708,7 +708,7 @@ export function McpWorkspace() {
                 </div>
 
                 <ScrollArea className="mcp-list min-h-0 flex-1">
-                  <div className="flex flex-col gap-2 pr-2">
+                  <div className="flex flex-col gap-2 pt-1 pb-1 pr-2 pl-0.5">
                   {loading ? <p className="empty-copy padded-empty">Loading MCP services...</p> : null}
                   {!loading && filteredServers.length === 0 ? <p className="empty-copy padded-empty">No services match the current filter.</p> : null}
                   {!loading

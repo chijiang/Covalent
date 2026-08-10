@@ -4462,6 +4462,7 @@ textarea {
   align-content: start;
   overflow: auto;
   min-height: 0;
+  padding: 4px 4px 4px 2px;
 }
 
 .mcp-list {
@@ -4470,6 +4471,7 @@ textarea {
   align-content: start;
   overflow: auto;
   min-height: 0;
+  padding: 4px 4px 4px 2px;
 }
 
 .skill-list-item {
