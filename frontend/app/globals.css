@@ -2274,11 +2274,10 @@ textarea {
   display: grid;
   gap: 8px;
   border-top: 1px solid var(--border-muted);
-  padding-top: 14px;
+  padding: 4px 6px;
+  padding-top: 12px;
   min-height: 0;
   max-height: min(48dvh, 560px);
-  overflow: auto;
-  padding-right: 2px;
 }
 
 .composer-mode-toggle {
@@ -2604,11 +2603,11 @@ textarea {
 }
 
 .composer-gemini-input-area {
+  margin: 3px;
   border-radius: 24px;
   border: 1px solid var(--border-soft);
   background: var(--surface-primary);
   transition: border-color 120ms ease, box-shadow 120ms ease;
-  overflow: hidden;
 }
 
 .composer-gemini-input-area:focus-within {
