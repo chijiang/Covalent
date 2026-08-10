@@ -65,7 +65,7 @@ export function AppTopBar() {
   const actions = usePageShellActions();
 
   return (
-    <header className="app-top-bar flex h-16 shrink-0 items-center gap-3 border-b border-border/60 px-4 py-0 md:px-5">
+    <header className="app-top-bar flex h-13 shrink-0 items-center gap-3 border-b border-border/60 px-3 py-0 md:px-4">
       <SidebarTrigger className="shrink-0" />
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <h1 className="shrink-0 text-[length:var(--text-md)] font-semibold tracking-[var(--tracking-tight)] text-foreground">

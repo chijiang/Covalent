@@ -166,8 +166,8 @@ export function AppSidebar() {
   );
 
   return (
-    <Sidebar className="border-r-0" collapsible="icon" variant="inset">
-      <SidebarHeader className="h-16 shrink-0 border-b border-sidebar-border/70 px-3 py-0 group-data-[collapsible=icon]:px-2">
+    <Sidebar className="border-r border-sidebar-border" collapsible="icon" variant="sidebar">
+      <SidebarHeader className="h-13 shrink-0 border-b border-sidebar-border/70 px-3 py-0 group-data-[collapsible=icon]:px-2">
         <Link
           aria-label="Covalent home"
           className="flex h-full min-w-0 items-center rounded-md transition-opacity hover:opacity-80 group-data-[collapsible=icon]:justify-center"

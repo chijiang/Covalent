@@ -53,8 +53,8 @@ export function AppShell({ children }: { children: ReactNode }) {
                     isChatPage
                       ? "app-content app-content-chat flex min-h-0 flex-1 flex-col overflow-hidden"
                       : isConsolePage
-                        ? "app-content app-content-console flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 md:px-5 md:pb-5"
-                        : "app-content flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 md:px-5 md:pb-5"
+                        ? "app-content app-content-console flex min-h-0 flex-1 flex-col overflow-hidden p-2.5 md:p-3"
+                        : "app-content flex min-h-0 flex-1 flex-col overflow-hidden p-2.5 md:p-3"
                   }
                 >
                   {children}
