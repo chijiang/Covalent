@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { Loader2, Plus } from "lucide-react";
+import { Loader2, Plus, Search } from "lucide-react";
 
 import { useChatSessions } from "@/components/chat-sessions-provider";
 import {
@@ -31,11 +31,12 @@ export function ChatSidebarSessions() {
   return (
     <div className="sidebar-chat-sessions group-data-[collapsible=icon]:hidden">
       <SidebarMenuSub className="sidebar-chat-submenu">
-        <SidebarMenuSubItem>
+        <SidebarMenuSubItem className="relative flex items-center">
+          <Search className="pointer-events-none absolute left-2.5 size-3.5 text-muted-foreground" />
           <SidebarInput
             className="sidebar-chat-search-input"
             onChange={(event) => setHistoryQuery(event.target.value)}
-            placeholder="Search"
+            placeholder="Search sessions"
             value={historyQuery}
           />
         </SidebarMenuSubItem>

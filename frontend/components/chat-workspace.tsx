@@ -2595,7 +2595,10 @@ export function ChatWorkspace() {
                 </Select>
               </div>
               <div className="chat-meta-tags">
-                <span className="soft-tag">{currentAgent?.provider.model || "No model"}</span>
+                <span className="soft-tag flex items-center gap-1.5">
+                  {sending ? <span className="pulsing-glow-dot" /> : null}
+                  {currentAgent?.provider.model || "No model"}
+                </span>
                 <span className="soft-tag">{currentAgent?.capabilities?.[0] || "Chat"}</span>
                 <span className="soft-tag is-session-id" title={activeThread?.sessionId}>
                   {activeThread?.sessionId || "Contextualized"}
