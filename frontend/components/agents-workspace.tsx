@@ -141,6 +141,31 @@ function buildStarterAgent(index: number, defaultLocalTools: string[]): AgentCon
   };
 }
 
+/**
+ * Seeds a freshly created agent's provider block with the user's configured
+ * default provider so the "new agent" form opens with the default provider and
+ * default model instead of the hardcoded OpenAI sample values. The base_url is
+ * set so toAgentForm resolves the provider by name in the dropdown.
+ */
+function applyDefaultProviderToAgent(
+  agent: AgentConfig,
+  defaultEntry: ProviderEntry | null,
+): AgentConfig {
+  if (!defaultEntry) {
+    return agent;
+  }
+  const defaultModel = (defaultEntry.default_model || "").trim();
+  return {
+    ...agent,
+    provider: {
+      ...agent.provider,
+      provider: defaultEntry.provider_type || agent.provider.provider,
+      base_url: defaultEntry.base_url || agent.provider.base_url,
+      model: defaultModel || agent.provider.model,
+    },
+  };
+}
+
 function dedupeStrings(values: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -733,7 +758,10 @@ export function AgentsWorkspace() {
   }
 
   function appendStarterAgent() {
-    const nextAgent = buildStarterAgent(draftAgents.length + 1, defaultLocalTools);
+    const nextAgent = applyDefaultProviderToAgent(
+      buildStarterAgent(draftAgents.length + 1, defaultLocalTools),
+      defaultProviderEntry,
+    );
     const nextAgents = [...draftAgents, nextAgent];
     commitAgents(nextAgents, nextAgent.name);
     setMessage("Inserted a starter agent into the draft roster.");
@@ -1103,7 +1131,7 @@ export function AgentsWorkspace() {
                               <SelectTrigger className="console-select-trigger w-full">
                                 <SelectValue />
                               </SelectTrigger>
-                              <SelectContent align="start" alignItemWithTrigger>
+                              <SelectContent align="start">
                                 <SelectItem value="">{defaultRouteOptionLabel}</SelectItem>
                                 {providers.map((p) => (
                                   <SelectItem key={p.name} value={p.name}>
@@ -1134,7 +1162,7 @@ export function AgentsWorkspace() {
                                 <SelectTrigger className="console-select-trigger w-full">
                                   <SelectValue />
                                 </SelectTrigger>
-                                <SelectContent align="start" alignItemWithTrigger>
+                                <SelectContent align="start">
                                   <SelectItem value="">{form.providerName ? "Select a model..." : "Use configured default model"}</SelectItem>
                                   {!availableModels.includes(form.model) && form.model && (
                                     <SelectItem value={form.model}>{form.model} (current)</SelectItem>
@@ -1173,7 +1201,7 @@ export function AgentsWorkspace() {
                               <SelectTrigger className="console-select-trigger w-full">
                                 <SelectValue />
                               </SelectTrigger>
-                              <SelectContent align="start" alignItemWithTrigger>
+                              <SelectContent align="start">
                                 <SelectItem value="private">Private</SelectItem>
                                 <SelectItem value="public">Public</SelectItem>
                               </SelectContent>
@@ -1190,7 +1218,7 @@ export function AgentsWorkspace() {
                               <SelectTrigger className="console-select-trigger w-full">
                                 <SelectValue />
                               </SelectTrigger>
-                              <SelectContent align="start" alignItemWithTrigger>
+                              <SelectContent align="start">
                                 {REASONING_LEVEL_OPTIONS.map((level) => (
                                   <SelectItem key={level} value={level}>{level}</SelectItem>
                                 ))}

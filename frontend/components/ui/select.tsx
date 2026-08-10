@@ -56,6 +56,11 @@ function SelectTrigger({
   )
 }
 
+// alignItemWithTrigger must stay false: base-ui's default (true) shifts the popup
+// horizontally so the selected item's text lines up with the trigger's text, which
+// looks misaligned because the item and trigger have different horizontal padding.
+// align="center" (not "start") so a popup wider than its trigger (min-w-36) overhangs
+// symmetrically instead of sticking out to the right.
 function SelectContent({
   className,
   children,
@@ -63,7 +68,7 @@ function SelectContent({
   sideOffset = 4,
   align = "center",
   alignOffset = 0,
-  alignItemWithTrigger = true,
+  alignItemWithTrigger = false,
   ...props
 }: SelectPrimitive.Popup.Props &
   Pick<
