@@ -1891,42 +1891,7 @@ textarea {
   text-transform: uppercase;
 }
 
-.history-card {
-  width: 100%;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  background: transparent;
-  padding: 10px 12px;
-  text-align: left;
-  display: flex;
-  align-items: center;
-  min-height: 44px;
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
-}
 
-.history-card:hover {
-  background: var(--surface-secondary);
-}
-
-.history-card strong {
-  display: -webkit-box;
-  overflow: hidden;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.35;
-  color: var(--fg-primary);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.history-card.is-active {
-  background: rgba(220, 38, 38, 0.07);
-  border-color: rgba(220, 38, 38, 0.14);
-}
-
-.history-card.is-active strong {
-  color: var(--surface-accent-strong);
-}
 
 .sidebar-chat-sessions {
   display: flex;
@@ -5805,7 +5770,6 @@ textarea::placeholder {
 .trace-entry,
 .preview-file,
 .skill-list-item,
-.history-card,
 .stat-card,
 .pending-question-card,
 .pending-option-chip,
@@ -5816,8 +5780,7 @@ textarea::placeholder {
 }
 
 .skill-list-item,
-.entity-card,
-.history-card {
+.entity-card {
   border-radius: var(--radius-xl);
 }
 
@@ -5826,12 +5789,6 @@ textarea::placeholder {
   background: var(--surface-primary);
   border-color: var(--fg-primary);
   box-shadow: inset 3px 0 0 var(--surface-accent-strong);
-}
-
-.history-card.is-active {
-  background: rgba(220, 38, 38, 0.07);
-  border-color: rgba(220, 38, 38, 0.14);
-  box-shadow: none;
 }
 
 .console-toolbar,
@@ -5957,8 +5914,7 @@ textarea::placeholder {
 .dark .filter-chip:hover,
 .dark .row-action:hover,
 .dark .trace-pill:hover,
-.dark .skill-list-item:hover,
-.dark .history-card:hover {
+.dark .skill-list-item:hover {
   border-color: #404040;
 }
 
@@ -6533,8 +6489,7 @@ textarea::placeholder {
 .dark .filter-chip:hover,
 .dark .row-action:hover,
 .dark .trace-pill:hover,
-.dark .skill-list-item:hover,
-.dark .history-card:hover {
+.dark .skill-list-item:hover {
   border-color: #404040;
 }
 
