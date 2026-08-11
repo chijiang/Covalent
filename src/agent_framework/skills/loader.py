@@ -22,6 +22,38 @@ _IGNORED_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".tox", "dist",
 
 logger = logging.getLogger(__name__)
 
+# Per git-operation timeout. A hung git server would otherwise stall the loader
+# indefinitely; on timeout the process is killed so the caller can fall back.
+GIT_OPERATION_TIMEOUT_SECONDS = 60.0
+
+
+def _validate_git_url(url: str) -> None:
+    """Only https URLs are accepted for skill sources. Other schemes (file://,
+    ssh/git@, raw local paths) are refused — they can reach local files or
+    embed options that git forwards to a helper."""
+    if not isinstance(url, str) or not url.strip():
+        raise SkillLoadError("git skill source url is empty")
+    if not url.startswith("https://"):
+        raise SkillLoadError(f"git skill source url must be an https URL: {url}")
+
+
+async def _run_git_with_timeout(proc: asyncio.subprocess.Process, url_or_ref: str) -> tuple[int, bytes, bytes]:
+    """Communicate stdout+stderr (avoids pipe-buffer deadlock on large clones)
+    with an overall timeout. On timeout the process is killed. Returns
+    (returncode, stdout, stderr)."""
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=GIT_OPERATION_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        logger.warning("git operation timed out after %ss: %s", GIT_OPERATION_TIMEOUT_SECONDS, url_or_ref)
+        raise
+    return proc.returncode, stdout or b"", stderr or b""
+
 
 class GitSkillSource:
     """Describes a git repository to sync skills from."""
@@ -188,6 +220,7 @@ class SkillLoader:
         ]
 
     async def _git_clone(self, url: str, ref: str | None, target: Path) -> None:
+        _validate_git_url(url)
         target.parent.mkdir(parents=True, exist_ok=True)
         cmd = ["git", "clone", "--depth", "1"]
         if ref:
@@ -196,17 +229,27 @@ class SkillLoader:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        await proc.wait()
-        if proc.returncode != 0:
-            logger.warning("git clone failed for %s", url)
+        try:
+            returncode, _, stderr = await _run_git_with_timeout(proc, url)
+        except asyncio.TimeoutError:
+            return
+        if returncode != 0:
+            logger.warning(
+                "git clone failed for %s: %s",
+                url,
+                (stderr or b"").decode("utf-8", "replace").strip()[:200],
+            )
 
     async def _git_pull(self, repo_dir: Path, ref: str | None) -> None:
         cmd = ["git", "-C", str(repo_dir), "pull", "--ff-only"]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        await proc.wait()
-        if proc.returncode != 0:
+        try:
+            returncode, _, _ = await _run_git_with_timeout(proc, str(repo_dir))
+        except asyncio.TimeoutError:
+            return
+        if returncode != 0:
             logger.warning("git pull failed for %s", repo_dir)
         elif ref:
             await self._git_checkout(repo_dir, ref)
@@ -225,9 +268,17 @@ class SkillLoader:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.wait()
-        if proc.returncode != 0:
-            logger.warning("git checkout failed for %s at ref %s", repo_dir, ref)
+        try:
+            returncode, _, stderr = await _run_git_with_timeout(proc, f"{repo_dir}@{ref}")
+        except asyncio.TimeoutError:
+            return
+        if returncode != 0:
+            logger.warning(
+                "git checkout failed for %s at ref %s: %s",
+                repo_dir,
+                ref,
+                (stderr or b"").decode("utf-8", "replace").strip()[:200],
+            )
 
     def _build_default_manifest(
         self,

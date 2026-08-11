@@ -96,6 +96,22 @@ class SkillProcessHandle:
             except json.JSONDecodeError:
                 continue
             await self._dispatch(data)
+        # EOF before the process exited: the skill closed stdout (crash / hang).
+        # Fail every still-pending request now so callers don't block until their
+        # own timeout fires, and mark the handle unready so the pool won't hand
+        # it out again. The health-check loop will evict it shortly after.
+        self._ready.clear()
+        for msg_id, future in list(self._pending.items()):
+            self._pending.pop(msg_id, None)
+            if not future.done():
+                future.set_exception(
+                    SkillProcessError(
+                        {
+                            "code": -32003,
+                            "message": f"Skill '{self.spec.name}' process closed its stdout before responding",
+                        }
+                    )
+                )
 
     async def _dispatch(self, data: dict[str, Any]) -> None:
         if "id" in data and "method" not in data:

@@ -7,7 +7,6 @@ import json
 import mimetypes
 import re
 import shutil
-import tempfile
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -697,7 +696,10 @@ def _copy_workspace_entry(settings: Any, context: Any, args: dict[str, Any]) -> 
     _prepare_entry_destination(root, destination, overwrite=overwrite, create_parents=create_parents)
 
     if source.is_dir():
-        shutil.copytree(source, destination)
+        # symlinks=False: copy the referenced content rather than the symlink
+        # itself, so a symlinked entry inside source cannot drag host files
+        # out of root through the copy.
+        shutil.copytree(source, destination, symlinks=False)
     else:
         shutil.copy2(source, destination)
 
@@ -826,7 +828,7 @@ def _unzip_workspace_archive(settings: Any, context: Any, args: dict[str, Any]) 
         if len(infos) > max_entries:
             raise ValueError(f"Archive contains {len(infos)} entries, exceeding max_entries={max_entries}")
         for info in infos:
-            destination = _safe_zip_destination(output_dir, info.filename)
+            destination = _safe_zip_destination(output_dir, info.filename, info=info)
             if info.is_dir():
                 destination.mkdir(parents=True, exist_ok=True)
                 continue
@@ -906,7 +908,7 @@ def _resolve_workspace_path(root: Path, raw_path: str, *, must_exist: bool) -> P
     root = root.resolve(strict=False)
     normalized = raw_path.strip() or "."
     candidate = Path(normalized).expanduser()
-    
+
     # If the path is absolute, convert it to relative by stripping the leading slash(es).
     # This ensures paths like /tmp/file.txt are treated as tmp/file.txt and placed in the workspace.
     # This allows agent code with hardcoded absolute paths to still be sandboxed transparently.
@@ -917,18 +919,48 @@ def _resolve_workspace_path(root: Path, raw_path: str, *, must_exist: bool) -> P
             candidate = Path(*relative_parts)
         else:
             candidate = Path(".")
-    
+
     # Now candidate is always relative; append it to the workspace root
     candidate = root / candidate
     resolved = candidate.resolve(strict=False)
-    
+
     # Verify the resolved path doesn't escape the root
     if resolved != root and root not in resolved.parents:
         raise ValueError(f"Workspace path escapes root: {raw_path}")
-    
+
+    # Defense against symlink planting: walk from root down toward the resolved
+    # path and reject if any intermediate component is a symlink that would
+    # escape root. `resolve()` follows symlinks for the final answer, which
+    # already catches escapes on read — but a symlinked directory inside the
+    # workspace (e.g. link -> /etc) would otherwise let a copytree/move walk
+    # out of root through that link before we notice.
+    _assert_no_symlink_escape(root, resolved)
+
     if must_exist and not resolved.exists():
         raise ValueError(f"Workspace path does not exist: {_relative_path(root, resolved)}")
     return resolved
+
+
+def _assert_no_symlink_escape(root: Path, resolved: Path) -> None:
+    """Walk from ``root`` toward ``resolved`` and reject any symlink component
+    that points outside ``root``. The resolved final path loose components
+    (normalized) are examined; existing parent directories return the path
+    itself so the walk terminates cleanly at non-existent tails.
+    """
+    # Only walk components that are actually under root.
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError:
+        return  # already rejected upstream
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            target = current.resolve(strict=False)
+            if target != root and root not in target.parents:
+                raise ValueError(
+                    f"Workspace path contains a symlink that escapes root: {part} -> {target}"
+                )
 
 
 def _resolve_publishable_source_path(root: Path, raw_path: str) -> Path:
@@ -938,35 +970,33 @@ def _resolve_publishable_source_path(root: Path, raw_path: str) -> Path:
         raise ValueError("publish_downloadable_file requires a non-empty file_path")
 
     candidate = Path(normalized).expanduser()
-    
-    # If the path is absolute, try the translated (relative) version in the workspace first.
-    # This allows agent code like publish_downloadable_file("/tmp/file.pptx") to work
-    # with files that were written via write_workspace_file("/tmp/file.pptx").
+
+    # If the path is absolute, translate it to a relative path under the
+    # workspace by stripping the leading slash: publish_downloadable_file
+    # ("/tmp/file.pptx") resolves to workspace "tmp/file.pptx", which is where
+    # write_workspace_file("/tmp/file.pptx") would have placed it. This keeps
+    # agent code with hardcoded absolute paths sandboxed transparently.
     if candidate.is_absolute():
         relative_parts = candidate.parts[1:]  # Skip leading '/'
         if relative_parts:
             relative_candidate = Path(*relative_parts)
         else:
             relative_candidate = Path(".")
-        
-        workspace_path = root / relative_candidate
-        if workspace_path.exists():
-            return workspace_path
-        # If not found in workspace, fall through to check system temp
-    
-    # Try the path as-is (for direct temp directory files)
-    resolved = candidate.resolve(strict=False) if candidate.is_absolute() else root / candidate
-    resolved = resolved.resolve(strict=False)
-    
+        resolved = (root / relative_candidate).resolve(strict=False)
+    else:
+        resolved = (root / candidate).resolve(strict=False)
+
+    # Strict containment: only files inside the workspace root are publishable.
+    # (Previously this also allowed anything under the global tempdir, which
+    # exposed files other processes had placed in /tmp. Agent code writing to
+    # "/tmp/..." via the workspace tools already lands under the workspace, so
+    # the global-temp fallback is not needed.)
+    if resolved != root and root not in resolved.parents:
+        raise ValueError("publish_downloadable_file only accepts files inside the workspace")
     if not resolved.exists():
         raise ValueError(f"Publishable file does not exist: {normalized}")
-
-    temp_root = Path(tempfile.gettempdir()).resolve()
-    if resolved == root or root in resolved.parents:
-        return resolved
-    if resolved == temp_root or temp_root in resolved.parents:
-        return resolved
-    raise ValueError("publish_downloadable_file only accepts files inside the workspace or the system temporary directory")
+    _assert_no_symlink_escape(root, resolved)
+    return resolved
 
 
 def _download_session_dir(root: Path, session_id: str) -> Path:
@@ -1066,7 +1096,7 @@ def _line_column_to_offset(text: str, line_number: int, column_number: int) -> i
     raise ValueError(f"Position line {line_number}, column {column_number} is outside the file")
 
 
-def _safe_zip_destination(output_dir: Path, archive_name: str) -> Path:
+def _safe_zip_destination(output_dir: Path, archive_name: str, *, info: "zipfile.ZipInfo | None" = None) -> Path:
     normalized_name = archive_name.replace("\\", "/")
     candidate = Path(normalized_name)
     if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
@@ -1075,7 +1105,19 @@ def _safe_zip_destination(output_dir: Path, archive_name: str) -> Path:
     resolved_output = output_dir.resolve(strict=False)
     if destination != resolved_output and resolved_output not in destination.parents:
         raise ValueError(f"Zip entry escapes output directory: {archive_name}")
+    # Reject symlink entries: a zip can carry a symlink whose target points
+    # anywhere on the host; once materialized it would let later workspace
+    # reads escape root via _resolve_workspace_path.
+    if info is not None and _zip_entry_is_symlink(info):
+        raise ValueError(f"Unsafe zip entry path (symlink not allowed): {archive_name}")
     return destination
+
+
+def _zip_entry_is_symlink(info: "zipfile.ZipInfo") -> bool:
+    # UNIX mode is carried in the upper 16 bits of external_attr.
+    import stat as _stat
+    mode = (info.external_attr >> 16) & 0o7777
+    return _stat.S_ISLNK(mode)
 
 
 def _validate_entry_operation_paths(root: Path, source: Path, destination: Path, *, operation: str) -> None:

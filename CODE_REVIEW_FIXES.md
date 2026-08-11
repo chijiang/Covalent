@@ -43,16 +43,23 @@
 - **落地**：删掉 `react.py:1231` 的 `max_tokens=get_context_window(...)`，`GenerationRequest.max_tokens` 用默认 `None`。`openai_compatible.py:120` 在 `max_tokens is None` 时不向 provider 发该字段，由 provider 用自己的输出上限——这是最安全的语义，不改变任何 agent 的输出行为预期。`get_context_window` import 仍被 `:948`（token budget 估算）使用，保留。
 
 ### S5 — `publish_downloadable_file` 允许读取系统 `/tmp` 任意文件
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/core/workspace_tools.py:934-969`（`_resolve_publishable_source_path`）
 - **问题**：除工作区外，允许读取 `tempfile.gettempdir()` 下任意文件并作为下载返回。其他用户/进程写入 `/tmp` 的临时文件（含临时凭证）可被 agent 发布出去。
 - **修复**：临时目录访问限定到 per-session 子目录，不要用全局 `tempfile.gettempdir()`。
+- **落地**：收紧为**仅允许 workspace 内**文件。删除全局 `/tmp` 放行分支；绝对路径仍走"翻译为 workspace 相对路径"（`/tmp/file` → `workspace/tmp/file`，与 `write_workspace_file("/tmp/...")` 的落点一致），所以 agent 用绝对路径写的文件仍可发布——只是不再能发布 workspace 外 OS 级 `/tmp` 文件。用脚本验证：workspace 外 `/tmp` 探针文件被拒、workspace 相对路径正常。`test_publish_downloadable_file_*` 现有测试 11 passed。`tempfile` import 因不再使用已删除。
 
 ### S6 — 工作区绝对路径静默改写 + symlink 检查缺失
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/core/workspace_tools.py:905-931`（`_resolve_workspace_path`）
 - **问题**：绝对路径被改写成相对（`/etc/passwd` → `etc/passwd`）落进 workspace，掩盖 agent 路径错误；`resolve()` 后未逐组件检查 symlink，写入路径存在 TOCTOU；`shutil.copytree` 未传 `symlinks=False`。
 - **修复**：普通工作区工具直接拒绝绝对路径并报错；`resolve()` 后逐组件检查 `is_symlink()`；`copytree` 传 `symlinks=False`；解压时拒绝指向 workspace 外的符号链接条目。
+- **落地**（按你确认的"保留改写 + 加 symlink 检查"）：
+  - 保留绝对路径→相对的透明沙箱改写（不破坏硬编码绝对路径的 agent 代码）。
+  - 新增 `_assert_no_symlink_escape(root, resolved)`：从 root 逐组件遍历到 resolved，遇 symlink 则 resolve 其 target，target 在 root 外就抛 `ValueError`。在 `_resolve_workspace_path` 和 `_resolve_publishable_source_path` 末尾调用。配合现有 `resolve()+root 检查`形成双层防护。
+  - `shutil.copytree(source, destination, symlinks=False)`：复制 symlink 指向的实际内容而非 symlink 本身，防 source 内 symlink 把宿主文件带出。
+  - `_safe_zip_destination` 接受 `info` 参数，新 `_zip_entry_is_symlink` 检查 zip 条目 `external_attr` 高 16 位的 Unix mode；是 symlink 条目则拒绝（解压出的 symlink 后续读会逃逸）。
+  - 用脚本验证指向 `/tmp` 的 symlink 被拒（`Workspace path escapes root`）。`test_unzip_workspace_archive_rejects_zip_slip_entries` 等 11 测试通过。
 
 ---
 
@@ -107,10 +114,11 @@
 - **落地**：取 `next` 后校验 `next.startsWith("/") && !next.startsWith("//")`——同时挡掉绝对 URL（`https://...`）和协议相对 URL（`//evil.com`，浏览器按绝对处理）。前端 `tsc --noEmit` 通过。
 
 ### H8 — skill 进程 EOF 后 pending futures 不 fail
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/skills/process.py:85-98`（`_read_loop`）
 - **问题**：`readline()` 返回 `b""` 仅 break，未 reject `_pending`，调用方等到超时；handle 也未立即踢出池（靠 30s 健康检查）。
 - **修复**：EOF 时 fail 所有 `_pending` 并立即从池移除。
+- **落地**：`_read_loop` EOF 退出前，`_ready.clear()`（让 `is_available` 返回 False，池不再分发该 handle），再把所有 `_pending` future set 一个 `SkillProcessError`（code -32003，说明 stdout 提前关闭），调用方立刻收到错误而非等到自己的超时。健康检查循环仍会随后回收该 handle。
 
 ### H9 — `PermissionGuard` 只拦 `builtins.open`
 - [ ] **状态**：未修复
@@ -119,10 +127,15 @@
 - **修复**：文档明确"仅 best-effort，靠后端隔离"；或 filesystem backend 不暴露带 `fs.write` 限制的技能；或真正用 OS 级隔离。
 
 ### H10 — git clone/pull 无超时、stderr 管道不读
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/skills/loader.py:190-230`
 - **问题**：`await proc.wait()` 无 timeout；大 clone 填满 stderr pipe→永久死锁；URL 未校验 scheme。
 - **修复**：`asyncio.wait_for` 包裹，用 `proc.communicate()`，校验 `https://`。
+- **落地**：
+  - 新增 `GIT_OPERATION_TIMEOUT_SECONDS = 60.0` 和 `_run_git_with_timeout(proc, label)`：用 `proc.communicate()`（同时排空 stdout+stderr，避免大 clone 死锁）+ `asyncio.wait_for` 超时；超时则 `proc.kill()` 并返回（不抛，让调用方按 returncode 处理）。
+  - 新增 `_validate_git_url(url)`：仅 `https://`，拒绝 `file://`/`git@`/`http://`（防 git helper 注入和本地文件访问）。`_git_clone` 开头调一次。
+  - `_git_clone`/`_git_pull`/`_git_checkout` 全部改用 `_run_git_with_timeout`，失败日志带上 stderr 前 200 字符便于排查。
+  - 现有"ref 正则校验"（`^[\w./@-]+$`）保留。仓库无网络依赖测试，未运行真实 clone。
 
 ### H11 — 管理接口跨 workspace
 - [x] **状态**：已修复 (2026-08-11)
@@ -245,12 +258,15 @@
 ## 推荐推进顺序
 
 1. **立即修**（改动小、收益大）：S1、S2、S4、H1、H2、H7、M11。
-   - ✅ 第一批已完成 (2026-08-11)：**S1、S2、S4、H7、M11** + 死代码 D1、D2。测试 176 passed（既存 3 个失败与本批无关，是 `scripts/` 非包问题）；前端 `tsc --noEmit` 通过。
-   - ✅ 第二批已完成 (2026-08-11)：**H1、H2、H3、H11**。测试 176 passed（同样仅既存 3 个失败）；前端 `tsc --noEmit` 通过。**"立即修"清单全部完成。**
-   - ~~⏳ 待办：H1（流式 AbortController）、H2（assistant 事件累加 bug）~~
-2. **部署前必须确认**：S3（`trusted_header` 是否在可信网关后）、H11（多租户隔离是否符合预期）✅、M2（沙箱 env 泄漏）。
+   - ✅ 第一批已完成 (2026-08-11)：**S1、S2、S4、H7、M11** + 死代码 D1、D2。测试 176 passed。
+   - ✅ 第二批已完成 (2026-08-11)：**H1、H2、H3、H11**。测试 176 passed。**"立即修"清单全部完成。**
+2. **部署前必须确认**：S3（`trusted_header` 是否在可信网关后）、M2（沙箱 env 泄漏）。
+   - ✅ 第三批已完成 (2026-08-11)：**S5、S6**（沙箱路径边界，按你确认的修法）+ **H8、H10**（skill 进程 EOF/git 超时）。测试 176 passed。
 3. **顺手清理**：D1（死且分叉的 `model/context_window.py`，隐患源）✅、G1（`.git-backup-*`）、G2（`tmp/`）。
 4. **重构窗口**：L1–L6（后端 visibility helper）、L7 + 前端 `useAsyncResource`——能削上千行重复。
+
+> 前三批累计已修复：**S1、S2、S4、S5、S6 + H1、H2、H3、H7、H8、H10、H11 + M11 + D1、D2**（共 16 项，含 5 个 SEVERE）。
+> 剩余高危：H4（tempfile 泄漏）、H5（async 同步 FS）、H6（token 并发上限）、H9（PermissionGuard 只拦 open）、S3（trusted_header 签名/网关）。
 
 ---
 
