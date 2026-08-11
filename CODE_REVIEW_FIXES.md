@@ -59,22 +59,27 @@
 ## 🟠 HIGH
 
 ### H1 — 流式无 AbortController、无 stale-run guard
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`frontend/lib/client-api.ts:309-361`（`streamAgent`）+ `frontend/components/chat-workspace.tsx:2256-2404`
 - **问题**：组件卸载或快速重发时，旧 fetch 仍通过 `updateThread` 写状态；两个流的 `assistant` 文本可能交错写同一消息 id。读循环无 try/catch。
 - **修复**：`streamAgent` 接受 `AbortController`，cleanup 时 abort；用单调 token 标记当前 run，旧流的 `updateThread` 作 no-op；读循环包 try/catch。
+- **落地**：
+  - `client-api.ts`：`streamAgent` 新增 `signal?: AbortSignal` 参数；读循环包 try/catch，abort 时抛 `StreamAbortedError`（新增导出类），其余错误正常抛；`finally` 里 `reader.releaseLock()`。
+  - `chat-workspace.tsx`：新增 `activeRunRef`（存 `{id, controller}`）；`runThreadRequest` 开头 abort 旧 run、建新 controller、`runId` 单调递增；卸载 useEffect 里 abort；catch 与 `!streamTerminatedCleanly` 分支都用 `activeRunRef.current?.id !== runId` 判 stale、`controller.signal.aborted` 判主动取消，二者均跳过状态写入；`finally` 仅在仍是 active run 时 `setSending(false)`（避免旧 run 重置新 run 的 sending 锁）。
 
 ### H2 — `assistant` 事件累加拼接 bug
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/runtime/react.py:1273-1274`（后端）+ `frontend/components/chat-workspace.tsx:2271-2279`（前端）
 - **问题**：后端每个 iteration yield 的 `payload.text` 是**该轮全量** output_text，前端却做 `content + text` 累加。多轮 ReAct（边输出文本边调工具）会重复累积。
 - **修复**：明确语义——若后端发全量，前端用 `text` 覆盖（按 iteration 区分累加新轮）；若要增量，后端改发 chunk。
+- **落地**：保留后端全量语义（payload 已带 `iteration` 字段），改前端：`runThreadRequest` 内引入 `currentAssistantIteration` 跟踪；收到 `assistant` 事件时，若 `iteration !== currentAssistantIteration` 则**覆盖**为该轮 `text`，否则累加（为未来后端改 chunk 流式留余地）。`final` 事件仍覆盖为最终值，行为不变。单轮场景（绝大多数聊天）行为完全不变。
 
 ### H3 — session 创建 TOCTOU
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/api/app.py:3450-3482`（`_resolve_public_invoke_session_id`）
 - **问题**：SELECT 后 INSERT，并发同名 `session_id` 撞主键 `IntegrityError` 未捕获→500。
 - **修复**：`INSERT ... ON CONFLICT DO NOTHING` 后重读并校验 owner，或 catch `IntegrityError`。
+- **落地**：catch `IntegrityError`（新增 `from sqlalchemy.exc import IntegrityError`），冲突时在新 session 重读并走与现有分支一致的 owner 校验（不属于本用户→404）；若重读时行已消失（胜方回滚）→409 让调用方重试。保留了原有全部 owner/workspace 校验语义。
 
 ### H4 — `export_skill` 临时文件泄漏
 - [ ] **状态**：未修复
@@ -120,10 +125,14 @@
 - **修复**：`asyncio.wait_for` 包裹，用 `proc.communicate()`，校验 `https://`。
 
 ### H11 — 管理接口跨 workspace
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/api/app.py:616-704`
 - **问题**：`_list_console_users` 无 workspace 过滤；`_list_audit_logs` 不过滤 workspace——admin 可见/改其他 workspace 用户，审计（含 IP、UA）跨租户泄漏。
 - **修复**：SELECT/UPDATE 加 `workspace_id == principal.workspace_id`（除非超级管理员）。
+- **落地**：确认无"平台超级管理员"概念（`is_admin` 仅 `role=="admin"`，admin 是 per-user），故 admin 也限定到自己 workspace：
+  - `_list_console_users`：JOIN 后加 `.where(WorkspaceMemberRow.workspace_id == principal.workspace_id)`（outer join + 该 where 事实等价 inner join，只返回本 workspace 成员）。
+  - `_update_console_user`：拿到 user 后查询 `(user_id, principal.workspace_id)` 的 membership，无则 404（与"用户不存在"不可区分，避免枚举）。原"无 membership 时容错跳过 workspace_role"分支移除——seed admin 一定有 membership（`_principal_for_user` 总建），不影响。
+  - `_list_audit_logs`：`stmt` 加 `.where(AuditLogRow.workspace_id == principal.workspace_id)`。
 
 ---
 
@@ -237,8 +246,9 @@
 
 1. **立即修**（改动小、收益大）：S1、S2、S4、H1、H2、H7、M11。
    - ✅ 第一批已完成 (2026-08-11)：**S1、S2、S4、H7、M11** + 死代码 D1、D2。测试 176 passed（既存 3 个失败与本批无关，是 `scripts/` 非包问题）；前端 `tsc --noEmit` 通过。
-   - ⏳ 待办：H1（流式 AbortController）、H2（assistant 事件累加 bug）——需协调前后端语义，下一批处理。
-2. **部署前必须确认**：S3（`trusted_header` 是否在可信网关后）、H11（多租户隔离是否符合预期）、M2（沙箱 env 泄漏）。
+   - ✅ 第二批已完成 (2026-08-11)：**H1、H2、H3、H11**。测试 176 passed（同样仅既存 3 个失败）；前端 `tsc --noEmit` 通过。**"立即修"清单全部完成。**
+   - ~~⏳ 待办：H1（流式 AbortController）、H2（assistant 事件累加 bug）~~
+2. **部署前必须确认**：S3（`trusted_header` 是否在可信网关后）、H11（多租户隔离是否符合预期）✅、M2（沙箱 env 泄漏）。
 3. **顺手清理**：D1（死且分叉的 `model/context_window.py`，隐患源）✅、G1（`.git-backup-*`）、G2（`tmp/`）。
 4. **重构窗口**：L1–L6（后端 visibility helper）、L7 + 前端 `useAsyncResource`——能削上千行重复。
 

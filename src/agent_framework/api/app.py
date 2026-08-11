@@ -100,6 +100,7 @@ from agent_framework.core.workspace_tools import register_workspace_tools
 from agent_framework.core.types import Capability, GenerationRequest, Message, ResumedToolResult, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
 from agent_framework.infra.config_store import ConfigKind, ConfigPrincipal, ConfigStore, PersistedAgentConfig, PersistedSkillSourceConfig
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_framework.infra.db import (
@@ -2581,6 +2582,10 @@ async def _list_console_users(
                 select(UserRow, WorkspaceRow, WorkspaceMemberRow)
                 .outerjoin(WorkspaceMemberRow, WorkspaceMemberRow.user_id == UserRow.id)
                 .outerjoin(WorkspaceRow, WorkspaceRow.id == WorkspaceMemberRow.workspace_id)
+                # Scope to the admin's own workspace so one tenant cannot enumerate
+                # another tenant's users. The outerjoins above are retained so the
+                # row shape passed to _console_user_summary_response is unchanged.
+                .where(WorkspaceMemberRow.workspace_id == principal.workspace_id)
                 .order_by(
                     UserRow.created_at.desc(),
                     UserRow.email.asc(),
@@ -2617,6 +2622,17 @@ async def _update_console_user(
             user = await session.get(UserRow, user_id)
             if user is None:
                 raise HTTPException(status_code=404, detail=f"Unknown user: {user_id}")
+            # Scope the update to the admin's own workspace: a user who is not a
+            # member of this workspace is treated as unknown, so one tenant's
+            # admin cannot mutate another tenant's users.
+            member = await session.scalar(
+                select(WorkspaceMemberRow).where(
+                    WorkspaceMemberRow.user_id == user.id,
+                    WorkspaceMemberRow.workspace_id == principal.workspace_id,
+                )
+            )
+            if member is None:
+                raise HTTPException(status_code=404, detail=f"Unknown user: {user_id}")
             user_changed = False
             if request.display_name is not None:
                 user.display_name = request.display_name.strip()
@@ -2631,13 +2647,10 @@ async def _update_console_user(
             if user_changed:
                 user.updated_at = datetime.now(UTC)
 
-            member = await session.scalar(select(WorkspaceMemberRow).where(WorkspaceMemberRow.user_id == user.id))
-            workspace: WorkspaceRow | None = None
-            if member is not None:
-                if request.workspace_role is not None:
-                    member.role = request.workspace_role
-                    member.updated_at = datetime.now(UTC)
-                workspace = await session.get(WorkspaceRow, member.workspace_id)
+            if request.workspace_role is not None:
+                member.role = request.workspace_role
+                member.updated_at = datetime.now(UTC)
+            workspace = await session.get(WorkspaceRow, member.workspace_id)
 
             return _console_user_summary_response(user, workspace, member)
 
@@ -3148,7 +3161,14 @@ async def _list_audit_logs(
         raise HTTPException(status_code=403, detail="Only admins can list audit logs")
     bounded_limit = min(max(limit, 1), 500)
     async with db_manager.session_factory() as session:
-        stmt = select(AuditLogRow).order_by(AuditLogRow.created_at.desc()).limit(bounded_limit)
+        stmt = (
+            select(AuditLogRow)
+            # Scope to the admin's own workspace so one tenant cannot read
+            # another tenant's audit trail (which includes IPs, user agents, run metadata).
+            .where(AuditLogRow.workspace_id == principal.workspace_id)
+            .order_by(AuditLogRow.created_at.desc())
+            .limit(bounded_limit)
+        )
         if actor_user_id:
             stmt = stmt.where(AuditLogRow.actor_user_id == actor_user_id)
         if action:
@@ -3474,20 +3494,39 @@ async def _resolve_public_invoke_session_id(
         return None
 
     session_id = (requested_session_id or "").strip() or _new_chat_item_id("session")
+    try:
+        async with db_manager.session_factory() as session:
+            async with session.begin():
+                row = await session.get(ChatSessionRow, session_id)
+                if row is None:
+                    session.add(
+                        ChatSessionRow(
+                            id=session_id,
+                            owner_user_id=principal.user_id,
+                            workspace_id=principal.workspace_id,
+                            created_by_token_id=principal.token_id,
+                        )
+                    )
+                    return session_id
+
+                if row.owner_user_id != principal.user_id or row.workspace_id != principal.workspace_id:
+                    raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
+                if row.created_by_token_id is None:
+                    row.created_by_token_id = principal.token_id
+                return session_id
+    except IntegrityError:
+        # Concurrent invoke with the same client-chosen session_id: the other
+        # request won the INSERT. Re-read in a fresh session and apply the same
+        # ownership check as the existing-row branch above.
+        pass
+
     async with db_manager.session_factory() as session:
         async with session.begin():
             row = await session.get(ChatSessionRow, session_id)
             if row is None:
-                session.add(
-                    ChatSessionRow(
-                        id=session_id,
-                        owner_user_id=principal.user_id,
-                        workspace_id=principal.workspace_id,
-                        created_by_token_id=principal.token_id,
-                    )
-                )
-                return session_id
-
+                # The row vanished between the conflict and the re-read (e.g. the
+                # winning request rolled back / deleted it). Let the caller retry.
+                raise HTTPException(status_code=409, detail=f"Session conflict, retry: {session_id}")
             if row.owner_user_id != principal.user_id or row.workspace_id != principal.workspace_id:
                 raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
             if row.created_by_token_id is None:

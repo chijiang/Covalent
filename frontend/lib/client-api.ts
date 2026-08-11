@@ -310,6 +310,7 @@ export async function streamAgent(
   agentName: string,
   request: AgentRunRequest,
   onChunk: (event: StreamEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch(buildStreamPath(`agents/${encodeURIComponent(agentName)}/stream`), {
     method: "POST",
@@ -320,6 +321,7 @@ export async function streamAgent(
     body: JSON.stringify(request),
     credentials: "include",
     cache: "no-store",
+    signal,
   });
 
   if (!response.ok) {
@@ -334,29 +336,61 @@ export async function streamAgent(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
+
+      for (const part of parts) {
+        const event = consumeEventBlock(part);
+        if (event) {
+          onChunk(event);
+        }
+      }
     }
 
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split("\n\n");
-    buffer = parts.pop() || "";
-
-    for (const part of parts) {
-      const event = consumeEventBlock(part);
+    if (buffer.trim()) {
+      const event = consumeEventBlock(buffer);
       if (event) {
         onChunk(event);
       }
     }
-  }
-
-  if (buffer.trim()) {
-    const event = consumeEventBlock(buffer);
-    if (event) {
-      onChunk(event);
+  } catch (error) {
+    // Abort is intentional (user navigated away, started a new run, or unmounted).
+    // Surface it as a typed rejection so callers can distinguish it from real errors.
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new StreamAbortedError();
     }
+    // If the stream was aborted mid-read, the reader may emit a network error
+    // after the signal already fired — treat that the same way.
+    if (signal?.aborted) {
+      throw new StreamAbortedError();
+    }
+    throw error;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released — ignore.
+    }
+  }
+}
+
+/**
+ * Thrown by {@link streamAgent} when the underlying request was aborted via the
+ * caller-supplied AbortSignal. Callers should treat this as "user cancelled",
+ * not as a failure.
+ */
+export class StreamAbortedError extends Error {
+  constructor() {
+    super("Stream aborted");
+    this.name = "StreamAbortedError";
   }
 }
 

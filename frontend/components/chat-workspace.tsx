@@ -40,6 +40,7 @@ import {
   renameChatSession,
   sortAgentsForPicker,
   streamAgent,
+  StreamAbortedError,
   uploadChatAttachments,
 } from "@/lib/client-api";
 import { uid, type ChatThread, type ChatThreadMessage } from "@/lib/chat-thread-model";
@@ -1829,6 +1830,17 @@ export function ChatWorkspace() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatSplitRef = useRef<HTMLDivElement | null>(null);
   const skipLayoutPersistRef = useRef(true);
+  // Tracks the in-flight agent run. A new run (or unmount) aborts the previous
+  // one so its stream can no longer mutate thread state.
+  const activeRunRef = useRef<{ id: number; controller: AbortController } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      // Abort any in-flight stream when the component unmounts.
+      activeRunRef.current?.controller.abort();
+      activeRunRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const traceStored = window.localStorage.getItem(TRACE_PANEL_VISIBLE_STORAGE_KEY);
@@ -2237,6 +2249,17 @@ export function ChatWorkspace() {
     setError(null);
     setSending(true);
 
+    // Abort any previously in-flight run before starting a new one. The guard
+    // token (runId) lets callbacks from an already-aborted run detect that they
+    // are stale and skip state writes.
+    activeRunRef.current?.controller.abort();
+    const runController = new AbortController();
+    const runId = (activeRunRef.current?.id ?? 0) + 1;
+    activeRunRef.current = { id: runId, controller: runController };
+    // Tracks the iteration of the last "assistant" event seen, so a new ReAct
+    // iteration's full text replaces (not appends to) the prior iteration's text.
+    let currentAssistantIteration: number | null = null;
+
     updateThread(threadId, (thread) => ({
       ...thread,
       title:
@@ -2270,11 +2293,20 @@ export function ChatWorkspace() {
         ({ event, payload }) => {
           if (event === "assistant") {
             const text = (payload as { text?: string })?.text || "";
+            const iteration = (payload as { iteration?: number })?.iteration ?? 0;
+            // The backend sends the FULL output_text for each ReAct iteration
+            // (not a delta chunk). Within one iteration multiple chunks would
+            // append, but a new iteration must replace the prior text so
+            // multi-turn ReAct doesn't concatenate per-iteration texts.
+            const isNewIteration = iteration !== currentAssistantIteration;
+            currentAssistantIteration = iteration;
             updateThread(threadId, (thread) => ({
               ...thread,
               updatedAt: Date.now(),
               messages: thread.messages.map((message) =>
-                message.id === assistantId ? { ...message, content: `${message.content}${text}` } : message,
+                message.id === assistantId
+                  ? { ...message, content: isNewIteration ? text : `${message.content}${text}` }
+                  : message,
               ),
             }));
             return;
@@ -2373,21 +2405,36 @@ export function ChatWorkspace() {
             return;
           }
         },
+        runController.signal,
       );
 
       if (!streamTerminatedCleanly) {
-        const detail = "Agent stream ended unexpectedly before a final response.";
-        setError(detail);
-        updateThread(threadId, (thread) => ({
-          ...thread,
-          messages: thread.messages.map((message) =>
-            message.id === assistantId
-              ? { ...message, content: message.content || detail }
-              : message,
-          ),
-        }));
+        // If this run was superseded (a newer run started) or aborted (unmount /
+        // navigation), do not overwrite the assistant bubble with an error — the
+        // newer run (or the unmounted state) owns the UI now.
+        const isStale = activeRunRef.current?.id !== runId;
+        const wasAborted = runController.signal.aborted;
+        if (!isStale && !wasAborted) {
+          const detail = "Agent stream ended unexpectedly before a final response.";
+          setError(detail);
+          updateThread(threadId, (thread) => ({
+            ...thread,
+            messages: thread.messages.map((message) =>
+              message.id === assistantId
+                ? { ...message, content: message.content || detail }
+                : message,
+            ),
+          }));
+        }
       }
     } catch (sendError) {
+      const isStale = activeRunRef.current?.id !== runId;
+      const wasAborted = sendError instanceof StreamAbortedError || runController.signal.aborted;
+      // Aborts are intentional (new run / unmount / navigation). Stale runs must
+      // not touch state — the current run owns it.
+      if (isStale || wasAborted) {
+        return;
+      }
       setError(sendError instanceof Error ? sendError.message : "Failed to run agent.");
       updateThread(threadId, (thread) => ({
         ...thread,
@@ -2399,7 +2446,11 @@ export function ChatWorkspace() {
         ),
       }));
     } finally {
-      setSending(false);
+      // Only release the "sending" lock if this run is still the active one;
+      // a newer run is managing its own lock.
+      if (activeRunRef.current?.id === runId) {
+        setSending(false);
+      }
     }
   }
 
