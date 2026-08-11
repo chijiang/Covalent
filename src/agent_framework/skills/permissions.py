@@ -8,13 +8,34 @@ from agent_framework.skills.spec import ManifestSkillSpec
 
 logger = logging.getLogger(__name__)
 
+# Minimal, safe-by-default host env passthrough. Skill code needs PATH and HOME
+# to find tools and write temp files; LANG/TERM/USER/SHELL/LOGNAME/PWD/TMPDIR
+# are convenience vars that don't broaden the trust boundary. We intentionally
+# DO NOT pass:
+#   - PYTHONPATH / PYTHONHOME — would let host-installed packages shadow the
+#     interpreter's stdlib and let a skill import arbitrary host code.
+#   - LD_LIBRARY_PATH / DYLD_LIBRARY_PATH — classic shared-library hijack
+#     vectors; a skill could preload a malicious .so.
+# VIRTUAL_ENV / NODE_PATH are kept because they identify the active runtime
+# without enabling code injection.
 _ALLOW_ALL_SYSTEM_ENV = {
     "PATH", "HOME", "USER", "TMPDIR", "LANG", "TERM",
-    "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME",
-    "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH",
-    "NODE_PATH",
+    "VIRTUAL_ENV", "NODE_PATH",
     "SHELL", "LOGNAME", "PWD",
 }
+
+# Substrings that mark a host env var as sensitive: even when a skill manifest
+# explicitly declares one of these in permissions.env_vars, it is NOT forwarded
+# (defense in depth against a malicious manifest exfiltrating host secrets).
+_SENSITIVE_ENV_SUBSTRINGS = (
+    "API_KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL",
+    "PRIVATE_KEY", "AUTHORIZATION",
+)
+
+
+def _looks_sensitive(name: str) -> bool:
+    upper = name.upper()
+    return any(sub in upper for sub in _SENSITIVE_ENV_SUBSTRINGS)
 
 
 class PermissionChecker:
@@ -62,6 +83,11 @@ class PermissionChecker:
         allowed_vars = set(spec.permissions.env_vars) | _ALLOW_ALL_SYSTEM_ENV
         filtered: dict[str, str] = {}
         for key, value in host_env.items():
+            if _looks_sensitive(key):
+                # Never forward secrets into the skill process, even if the
+                # manifest declared them — blocks a malicious manifest from
+                # exfiltrating host credentials via env_vars.
+                continue
             if key.startswith("SKILL_") or key in allowed_vars:
                 filtered[key] = value
         return filtered

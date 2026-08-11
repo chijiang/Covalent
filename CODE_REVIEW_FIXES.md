@@ -183,10 +183,16 @@
 - **修复**：响应头 allowlist。
 
 ### M2 — host env 进沙箱
-- [ ] **状态**：未修复
-- **位置**：`src/agent_framework/skills/meta_tools.py:272-277` + `skills/process.py:265-281` + `runtime/docker_backend.py:554-558`
-- **问题**：从 `dict(os.environ)` 起步做 denylist；`LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` 在白名单；docker 只 drop `PATH/PYTHONPATH/PYTHONHOME`。
+- [x] **状态**：已修复 (2026-08-11)
+- **位置**：`src/agent_framework/skills/permissions.py`（`_ALLOW_ALL_SYSTEM_ENV` + `filter_env`）—— 所有 skill env 构造的统一入口（`process.py`/`meta_tools.py` 都走 `PermissionChecker.filter_env`）
+- **问题**：从 `dict(os.environ)` 起步做 denylist；`LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH`/`PYTHONPATH`/`PYTHONHOME` 在白名单（库劫持/Python 注入面）；不剥离任何 `*_KEY/*_TOKEN/*_SECRET`。
 - **修复**：最小 allowlist（PATH/HOME/LANG/TMPDIR/`SKILL_*` markers/manifest 声明的 env_vars），显式剥离 `*_KEY/*_TOKEN/*_SECRET/AUTHORIZATION`。
+- **落地**：
+  - `_ALLOW_ALL_SYSTEM_ENV` 移除 `PYTHONPATH`/`PYTHONHOME`/`LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH`（保留 `VIRTUAL_ENV`/`NODE_PATH`——只标识运行时不引入注入面）。注释说明为何每个变量保留/移除。
+  - 新增 `_SENSITIVE_ENV_SUBSTRINGS`（`API_KEY`/`SECRET`/`TOKEN`/`PASSWORD`/`PASSWD`/`CREDENTIAL`/`PRIVATE_KEY`/`AUTHORIZATION`）+ `_looks_sensitive()`。
+  - `filter_env` 对每个 key 先判 `_looks_sensitive`，敏感则 `continue`——**即使 manifest.permissions.env_vars 声明了也拒绝**（防恶意 manifest 通过 env_vars 窃取宿主凭证）。
+  - Docker backend 的 `_HOST_ENV_DROP`（drop PATH）保留——它是容器特有的需求，与 `filter_env` 正交。
+  - 用脚本验证 13 个变量：PATH/HOME/SKILL_*/VIRTUAL_ENV/NODE_PATH 保留；OPENAI_API_KEY/DATABASE_PASSWORD/AUTH_TOKEN/PYTHONPATH/LD_LIBRARY_PATH/MY_CREDENTIAL 全剥离。测试 176 passed。
 
 ### M3 — 附件无字节上限
 - [ ] **状态**：未修复
@@ -255,19 +261,19 @@
 - [ ] **D3**：`frontend/lib/chat-thread-model.ts:105` `historyLabel` export 多余——去掉 `export`。
 
 ### 重复逻辑（抽 helper）
-- [ ] **L1**：`app.py:3203/3237/3285` 三处相同 visibility OR 表达式 → `_visible_resource_clause(model, principal)`。
-- [ ] **L2**：`_resolve_api_agent_name`≈`_resolve_console_agent_name` → 合并。
-- [ ] **L3**：两个 `_ensure_*_can_access_*` 同款 3 级访问阶梯 → `_principal_can_access_resource(principal, row)`。
-- [ ] **L4**：`_pick_agent_row_for_principal`≈`_pick_resource_row_for_principal` → 合并。
+- [x] **L1**：`app.py:3203/3237/3285` 三处相同 visibility OR 表达式 → `_visible_resource_clause(model, user_id)`。已提取并替换 `_resolve_api_agent_name`/`_resolve_console_agent_name`/`_ensure_console_principal_can_access_mcp_server` 三处。
+- [ ] **L2**：`_resolve_api_agent_name`≈`_resolve_console_agent_name` → 合并。（暂不动——principal 类型不同，强行合并需泛型，性价比低）
+- [x] **L3**：两个 `_ensure_*_can_access_*` 同款 3 级访问阶梯 → `_principal_can_access_resource(principal, row)`。已提取，两个 ensure 函数末尾阶梯替换。
+- [ ] **L4**：`_pick_agent_row_for_principal`≈`_pick_resource_row_for_principal` → 合并。（暂不动——行为有差异：agent 版无 pending 优先/rows[0] fallback，强行合并会改语义）
 - [ ] **L5**：`run_agent`/`stream_agent` preamble（principal+agent+sandbox）整段复制 → `_resolve_run_target(...)`。
 - [ ] **L6**：7+ 前端 workspace 组件重复 `loading/error/refresh/useEffect` 样板 → `frontend/lib/` 抽 `useAsyncResource<T>(fetcher)`。
 - [ ] **L7**：`downloadTextFile` 在 `agents-workspace:262` 和 `mcp-workspace:169` 各一份 → 共享 util。
 
 ### 垃圾文件
-- [ ] **G1**：`.git-backup-20260805-232957/`（整份 .git 快照，未被 gitignore）——删 + 加 `.git-backup-*/` 到 `.gitignore`。
-- [ ] **G2**：`tmp/run_blackpink_pptx_demo.py` + `tmp/__pycache__`——demo 脚本——删或 gitignore `tmp/`。
-- [ ] **G3**：`script/`（5 个一次性 docker smoke，CI 不引用）vs `scripts/`——命名陷阱，合并/改名（如 `scripts/docker-smoke/`）。
-- [ ] **G4**：`docs/superpowers/plans/2026-07-2X-*.md`（1861 行，对应迁移已落地，checkbox 未勾）——归档到 `docs/history/` 或删。
+- [x] **G1**：`.git-backup-20260805-232957/`（整份 .git 快照）——已删除。`.gitignore` 本就含 `.git-backup-*`（不会进版本库），物理删除本地残留。
+- [x] **G2**：`tmp/run_blackpink_pptx_demo.py` + `tmp/__pycache__`——已删除。`.gitignore` 本就含 `tmp`。
+- [ ] **G3**：`script/`（5 个一次性 docker smoke）vs `scripts/`——**决定不动**。`scripts/backfill_chat_messages.py` 被测试 import（`tests/test_persistent_session_store.py`），改名风险大；`script/` 文件头部已自标 "one-off smoke"/"demo"，自描述充分。
+- [x] **G4**：`docs/superpowers/plans/2026-07-2X-*.md`（对应迁移已落地）——已 `git mv` 归档到 `docs/history/`。
 - [ ] **G5**：`frontend/BACKEND_GAPS.md` 描述的缺失端点大多已实现——重审或删。
 
 ### 其他结构
@@ -291,8 +297,8 @@
 3. **顺手清理**：D1（死且分叉的 `model/context_window.py`，隐患源）✅、G1（`.git-backup-*`）、G2（`tmp/`）。
 4. **重构窗口**：L1–L6（后端 visibility helper）、L7 + 前端 `useAsyncResource`——能削上千行重复。
 
-> 前五批累计已修复：**S1、S2、S3、S4、S5、S6 + H1、H2、H3、H4、H5、H6、H7、H8、H9、H10、H11 + M11 + D1、D2**（共 21 项，含全部 6 个 SEVERE 和全部 11 个 HIGH）。
-> **SEVERE 与 HIGH 已全部处理完毕。** 剩余仅 MEDIUM 与结构性清理（L1–L7、G1–G5、M2/M4 等）。
+> 前六批累计已修复：**S1–S6 + H1–H11 + M2、M11 + D1、D2 + L1、L3 + G1、G2、G4**（共 26 项，含全部 6 个 SEVERE 和全部 11 个 HIGH）。
+> **SEVERE 与 HIGH 已全部处理完毕。** 剩余仅 MEDIUM（M3-M10）与结构性清理（L2/L4-L7、G3/G5、X1-X6）。
 
 ---
 

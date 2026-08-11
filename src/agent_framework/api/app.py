@@ -3355,6 +3355,30 @@ def _resource_display_name(row: object) -> str:
     return str(getattr(row, "display_name", None) or getattr(row, "name"))
 
 
+def _visible_resource_clause(model: Any, user_id: str) -> Any:
+    """SQL filter: a resource is visible to ``user_id`` if they own it OR it is
+    public+approved. Used in ``.where(...)`` for agents/mcp/skill-sources.
+    Admin scoping is handled by the caller (they pass a broad clause or none).
+    """
+    return (model.owner_user_id == user_id) | (
+        (model.visibility == "public") & (model.publication_status == "approved")
+    )
+
+
+def _principal_can_access_resource(principal: ConsolePrincipalContext, row: object) -> bool:
+    """In-memory access ladder for a resource row owned by a console principal.
+    Returns True if the principal owns the row (same user+workspace) or the row
+    is public+approved (including the legacy owner-less case).
+    """
+    if getattr(row, "owner_user_id", None) == principal.user_id and getattr(row, "workspace_id", None) == principal.workspace_id:
+        return True
+    if getattr(row, "owner_user_id", None) in {None, ""} and getattr(row, "visibility", None) == "public" and getattr(row, "publication_status", None) == "approved":
+        return True
+    if getattr(row, "visibility", None) == "public" and getattr(row, "publication_status", None) == "approved":
+        return True
+    return False
+
+
 def _pick_agent_row_for_principal(
     rows: list[AgentRow],
     *,
@@ -3384,10 +3408,7 @@ async def _resolve_api_agent_name(
             rows = list(await session.scalars(
                 select(AgentRow).where(
                     AgentRow.display_name == agent_name,
-                    (
-                        (AgentRow.owner_user_id == principal.user_id)
-                        | ((AgentRow.visibility == "public") & (AgentRow.publication_status == "approved"))
-                    ),
+                    _visible_resource_clause(AgentRow, principal.user_id),
                 )
             ))
             row = _pick_agent_row_for_principal(rows, user_id=principal.user_id, workspace_id=principal.workspace_id)
@@ -3418,10 +3439,7 @@ async def _resolve_console_agent_name(
             rows = list(await session.scalars(
                 select(AgentRow).where(
                     AgentRow.display_name == agent_name,
-                    (
-                        (AgentRow.owner_user_id == principal.user_id)
-                        | ((AgentRow.visibility == "public") & (AgentRow.publication_status == "approved"))
-                    ),
+                    _visible_resource_clause(AgentRow, principal.user_id),
                 )
             ))
             row = _pick_agent_row_for_principal(rows, user_id=principal.user_id, workspace_id=principal.workspace_id)
@@ -3442,11 +3460,7 @@ async def _ensure_console_principal_can_access_agent(
         row = await session.get(AgentRow, agent_name)
         if row is None:
             return
-        if row.owner_user_id == principal.user_id and row.workspace_id == principal.workspace_id:
-            return
-        if row.owner_user_id in {None, ""} and row.visibility == "public" and row.publication_status == "approved":
-            return
-        if row.visibility == "public" and row.publication_status == "approved":
+        if _principal_can_access_resource(principal, row):
             return
     raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
 
@@ -3466,21 +3480,14 @@ async def _ensure_console_principal_can_access_mcp_server(
                 await session.scalars(
                     select(McpServerRow).where(
                         McpServerRow.display_name == server_name,
-                        (
-                            (McpServerRow.owner_user_id == principal.user_id)
-                            | ((McpServerRow.visibility == "public") & (McpServerRow.publication_status == "approved"))
-                        ),
+                        _visible_resource_clause(McpServerRow, principal.user_id),
                     )
                 )
             )
             row = _pick_resource_row_for_principal(rows, principal)
         if row is None:
             raise HTTPException(status_code=404, detail=f"Unknown MCP server: {server_name}")
-        if row.owner_user_id == principal.user_id and row.workspace_id == principal.workspace_id:
-            return
-        if row.owner_user_id in {None, ""} and row.visibility == "public" and row.publication_status == "approved":
-            return
-        if row.visibility == "public" and row.publication_status == "approved":
+        if _principal_can_access_resource(principal, row):
             return
     raise HTTPException(status_code=404, detail=f"Unknown MCP server: {server_name}")
 
