@@ -29,11 +29,17 @@
 - **落地**：默认值集中为模块常量（`DEFAULT_API_TOKEN_HASH_PEPPER` 等）；新增 `AppSettings.validate_runtime_secrets()`，在 `lifespan` 开头调用；dev 模式（`console_auth_mode=dev`）豁免以保留零配置本地开发。校验逻辑已用脚本覆盖 4 个场景（local+默认拒、dev 通过、local+已设通过、空值拒）。注意：测试用 `TestClient(app)` 但不进 `with` 块，不触发 lifespan，故不受影响（已验证 176 passed）。
 
 ### S3 — `trusted_header` 模式 header 伪造提权（前置条件性）
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/api/app.py:2208-2232`（`_resolve_console_principal`）
 - **问题**：该模式从裸 header（`x-covalent-user-id`/`x-covalent-user-role` 等）取身份并自动建用户/工作区，无签名校验。若未部署在会剥离这些 header 的可信 IdP 网关后，任何调用方可伪造 admin 身份。
 - **前置条件**：仅当 `console_auth_mode=trusted_header` 且直连可达时触发。
 - **修复**：加共享密钥签名头（HMAC over header 值），或启动时强制该模式必须配可信代理白名单；至少在日志里大声告警该模式已启用。
+- **落地**（渐进式加固，向后兼容）：
+  - settings 新增 `console_trusted_header_secret: str | None`。
+  - 新增 `_verify_trusted_header_signature`：配了 secret 时，要求 `x-covalent-signature` = HMAC-SHA256(secret, `user_id\nemail\nname\nrole\nworkspace_id\nworkspace_name\nworkspace_slug`)，const-time 比较；无签名或错误→401。未配 secret 时走旧路径（向后兼容现有部署/测试）。
+  - lifespan：非 dev 且 trusted_header 模式且未配 secret 时 `logger.warning`（告警但不阻塞，避免破坏）。
+  - `.env.example` 补 `AGENT_FRAMEWORK_CONSOLE_TRUSTED_HEADER_SECRET` 说明 + 签名算法。
+  - 用脚本验证 4 场景：无签名 401、正确签名映射、错误签名 401、未配 secret 向后兼容。`test_trusted_header_mode_*` 现有测试因不配 secret 走旧路径，仍通过。
 
 ### S4 — `max_tokens` 被设成完整上下文窗口
 - [x] **状态**：已修复 (2026-08-11)
@@ -89,22 +95,35 @@
 - **落地**：catch `IntegrityError`（新增 `from sqlalchemy.exc import IntegrityError`），冲突时在新 session 重读并走与现有分支一致的 owner 校验（不属于本用户→404）；若重读时行已消失（胜方回滚）→409 让调用方重试。保留了原有全部 owner/workspace 校验语义。
 
 ### H4 — `export_skill` 临时文件泄漏
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/api/app.py:1664-1681`
 - **问题**：`NamedTemporaryFile(delete=False)` 生成的 zip 返回后从不 unlink，反复导出堆积。
 - **修复**：`FileResponse(..., background=BackgroundTask(os.unlink, path))`。
+- **落地**：`from starlette.background import BackgroundTask`；`FileResponse` 加 `background=BackgroundTask(os.unlink, tmp.name)`，响应流结束后清理。`try/except` 构建失败时仍 `os.unlink`（既有逻辑保留）。
 
 ### H5 — async 路径跑同步 FS
-- [ ] **状态**：未修复
-- **位置**：`src/agent_framework/api/app.py:990-994` 等多处（`shutil.rmtree`/`copytree`/`rglob`/`mkdir`/`write_bytes`）
+- [x] **状态**：已修复 (2026-08-11)
+- **位置**：`src/agent_framework/api/app.py:990-994` 等多处（`shutil.rmtree`/`copytree`/`rglob`）
 - **问题**：阻塞事件循环，网络存储或大会话时严重卡顿。
 - **修复**：用 `anyio.to_thread.run_sync`（仓库已有先例 :330）。
+- **落地**：
+  - 新增 module-level `_rmtree_async(path, ignore_errors)`（`anyio.to_thread.run_sync(functools.partial(shutil.rmtree, ...))`）。
+  - `delete_session` 的 4 个 rmtree 改用 `_rmtree_async` 并 `asyncio.gather` 并发。
+  - `install_skill` 的 `shutil.copytree` 改 `anyio.to_thread.run_sync`。
+  - `uninstall_skill` 的 2 个 rmtree 改 `_rmtree_async`。
+  - `export_skill` 的 zip 构建（rglob + 写入）提取为 `_build_skill_export_zip` sync helper，用 `anyio.to_thread.run_sync` 调，避免 rglob+压缩阻塞事件循环。
+  - 新增 `import functools`。
 
 ### H6 — 单 token 无并发上限
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/api/app.py:706-910`（`public_invoke_agent`）
 - **问题**：只有基于历史调用的限流（`_enforce_api_token_policy_limits`），无 in-flight 计数；单 token 可开无数并发流。
-- **修复**：按 token_id/workspace 加 `asyncio.Semaphore`。
+- **修复**：按 token_id 加 `asyncio.Semaphore`。
+- **落地**：
+  - settings 新增 `api_token_max_concurrent_runs: int = 4`（0=不限，向后兼容）。
+  - 新增 `_ApiTokenRunLimiter`：per-token `asyncio.Semaphore`，lazy 创建；`acquire`/`release` 都 async；max=0 时 no-op。lifespan 里挂到 `app.state.api_token_run_limiter`。
+  - `public_invoke_agent`：流式路径在 `event_stream()` 内 acquire（连接占资源后才占 slot）、finally release（客户端断开也触发）；非流式路径在 `runtime.run` 外 `try/finally` acquire/release。
+  - 语义为**排队**（不返 429，避免破坏客户端），上限即并发上限。用脚本验证 4 场景：cap 强制第 3 个阻塞、跨 token 不互相影响、release 唤醒等待者、max=0 不阻塞。
 
 ### H7 — 开放重定向
 - [x] **状态**：已修复 (2026-08-11)
@@ -260,13 +279,14 @@
 1. **立即修**（改动小、收益大）：S1、S2、S4、H1、H2、H7、M11。
    - ✅ 第一批已完成 (2026-08-11)：**S1、S2、S4、H7、M11** + 死代码 D1、D2。测试 176 passed。
    - ✅ 第二批已完成 (2026-08-11)：**H1、H2、H3、H11**。测试 176 passed。**"立即修"清单全部完成。**
-2. **部署前必须确认**：S3（`trusted_header` 是否在可信网关后）、M2（沙箱 env 泄漏）。
-   - ✅ 第三批已完成 (2026-08-11)：**S5、S6**（沙箱路径边界，按你确认的修法）+ **H8、H10**（skill 进程 EOF/git 超时）。测试 176 passed。
+2. **部署前必须确认**：M2（沙箱 env 泄漏）。
+   - ✅ 第三批已完成 (2026-08-11)：**S5、S6**（沙箱路径边界）+ **H8、H10**（skill 进程 EOF/git 超时）。
+   - ✅ 第四批已完成 (2026-08-11)：**S3**（trusted_header HMAC 签名）+ **H4、H5、H6**（tempfile 泄漏/async FS/token 并发上限）。测试 176 passed；S3 与 H6 逻辑用脚本覆盖多场景验证。**SEVERE 全部完成（S1–S6）。**
 3. **顺手清理**：D1（死且分叉的 `model/context_window.py`，隐患源）✅、G1（`.git-backup-*`）、G2（`tmp/`）。
 4. **重构窗口**：L1–L6（后端 visibility helper）、L7 + 前端 `useAsyncResource`——能削上千行重复。
 
-> 前三批累计已修复：**S1、S2、S4、S5、S6 + H1、H2、H3、H7、H8、H10、H11 + M11 + D1、D2**（共 16 项，含 5 个 SEVERE）。
-> 剩余高危：H4（tempfile 泄漏）、H5（async 同步 FS）、H6（token 并发上限）、H9（PermissionGuard 只拦 open）、S3（trusted_header 签名/网关）。
+> 前四批累计已修复：**S1、S2、S3、S4、S5、S6 + H1、H2、H3、H4、H5、H6、H7、H8、H10、H11 + M11 + D1、D2**（共 20 项，含全部 6 个 SEVERE）。
+> 剩余高危：H9（PermissionGuard 只拦 open，沙箱隔离哲学，需确认方向）、M2（沙箱 env 泄漏）。
 
 ---
 

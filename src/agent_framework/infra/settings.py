@@ -44,11 +44,21 @@ class AppSettings(BaseSettings):
     mcp_timeout_seconds: float = 500.0
     mcp_servers_json: str | None = None
     max_upload_bytes: int = 100 * 1024 * 1024  # 100 MB
+    # Max simultaneous in-flight public agent runs (streaming + non-streaming)
+    # per API token. 0 = unlimited (back-compat). Excess requests get 429.
+    api_token_max_concurrent_runs: int = 4
     api_token_hash_pepper: str = DEFAULT_API_TOKEN_HASH_PEPPER
     console_auth_mode: str = "local"
     console_auth_jwt_secret: str | None = None
     console_auth_jwt_issuer: str | None = None
     console_auth_jwt_audience: str | None = None
+    # Optional HMAC secret for trusted_header mode. When set, the reverse proxy
+    # must sign a digest of the identity headers (see _verify_trusted_header_signature)
+    # and present it as `x-covalent-signature`. This prevents a client that
+    # bypasses the proxy from forging admin identity via raw headers.
+    # When unset, trusted_header mode trusts the headers verbatim (back-compat);
+    # validate_runtime_secrets logs a warning in that case outside dev mode.
+    console_trusted_header_secret: str | None = None
     console_session_secret: str = DEFAULT_CONSOLE_SESSION_SECRET
     console_session_cookie_name: str = "covalent_console_session"
     console_session_cookie_secure: bool | None = None

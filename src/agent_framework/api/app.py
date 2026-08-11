@@ -4,6 +4,9 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+import functools
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -22,6 +25,7 @@ import anyio
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from starlette.middleware.base import BaseHTTPMiddleware
 import jwt
 from jwt import PyJWTError
@@ -326,6 +330,17 @@ async def build_registry(
 async def lifespan(app: FastAPI):
     settings = AppSettings()
     settings.validate_runtime_secrets()
+    if (
+        settings.is_dev_auth_mode() is False
+        and (settings.console_auth_mode or "local").strip().lower() in {"trusted_header", "trusted-headers", "headers"}
+        and not (settings.console_trusted_header_secret or "").strip()
+    ):
+        logger.warning(
+            "console_auth_mode=trusted_header is running WITHOUT a signature secret "
+            "(AGENT_FRAMEWORK_CONSOLE_TRUSTED_HEADER_SECRET is unset). Any client "
+            "that can reach the app directly can forge admin identity via headers. "
+            "Configure the secret and have your reverse proxy sign the identity headers."
+        )
     database_url = settings.database_url
     if not database_url:
         raise RuntimeError("AGENT_FRAMEWORK_DATABASE_URL must be set when using persistent config storage")
@@ -369,6 +384,7 @@ async def lifespan(app: FastAPI):
     app.state.registry = registry
     app.state.skill_loader = loader
     app.state.session_store = PersistentSessionStore(db_manager.session_factory)
+    app.state.api_token_run_limiter = _ApiTokenRunLimiter(settings.api_token_max_concurrent_runs)
 
     # Reclaim sandbox containers orphaned by a previous run, then start a periodic
     # reaper that removes containers whose session has been deleted. No-op for the
@@ -402,6 +418,69 @@ async def lifespan(app: FastAPI):
     await registry.aclose()
     await execution_backend.aclose()
     await db_manager.dispose()
+
+
+async def _rmtree_async(path: Path, *, ignore_errors: bool = False) -> None:
+    """shutil.rmtree off the event loop. Large or network-attached session
+    workspaces would otherwise block the loop for the full duration of the walk.
+    """
+    await anyio.to_thread.run_sync(
+        functools.partial(shutil.rmtree, path, ignore_errors=ignore_errors)
+    )
+
+
+def _build_skill_export_zip(source_dir: Path, output_path: str) -> None:
+    """Synchronous helper that walks a skill source dir and writes a zip to
+    ``output_path``. Run via anyio.to_thread.run_sync so the rglob + zip
+    compression doesn't block the event loop on large skills.
+    """
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file_path in sorted(source_dir.rglob("*")):
+            if not file_path.is_file():
+                continue
+            if "__pycache__" in file_path.parts or file_path.suffix == ".pyc":
+                continue
+            archive.write(file_path, file_path.relative_to(source_dir))
+
+
+class _ApiTokenRunLimiter:
+    """Per-token in-flight run cap. A bounded semaphore is created lazily per
+    token_id (never per request) and reused across the token's lifetime. When
+    the configured cap is 0 the limiter is a no-op (back-compat).
+
+    Excess concurrent calls block on ``acquire`` (queue, not reject) so a
+    burst from one token serializes rather than exhausting provider quota or
+    sandbox containers. Intended to live on ``app.state`` so all workers in
+    this process share it.
+    """
+
+    def __init__(self, max_per_token: int) -> None:
+        self._max = max(0, int(max_per_token))
+        self._semaphores: dict[str, asyncio.Semaphore] = {}
+        self._lock = asyncio.Lock()
+
+    @property
+    def enabled(self) -> bool:
+        return self._max > 0
+
+    async def acquire(self, token_id: str) -> None:
+        if self._max <= 0:
+            return
+        async with self._lock:
+            sem = self._semaphores.get(token_id)
+            if sem is None:
+                sem = asyncio.Semaphore(self._max)
+                self._semaphores[token_id] = sem
+        # Acquire outside the manager lock so a full semaphore doesn't block
+        # other tokens' lookups; callers await their own token's slot.
+        await sem.acquire()
+
+    async def release(self, token_id: str) -> None:
+        if self._max <= 0:
+            return
+        sem = self._semaphores.get(token_id)
+        if sem is not None:
+            sem.release()
 
 
 class ConsoleAuthGuardMiddleware(BaseHTTPMiddleware):
@@ -787,7 +866,14 @@ def create_app() -> FastAPI:
         _record_sandbox_session(getattr(app.state, "execution_backend", None), context.session_id or "", agent)
 
         if invoke_request.stream:
+            limiter: _ApiTokenRunLimiter | None = getattr(app.state, "api_token_run_limiter", None)
+
             async def event_stream():
+                # Acquire the per-token slot inside the generator so the slot is
+                # held only while the stream is actually consuming resources, and
+                # released in finally even if the client disconnects mid-stream.
+                if limiter is not None:
+                    await limiter.acquire(principal.token_id)
                 started = perf_counter()
                 final_payload: dict[str, Any] | None = None
                 error_payload: dict[str, Any] = {}
@@ -848,6 +934,8 @@ def create_app() -> FastAPI:
                         error=error_payload,
                         metadata=invoke_request.metadata,
                     )
+                    if limiter is not None:
+                        await limiter.release(principal.token_id)
 
             return StreamingResponse(
                 event_stream(),
@@ -859,6 +947,9 @@ def create_app() -> FastAPI:
                 },
             )
 
+        limiter: _ApiTokenRunLimiter | None = getattr(app.state, "api_token_run_limiter", None)
+        if limiter is not None:
+            await limiter.acquire(principal.token_id)
         started = perf_counter()
         try:
             result = await runtime.run(agent, invoke_request.input, context)
@@ -881,6 +972,9 @@ def create_app() -> FastAPI:
                 metadata=invoke_request.metadata,
             )
             raise HTTPException(status_code=status_code, detail=exc.detail) from exc
+        finally:
+            if limiter is not None:
+                await limiter.release(principal.token_id)
 
         latency_ms = int((perf_counter() - started) * 1000)
         usage = result.usage.model_dump(mode="json") if result.usage is not None else {}
@@ -989,11 +1083,18 @@ def create_app() -> FastAPI:
         _ensure_console_principal_can_access_session(principal, existing)
         if not await session_store.delete_session(session_id):
             raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
-        shutil.rmtree(_attachment_session_dir(settings.workspace_root(), session_id), ignore_errors=True)
-        shutil.rmtree(_chat_upload_session_dir(settings, session_id), ignore_errors=True)
-        shutil.rmtree(_download_session_dir(settings.workspace_root(), session_id), ignore_errors=True)
-        if settings.session_workspace_enabled:
-            shutil.rmtree(settings.session_workspace_dir(session_id), ignore_errors=True)
+
+        async def _remove_workspace_dir() -> None:
+            if settings.session_workspace_enabled:
+                await _rmtree_async(settings.session_workspace_dir(session_id), ignore_errors=True)
+
+        # Run the four filesystem cleanups concurrently off the event loop.
+        await asyncio.gather(
+            _rmtree_async(_attachment_session_dir(settings.workspace_root(), session_id), ignore_errors=True),
+            _rmtree_async(_chat_upload_session_dir(settings, session_id), ignore_errors=True),
+            _rmtree_async(_download_session_dir(settings.workspace_root(), session_id), ignore_errors=True),
+            _remove_workspace_dir(),
+        )
         await app.state.execution_backend.stop(session_id)
         return {"status": "deleted", "id": session_id}
 
@@ -1497,7 +1598,10 @@ def create_app() -> FastAPI:
             if target_dir.exists():
                 status = "already_exists"
             else:
-                shutil.copytree(source_dir, target_dir)
+                # Skill source dirs can be large; copy off the event loop.
+                await anyio.to_thread.run_sync(
+                    functools.partial(shutil.copytree, source_dir, target_dir)
+                )
                 status = "installed"
             registered_spec = loader.load_skill_dir(target_dir)
             registry.register_manifest_skill(registered_spec)
@@ -1640,10 +1744,10 @@ def create_app() -> FastAPI:
                     repo_root = settings.managed_skill_directory("github_synced")
                     for candidate in [source_dir, *source_dir.parents]:
                         if candidate.parent == repo_root:
-                            shutil.rmtree(candidate, ignore_errors=True)
+                            await _rmtree_async(candidate, ignore_errors=True)
                             break
             elif category in {"uploaded", "authored"} and source_dir and source_dir.exists():
-                shutil.rmtree(source_dir, ignore_errors=True)
+                await _rmtree_async(source_dir, ignore_errors=True)
 
         return {"status": "uninstalled", "skill": skill_name}
 
@@ -1665,13 +1769,7 @@ def create_app() -> FastAPI:
 
         tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False, prefix=f"{skill_name}_")
         try:
-            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
-                for file_path in sorted(source.rglob("*")):
-                    if not file_path.is_file():
-                        continue
-                    if "__pycache__" in file_path.parts or file_path.suffix == ".pyc":
-                        continue
-                    archive.write(file_path, file_path.relative_to(source))
+            await anyio.to_thread.run_sync(_build_skill_export_zip, source, tmp.name)
         except Exception:
             os.unlink(tmp.name)
             raise
@@ -1680,6 +1778,9 @@ def create_app() -> FastAPI:
             tmp.name,
             media_type="application/zip",
             filename=f"{skill_name}.zip",
+            # Unlink the on-disk zip after the response finishes streaming so
+            # repeated exports don't accumulate temp files.
+            background=BackgroundTask(os.unlink, tmp.name),
         )
 
     @app.post("/skills/{skill_name}/enable")
@@ -2225,10 +2326,50 @@ def _resolve_console_identity(request: Request, settings: AppSettings) -> dict[s
     if mode == "dev":
         return _console_identity_from_headers(request, require_identity=False)
     if mode in {"trusted_header", "trusted-headers", "headers"}:
-        return _console_identity_from_headers(request, require_identity=True)
+        identity = _console_identity_from_headers(request, require_identity=True)
+        _verify_trusted_header_signature(request, settings, identity)
+        return identity
     if mode == "jwt":
         return _console_identity_from_jwt(request, settings)
     raise HTTPException(status_code=500, detail=f"Unsupported console auth mode: {settings.console_auth_mode}")
+
+
+def _verify_trusted_header_signature(
+    request: Request, settings: AppSettings, identity: dict[str, str]
+) -> None:
+    """When ``console_trusted_header_secret`` is configured, require the
+    reverse proxy to attach an HMAC-SHA256 signature over the identity headers
+    in ``x-covalent-signature``. This prevents a client that bypasses the proxy
+    from forging admin identity via raw headers.
+
+    When the secret is unset the mode trusts headers verbatim (back-compat with
+    existing deployments that strip identity headers at the proxy edge);
+    ``validate_runtime_secrets`` logs a loud warning in that case.
+    """
+    secret = (settings.console_trusted_header_secret or "").strip()
+    if not secret:
+        return
+    provided = (request.headers.get("x-covalent-signature") or "").strip()
+    if not provided:
+        raise HTTPException(status_code=401, detail="Missing identity signature")
+    signed = "\n".join(
+        [
+            identity["user_id"],
+            identity["email"],
+            identity["display_name"],
+            identity["role"],
+            identity["workspace_id"],
+            identity["workspace_name"],
+            identity["workspace_slug"],
+        ]
+    )
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        signed.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, provided):
+        raise HTTPException(status_code=401, detail="Invalid identity signature")
 
 
 def _console_identity_from_headers(request: Request, *, require_identity: bool) -> dict[str, str]:
