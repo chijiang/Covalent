@@ -1249,7 +1249,7 @@ def create_app() -> FastAPI:
             agent = registry.get_agent(resolved_agent_name)
             _record_sandbox_session(getattr(app.state, "execution_backend", None), session_id, agent)
         except Exception:
-            pass
+            logger.debug("Failed to record sandbox session metadata for %s", session_id, exc_info=True)
         try:
             agent = registry.get_agent(resolved_agent_name)
         except KeyError as exc:
@@ -1288,7 +1288,7 @@ def create_app() -> FastAPI:
             agent = registry.get_agent(resolved_agent_name)
             _record_sandbox_session(getattr(app.state, "execution_backend", None), session_id, agent)
         except Exception:
-            pass
+            logger.debug("Failed to record sandbox session metadata for %s", session_id, exc_info=True)
         try:
             agent = registry.get_agent(resolved_agent_name)
         except KeyError as exc:
@@ -4256,6 +4256,7 @@ async def _generate_session_title(
             )
         )
     except Exception:
+        logger.debug("Session title generation failed; using fallback", exc_info=True)
         return fallback
     return _normalize_generated_title(response.output_text) or fallback
 
@@ -4306,6 +4307,7 @@ def _extract_pending_user_input(activity: list[ChatActivityItem]) -> UserInputRe
         try:
             request = UserInputRequest.model_validate(item.payload)
         except Exception:
+            logger.warning("Skipping malformed input_required activity payload: %s", item.payload, exc_info=True)
             continue
         if request.id not in resolved_ids:
             return request
@@ -5256,6 +5258,13 @@ async def _resolve_default_provider(
         try:
             providers_payload = await config_store.get_document("providers")
         except Exception:
+            # Don't crash agent startup, but surface the DB failure — otherwise a
+            # transient config-store error silently routes traffic to the
+            # fallback default provider/model instead of the configured one.
+            logger.warning(
+                "Failed to load providers from config store; falling back to default provider",
+                exc_info=True,
+            )
             providers_payload = []
 
     from agent_framework.infra.config_store import PersistedProviderConfig

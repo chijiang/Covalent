@@ -15,6 +15,14 @@ MAX_PDF_PAGES = 9
 PDF_RENDER_TARGET_LONG_EDGE = 2200.0
 PDF_RENDER_MIN_SCALE = 2.0
 PDF_RENDER_MAX_SCALE = 3.0
+# Above this raw-byte threshold, images are NOT inlined as base64 into the
+# model content (a 50MB image would otherwise ~66MB base64 in context). The
+# file is still placed in the workspace; only the inline embedding is skipped.
+MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+# Total base64 byte budget for a PDF's page screenshots. Past this, page images
+# are dropped and only extracted text is sent — prevents a 9-page deck from
+# embedding ~100MB of PNGs into the model request.
+MAX_PDF_INLINE_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 def process_attachment_bytes(
@@ -51,8 +59,21 @@ def process_attachment_bytes(
         }
 
     if inferred_kind == "image":
-        data_url = _data_url(normalized_content_type, raw_bytes)
         image_prompt = _render_image_prompt(file_name, normalized_content_type, workspace_path)
+        if len(raw_bytes) > MAX_INLINE_IMAGE_BYTES:
+            # Too large to safely inline as base64 — leave it in the workspace.
+            oversize_prompt = _render_binary_prompt(file_name, normalized_content_type, workspace_path)
+            return {
+                "kind": "image",
+                "summary": (
+                    f"Image attachment too large to inline ({len(raw_bytes)} bytes; "
+                    f"limit {MAX_INLINE_IMAGE_BYTES}); available in workspace"
+                ),
+                "model_prompt_text": oversize_prompt,
+                "model_content": [_text_part(oversize_prompt)],
+                "page_count": None,
+            }
+        data_url = _data_url(normalized_content_type, raw_bytes)
         return {
             "kind": "image",
             "summary": f"Embedded image as base64 ({normalized_content_type}, {len(raw_bytes)} bytes)",
@@ -64,6 +85,21 @@ def process_attachment_bytes(
     if inferred_kind == "pdf":
         page_count, extracted_text, page_images = _extract_pdf_content(raw_bytes)
         pdf_prompt = _render_pdf_prompt(file_name, workspace_path, extracted_text)
+        total_image_bytes = sum(len(img) for img in page_images)
+        if total_image_bytes > MAX_PDF_INLINE_IMAGE_BYTES:
+            # Drop the page screenshots to stay within model-request budget;
+            # extracted text still carries the content.
+            note = (
+                f"\n\n(Page screenshots omitted: {total_image_bytes} bytes exceeds the "
+                f"{MAX_PDF_INLINE_IMAGE_BYTES}-byte inline budget. Rely on the extracted text above.)"
+            )
+            return {
+                "kind": "pdf",
+                "summary": f"Extracted PDF text only ({page_count} pages; images omitted as too large)",
+                "model_prompt_text": pdf_prompt + note,
+                "model_content": [_text_part(pdf_prompt + note)],
+                "page_count": page_count,
+            }
         return {
             "kind": "pdf",
             "summary": f"Extracted PDF text and page screenshots ({page_count} pages)",

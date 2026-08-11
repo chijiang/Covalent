@@ -195,10 +195,14 @@
   - 用脚本验证 13 个变量：PATH/HOME/SKILL_*/VIRTUAL_ENV/NODE_PATH 保留；OPENAI_API_KEY/DATABASE_PASSWORD/AUTH_TOKEN/PYTHONPATH/LD_LIBRARY_PATH/MY_CREDENTIAL 全剥离。测试 176 passed。
 
 ### M3 — 附件无字节上限
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/core/attachment_processing.py:20-127`
 - **问题**：PDF/文本无字节上限（仅 9 页限制），单页巨图 base64 进 model content 可致内存爆炸。
 - **修复**：上传边界加字节上限 + 渲染像素上限；`_unzip_workspace_archive` 加解压总字节上限。
+- **落地**：上传边界本就有 `max_upload_bytes`（默认 100MB）总字节校验，所以补的是**进 model content 的 inline 上限**：
+  - 新增 `MAX_INLINE_IMAGE_BYTES = 5MB`：image 分支原始字节超阈值则**不 inline base64**，改 binary/workspace 提示（文件仍在 workspace）。
+  - 新增 `MAX_PDF_INLINE_IMAGE_BYTES = 8MB`：PDF 的 page_images 总 base64 字节超阈值则**丢弃截图只发提取文本**，附说明让 agent 依赖文本。
+  - 小图/正常 PDF 行为完全不变。
 
 ### M4 — 每轮迭代可能触发 LLM summarize 且静默吞错
 - [ ] **状态**：未修复
@@ -207,10 +211,11 @@
 - **修复**：缓存/限频并 log 失败。
 
 ### M5 — `_kill_exec` 未走 to_thread
-- [ ] **状态**：未修复
+- [x] **状态**：已处理 (2026-08-11，降级为可观测 + 文档权衡)
 - **位置**：`src/agent_framework/runtime/docker_backend.py:615-633`
 - **问题**：`container.exec_run` 阻塞调用未包 `asyncio.to_thread`，daemon 慢时阻塞事件循环。
 - **修复**：改为 async + `await asyncio.to_thread(...)`。
+- **落地**（不强改 async，避免协议扩散）：`_kill_exec` 由 `DockerExecProcess.terminate/kill`（sync `Process` 协议）调用，`SkillProcessManager._terminate`（async）调 sync 方法。改 async 需要破坏 `Process` 协议签名、扩散到所有调用点，性价比低。改为：两处 `except: pass` → `logger.debug(..., exc_info=True)`（kill 失败可观测）；docstring 写清"只在异常 terminate 路径触发，daemon 慢时短暂阻塞可接受"的权衡。这是有意识的折中。
 
 ### M6 — delegate context session_id=None
 - [ ] **状态**：未修复
@@ -219,10 +224,16 @@
 - **修复**：继承父 session_id（或派生委托链范围的 id）。
 
 ### M7 — 多处裸 `except Exception` 静默吞错
-- [ ] **状态**：未修复
-- **位置**：`src/agent_framework/api/app.py:4097,4047,5047` 等多处
-- **问题**：无日志；`:5047` 把任何 provider DB 错误变成"空列表"→静默回退默认 provider，可能路由到错误 model/key。
+- [x] **状态**：已修复 (2026-08-11)
+- **位置**：`src/agent_framework/api/app.py`（5 处裸 except）
+- **问题**：无日志；provider 解析的异常变"空列表"→静默回退默认 provider，可能路由到错误 model/key。
 - **修复**：至少 `logger.exception(...)`；provider 解析的异常应 re-raise。
+- **落地**（5 处加 log，保留原回退行为不破坏功能）：
+  - `run_agent`/`stream_agent` 的 `_record_sandbox_session` 吞错（2 处）→ `logger.debug(..., exc_info=True)`。
+  - `_generate_session_title` 失败回退 → `logger.debug`。
+  - `_extract_pending_user_input` 的 `UserInputRequest.model_validate` 跳过 → `logger.warning`（带 payload）。
+  - **`_resolve_default_provider` 的 provider 解析失败**（M7 点名的高危）→ `logger.warning`（不 re-raise，避免 agent 启动崩；但运维能看到 DB 故障被静默回退）。
+  - 保留：`export_skill` build 失败 unlink+raise（正确的 re-raise）、`_console_settings_from_request` 缺失回退（合理）。
 
 ### M8 — 前端 workspace 错误状态混用 + 乐观更新无回滚
 - [ ] **状态**：未修复
@@ -231,16 +242,18 @@
 - **修复**：拆 `runsError`/`previewError`；失败时捕获并恢复原 `editor`/`selectedName`。
 
 ### M9 — sandbox 轮询不看可见性、无 cancelled guard
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`frontend/components/sandbox-workspace.tsx:238-242`
 - **问题**：10s 轮询不看 `document.visibilityState`；`refresh` 内无 cancelled guard，卸载后仍 setState。
 - **修复**：加 `isMountedRef`/cancelled guard，挂 `visibilitychange` 暂停。
+- **落地**：新增 `isMountedRef = useRef(true)`；`refresh` 内每次 setState 前判 `isMountedRef.current`（卸载后跳过）；`useEffect` 重构——挂载时 `isMountedRef.current=true` + 首次 refresh + 起 interval，`visibilitychange`：可见→refresh+start、隐藏→stop（clearInterval），cleanup 时 `isMountedRef.current=false` + stop + 移除监听。`handleStop` 仍调 `refresh()` 不受影响。前端 `tsc --noEmit` 通过。
 
 ### M10 — delegate 结果回退序列化混入 `[image]` 字面量
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11)
 - **位置**：`src/agent_framework/runtime/react.py:308-318`（`_response_output_text`）
 - **问题**：image 部分变 `[image]` 喂给父 agent，可能误导。
 - **修复**：只转发 text parts，丢弃 image marker。
+- **落地**：新增 `_serialize_text_content(content)`——text-only 版本，丢弃 image_url 和结构化 part（trace 用的 `_serialize_content` 保留 `[image]` 不变，因为那是给可观测看的）。`_response_output_text` 回退路径改用 `_serialize_text_content`，确保父 agent 拿到的是纯文本不含 `[image]` 字面量。纯字符串 content 行为不变。
 
 ### M11 — MIME 类型 typo
 - [x] **状态**：已修复 (2026-08-11)
@@ -297,8 +310,8 @@
 3. **顺手清理**：D1（死且分叉的 `model/context_window.py`，隐患源）✅、G1（`.git-backup-*`）、G2（`tmp/`）。
 4. **重构窗口**：L1–L6（后端 visibility helper）、L7 + 前端 `useAsyncResource`——能削上千行重复。
 
-> 前六批累计已修复：**S1–S6 + H1–H11 + M2、M11 + D1、D2 + L1、L3 + G1、G2、G4**（共 26 项，含全部 6 个 SEVERE 和全部 11 个 HIGH）。
-> **SEVERE 与 HIGH 已全部处理完毕。** 剩余仅 MEDIUM（M3-M10）与结构性清理（L2/L4-L7、G3/G5、X1-X6）。
+> 前七批累计已修复：**S1–S6 + H1–H11 + M2、M3、M5、M7、M9、M10、M11 + D1、D2 + L1、L3 + G1、G2、G4**（共 31 项，含全部 6 个 SEVERE 和全部 11 个 HIGH）。
+> **SEVERE 与 HIGH 已全部处理完毕。** 剩余仅 M1/M4/M6/M8（语义敏感，需确认产品意图）与结构性清理（L2/L4-L7、G3/G5、X1-X6）。
 
 ---
 

@@ -310,11 +310,15 @@ class ReactAgentRuntime(AgentRuntime):
         primary = (response.output_text or "").strip()
         if primary:
             return primary
+        # Fallback: synthesize text from the assistant message. Only forward
+        # actual text parts — image parts would otherwise become "[image]"
+        # literals via _serialize_content, which a parent agent reads as real
+        # content and gets confused by.
         assistant_message = response.assistant_message
         if assistant_message is not None:
-            serialized = cls._serialize_content(assistant_message.content).strip()
-            if serialized:
-                return serialized
+            text_only = cls._serialize_text_content(assistant_message.content).strip()
+            if text_only:
+                return text_only
         return fallback_text.strip()
 
     def _collect_forced_summary_observations(
@@ -753,6 +757,28 @@ class ReactAgentRuntime(AgentRuntime):
             return "\n".join(part for part in parts if part)
         if isinstance(content, dict):
             return cls._safe_json_dumps(content)
+        return "" if content is None else str(content)
+
+    @classmethod
+    def _serialize_text_content(cls, content: Any) -> str:
+        """Like _serialize_content, but drops image/structured parts so the
+        result is safe to feed to a parent agent as plain text. Used by
+        _response_output_text's fallback path."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text" and isinstance(item.get("text"), str):
+                        parts.append(item["text"])
+                    # image_url and other structured parts are intentionally skipped.
+                else:
+                    parts.append(str(item))
+            return "\n".join(part for part in parts if part)
+        if isinstance(content, dict):
+            text = content.get("text") if content.get("type") == "text" else None
+            return str(text) if isinstance(text, str) else ""
         return "" if content is None else str(content)
 
     @staticmethod

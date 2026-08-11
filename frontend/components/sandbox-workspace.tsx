@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -217,6 +217,7 @@ export function SandboxWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const [stoppingIds, setStoppingIds] = useState<Set<string>>(() => new Set());
+  const isMountedRef = useRef(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
 
@@ -225,20 +226,54 @@ export function SandboxWorkspace() {
     try {
       setError(null);
       const data = await getSandboxStatus();
+      if (!isMountedRef.current) {
+        return;
+      }
       setStatus(data);
       setLastUpdatedAt(data.snapshot_at ?? Date.now() / 1000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load sandbox status");
+      if (isMountedRef.current) {
+        setError(err instanceof Error ? err.message : "Failed to load sandbox status");
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
   useEffect(() => {
+    isMountedRef.current = true;
     refresh();
-    const interval = setInterval(refresh, 10000);
-    return () => clearInterval(interval);
+    // Only poll while the tab is visible — avoids wasted requests and avoids
+    // setState on a backgrounded component that may be torn down.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (interval) return;
+      interval = setInterval(refresh, 10000);
+    };
+    const stop = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        refresh();
+        start();
+      } else {
+        stop();
+      }
+    };
+    start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      isMountedRef.current = false;
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refresh]);
 
   const handleStop = useCallback(

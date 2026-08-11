@@ -616,13 +616,20 @@ class DockerBackend(ExecutionBackend):
         """Best-effort: signal the exec process inside the container via its PID.
 
         ``exec_inspect`` returns the exec process's PID in the container namespace;
-        ``kill`` is run inside the same container so the namespace matches. Called
-        from ``DockerExecProcess.terminate/kill`` (sync, rare) — a brief blocking
-        call, acceptable for a kill.
+        ``kill`` is run inside the same container so the namespace matches.
+
+        This stays synchronous because callers (``DockerExecProcess.terminate``/
+        ``kill``) implement the sync ``Process`` protocol used by
+        ``SkillProcessManager._terminate``. It is only invoked on the rare
+        abnormal-termination path (a hung exec), so a brief blocking HTTP round
+        trip to the Docker daemon is acceptable. If the daemon becomes
+        consistently slow this could stall the loop; the kill is best-effort
+        and swallows errors so the caller still falls through to socket close.
         """
         try:
             info = self._api().api.exec_inspect(exec_id)
         except Exception:
+            logger.debug("exec_inspect failed during kill probe", exc_info=True)
             return
         pid = info.get("Pid") if isinstance(info, dict) else None
         if not isinstance(pid, int) or pid <= 0:
@@ -630,7 +637,7 @@ class DockerBackend(ExecutionBackend):
         try:
             container.exec_run(["kill", f"-{signal_name}", str(pid)])
         except Exception:
-            pass
+            logger.debug("in-container kill failed for exec %s pid %s", exec_id, pid, exc_info=True)
 
     async def exec(
         self,
