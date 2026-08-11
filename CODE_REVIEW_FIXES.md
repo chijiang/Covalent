@@ -293,7 +293,11 @@
 
 ### 其他结构
 - [ ] **X1**：`chat-workspace.tsx` 2958 行混 6 个关注点，trace 树构建（~700 行）与 React 无关 → 挪到 `lib/`。
-- [ ] **X2**：`app.py` 5283 行——抽 `_resolve_run_target`、`_resolve_visible_skill` 等。
+- [~] **X2**：`app.py` 5283 行 → **正在拆分**（方案 A：抽 helper，路由暂留）。
+  - ✅ 第一步 (2026-08-11)：抽出**叶子层 `api/_shared.py`（432 行，22 个成员）**——`_new_chat_item_id`/`_coerce_int`/`_coerce_positive_int`/`_dedupe_strings`/`_safe_storage_component`(+`_SAFE_STORAGE_COMPONENT_RE`)/`_safe_extract_zip`/`_rmtree_async`/`_payload_text`/`_audit_request_metadata`/`_record_audit_log`/`_record_sandbox_session`/`_augment_sandbox_snapshot`/`_usage_int`/`to_agent_summary`/`to_chat_session_summary_response`/`to_chat_session_response`/`_api_token_summary_response`/`_agent_run_log_response`/`_audit_log_response`/`ConsolePrincipalContext`/`_sandbox_reaper_loop`。**app.py 5503 → 5212**。
+  - 方法：AST 定位 + 脚本提取源码段（保留缩进注释）+ 从后往前删行；用 basedpyright 诊断捕获缺 import（`zipfile`/`anyio`/`functools`/`re`/`dataclass`）与孤立装饰器（`@dataclass(frozen=True)` 残留在删除范围外，会错误装饰 `_console_user_response`——已删）。
+  - 测试 176 passed 零回归。
+  - ⏳ 剩余：`_auth_helpers.py`、`_session_helpers.py`、`_public_invoke_helpers.py`、`_config_helpers.py`+`_skill_helpers.py`（二者有循环依赖，用户已定用**第三模块 `_runtime_apply.py`** 拆 `_apply_runtime_config`）。全部完成预计 app.py → ~2500 行。
 - [ ] **X3**：`app.py:1243` 调 `runtime._encode_sse`（私有）；`:465` 读 `spm._pools`（私有）——暴露公开方法。
 - [ ] **X4**：`app.py:912-942` 每请求 `from openai import AsyncOpenAI` 且不 close → httpx 连接池泄漏。缓存/lazy-init。
 - [ ] **X5**：`react.py:1033` 上下文压缩早退条件几乎恒真，可能在真实超限时误判"无需压缩"——信任 `last_prompt_tokens`。
