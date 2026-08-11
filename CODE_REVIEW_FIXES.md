@@ -280,7 +280,9 @@
 - [ ] **L4**：`_pick_agent_row_for_principal`≈`_pick_resource_row_for_principal` → 合并。（暂不动——行为有差异：agent 版无 pending 优先/rows[0] fallback，强行合并会改语义）
 - [ ] **L5**：`run_agent`/`stream_agent` preamble（principal+agent+sandbox）整段复制 → `_resolve_run_target(...)`。
 - [ ] **L6**：7+ 前端 workspace 组件重复 `loading/error/refresh/useEffect` 样板 → `frontend/lib/` 抽 `useAsyncResource<T>(fetcher)`。
-- [ ] **L7**：`downloadTextFile` 在 `agents-workspace:262` 和 `mcp-workspace:169` 各一份 → 共享 util。
+  - **落地 (2026-08-11)**：新建 `frontend/lib/use-async-resource.ts`（`{data, loading, refreshing, error, refresh}`，stable refresh ref、deps 驱动 refetch、mountedRef 防 unmount setState、refresh 失败只 setError 不 throw 贴合现有"fire-and-forget"语义）。先应用到 `audit-logs-workspace.tsx`（最规整）验证可用；其余组件（users/agents/mcp/api-tokens 等）按需逐步套用。Refresh 按钮改用 `loading || refreshing` 保持视觉一致；refresh 时不再清空列表（小改进）。
+- [x] **L7**：`downloadTextFile` 在 `agents-workspace:262` 和 `mcp-workspace:169` 各一份 → 共享 util。
+  - **落地 (2026-08-11)**：新建 `frontend/lib/download.ts`，两处删本地定义改 import。tsc + eslint 通过。
 
 ### 垃圾文件
 - [x] **G1**：`.git-backup-20260805-232957/`（整份 .git 快照）——已删除。`.gitignore` 本就含 `.git-backup-*`（不会进版本库），物理删除本地残留。
@@ -310,8 +312,8 @@
 3. **顺手清理**：D1（死且分叉的 `model/context_window.py`，隐患源）✅、G1（`.git-backup-*`）、G2（`tmp/`）。
 4. **重构窗口**：L1–L6（后端 visibility helper）、L7 + 前端 `useAsyncResource`——能削上千行重复。
 
-> 前七批累计已修复：**S1–S6 + H1–H11 + M2、M3、M5、M7、M9、M10、M11 + D1、D2 + L1、L3 + G1、G2、G4**（共 31 项，含全部 6 个 SEVERE 和全部 11 个 HIGH）。
-> **SEVERE 与 HIGH 已全部处理完毕。** 剩余仅 M1/M4/M6/M8（语义敏感，需确认产品意图）与结构性清理（L2/L4-L7、G3/G5、X1-X6）。
+> 前八批累计已修复：**S1–S6 + H1–H11 + M2、M3、M5、M7、M9、M10、M11 + D1、D2 + L1、L3、L6、L7 + G1、G2、G4**（共 33 项，含全部 6 个 SEVERE 和全部 11 个 HIGH）。
+> **SEVERE 与 HIGH 已全部处理完毕。** 剩余仅 M1/M4/M6/M8（语义敏感，需确认产品意图）与少量结构性清理（L2/L4/L5、G3/G5、X1-X6）。
 
 ---
 

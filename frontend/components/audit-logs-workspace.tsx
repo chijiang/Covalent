@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, Fingerprint, KeyRound, RotateCcw, Search, UsersRound } from "lucide-react";
 
 import { ConsoleAlert } from "@/components/console/console-alert";
@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { listAuditLogs } from "@/lib/client-api";
+import { useAsyncResource } from "@/lib/use-async-resource";
 import type { AuditLog } from "@/lib/types";
 
 type AuditFilterState = {
@@ -109,39 +110,23 @@ function DetailField({ label, value, mono = false }: { label: string; value?: st
 }
 
 export function AuditLogsWorkspace() {
-  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const { data: logs, loading, refreshing, error, refresh } = useAsyncResource<AuditLog[]>(
+    () => listAuditLogs({ limit: 200 }),
+  );
+  const logList = useMemo(() => logs ?? [], [logs]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filters, setFilters] = useState<AuditFilterState>({ action: "", outcome: "all", targetType: "all" });
   const [searchQuery, setSearchQuery] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const nextLogs = await listAuditLogs({ limit: 200 });
-      setLogs(nextLogs);
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load audit logs.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
 
   const targetTypes = useMemo(
-    () => Array.from(new Set(logs.map((log) => log.target_type).filter(Boolean))).sort((left, right) => left.localeCompare(right)),
-    [logs],
+    () => Array.from(new Set(logList.map((log) => log.target_type).filter(Boolean))).sort((left, right) => left.localeCompare(right)),
+    [logList],
   );
 
   const filteredLogs = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const action = filters.action.trim().toLowerCase();
-    return logs.filter((log) => {
+    return logList.filter((log) => {
       if (filters.outcome !== "all" && log.outcome !== filters.outcome) {
         return false;
       }
@@ -158,7 +143,7 @@ export function AuditLogsWorkspace() {
         .toLowerCase()
         .includes(query);
     });
-  }, [filters, logs, searchQuery]);
+  }, [filters, logList, searchQuery]);
 
   useEffect(() => {
     setSelectedId((current) => {
@@ -170,11 +155,11 @@ export function AuditLogsWorkspace() {
   }, [filteredLogs]);
 
   const selectedLog = filteredLogs.find((log) => log.id === selectedId) ?? null;
-  const deniedCount = logs.filter(isDeniedOrFailed).length;
-  const tokenActivityCount = logs.filter(
+  const deniedCount = logList.filter(isDeniedOrFailed).length;
+  const tokenActivityCount = logList.filter(
     (log) => Boolean(log.actor_token_id) || log.target_type === "api_token" || log.action.includes("token"),
   ).length;
-  const uniqueActorCount = new Set(logs.map((log) => log.actor_user_id).filter((value): value is string => Boolean(value))).size;
+  const uniqueActorCount = new Set(logList.map((log) => log.actor_user_id).filter((value): value is string => Boolean(value))).size;
   const activeFilterCount =
     Number(Boolean(searchQuery.trim())) +
     Number(Boolean(filters.action.trim())) +
@@ -190,16 +175,16 @@ export function AuditLogsWorkspace() {
   return (
     <section className="page-section console-page-shell skill-settings-shell audit-logs-workspace flex min-h-0 flex-1 flex-col gap-4">
       <PageHeaderActions>
-        <Button disabled={loading} onClick={() => void refresh()} type="button">
-          <RotateCcw className={loading ? "animate-spin" : undefined} />
-          {loading ? "Refreshing" : "Refresh"}
+        <Button disabled={loading || refreshing} onClick={() => void refresh()} type="button">
+          <RotateCcw className={loading || refreshing ? "animate-spin" : undefined} />
+          {loading || refreshing ? "Refreshing" : "Refresh"}
         </Button>
       </PageHeaderActions>
 
       {error ? <ConsoleAlert variant="error">{error}</ConsoleAlert> : null}
 
       <section className="audit-log-metric-grid" aria-label="Audit log summary">
-        <MetricCard detail="Most recent 200 events" icon={<Activity />} label="Loaded events" value={logs.length} />
+        <MetricCard detail="Most recent 200 events" icon={<Activity />} label="Loaded events" value={logList.length} />
         <MetricCard detail="Denied or failed outcomes" icon={<AlertTriangle />} label="Attention needed" tone="danger" value={deniedCount} />
         <MetricCard detail="Events linked to API tokens" icon={<KeyRound />} label="Token activity" tone="accent" value={tokenActivityCount} />
         <MetricCard detail="Authenticated users in this view" icon={<UsersRound />} label="Unique actors" value={uniqueActorCount} />

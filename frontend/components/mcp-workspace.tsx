@@ -12,6 +12,7 @@ import { PublicationControls } from "@/components/console/publication-controls";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { callMcpTool, exportManagementConfig, getConfig, importManagementConfig, inspectMcpServer, saveConfig } from "@/lib/client-api";
+import { downloadTextFile } from "@/lib/download";
 import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
 import type { McpInspectResponse, McpServerConfig } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -164,16 +165,6 @@ function parseImportedServers(value: string): McpServerConfig[] {
   }
 
   throw new Error("Service JSON must be a service object, an array of services, or a config with mcpServers / mcp.servers.");
-}
-
-function downloadTextFile(filename: string, content: string, contentType = "text/plain;charset=utf-8") {
-  const blob = new Blob([content], { type: contentType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 function transportLabel(transport: McpServerConfig["transport"]): string {

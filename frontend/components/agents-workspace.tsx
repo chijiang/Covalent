@@ -12,6 +12,7 @@ import { InventoryListItem } from "@/components/console/inventory-list-item";
 import { ConsoleMetaRail, PanelHeader } from "@/components/console/panel-header";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
+import { downloadTextFile } from "@/lib/download";
 import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
 import { exportManagementConfig, fetchProviderModels, getAgentLocalTools, getAgents, getConfig, getSkills, importManagementConfig, inspectMcpServer, saveConfig, sortAgentsForPicker } from "@/lib/client-api";
 import type { AgentConfig, AgentDetail, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, ResourceVisibility, SkillSummary } from "@/lib/types";
@@ -257,16 +258,6 @@ function toAgentForm(
     maxIterations: agent?.max_iterations ?? DEFAULT_AGENT_MAX_ITERATIONS,
     timeoutSeconds: agent?.provider?.timeout_seconds ?? DEFAULT_PROVIDER_TIMEOUT_SECONDS,
   };
-}
-
-function downloadTextFile(filename: string, content: string, contentType = "text/plain;charset=utf-8") {
-  const blob = new Blob([content], { type: contentType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 function isAgentEnabled(agent: AgentConfig | null | undefined): boolean {
