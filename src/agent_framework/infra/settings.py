@@ -9,6 +9,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 MANAGED_SKILL_LOCAL_CATEGORIES = ("built_in", "uploaded", "authored")
 MANAGED_SKILL_ALL_CATEGORIES = (*MANAGED_SKILL_LOCAL_CATEGORIES, "github_synced")
 
+# Default secrets shipped with the source. They exist so a fresh `dev` checkout
+# works with zero configuration; any non-dev deployment MUST override them.
+# `AppSettings.validate_runtime_secrets` refuses to start if they are still in
+# place (or empty) outside dev mode.
+DEFAULT_API_TOKEN_HASH_PEPPER = "dev-token-pepper-change-me"
+DEFAULT_CONSOLE_SESSION_SECRET = "dev-session-secret-change-me"
+DEFAULT_SEED_ADMIN_PASSWORD = "admin123"
+
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -36,19 +44,20 @@ class AppSettings(BaseSettings):
     mcp_timeout_seconds: float = 500.0
     mcp_servers_json: str | None = None
     max_upload_bytes: int = 100 * 1024 * 1024  # 100 MB
-    api_token_hash_pepper: str = "dev-token-pepper-change-me"
+    api_token_hash_pepper: str = DEFAULT_API_TOKEN_HASH_PEPPER
     console_auth_mode: str = "local"
     console_auth_jwt_secret: str | None = None
     console_auth_jwt_issuer: str | None = None
     console_auth_jwt_audience: str | None = None
-    console_session_secret: str = "dev-session-secret-change-me"
+    console_session_secret: str = DEFAULT_CONSOLE_SESSION_SECRET
     console_session_cookie_name: str = "covalent_console_session"
+    console_session_cookie_secure: bool | None = None
     console_session_max_age_seconds: int = 60 * 60 * 24 * 14
     console_signup_enabled: bool = True
     console_seed_admin_enabled: bool = True
     console_seed_admin_username: str = "admin"
     console_seed_admin_email: str = "admin@local"
-    console_seed_admin_password: str = "admin123"
+    console_seed_admin_password: str = DEFAULT_SEED_ADMIN_PASSWORD
     console_seed_admin_display_name: str = "Admin"
     console_seed_admin_workspace_name: str = "Default workspace"
     agents_json: str | None = None
@@ -136,3 +145,47 @@ class AppSettings(BaseSettings):
         root.mkdir(parents=True, exist_ok=True)
         for category in MANAGED_SKILL_ALL_CATEGORIES:
             (root / category).mkdir(parents=True, exist_ok=True)
+
+    def is_dev_auth_mode(self) -> bool:
+        return (self.console_auth_mode or "local").strip().lower() == "dev"
+
+    def validate_runtime_secrets(self) -> None:
+        """Refuse to start outside dev auth mode if any secret is still the
+        shipped default or empty. Dev mode is meant for a zero-config local
+        checkout and is exempt.
+
+        Raises ``RuntimeError`` listing every offending setting so the operator
+        sees all required changes in one shot.
+        """
+        if self.is_dev_auth_mode():
+            return
+
+        problems: list[str] = []
+        if not self.api_token_hash_pepper or self.api_token_hash_pepper == DEFAULT_API_TOKEN_HASH_PEPPER:
+            problems.append(
+                "AGENT_FRAMEWORK_API_TOKEN_HASH_PEPPER must be set to a non-default value"
+            )
+        if (
+            not self.console_session_secret
+            or self.console_session_secret == DEFAULT_CONSOLE_SESSION_SECRET
+        ):
+            problems.append(
+                "AGENT_FRAMEWORK_CONSOLE_SESSION_SECRET must be set to a non-default value"
+            )
+        if (
+            self.console_seed_admin_enabled
+            and (
+                not self.console_seed_admin_password
+                or self.console_seed_admin_password == DEFAULT_SEED_ADMIN_PASSWORD
+            )
+        ):
+            problems.append(
+                "AGENT_FRAMEWORK_CONSOLE_SEED_ADMIN_PASSWORD must be set to a non-default value"
+                " (or disable CONSOLE_SEED_ADMIN_ENABLED)"
+            )
+
+        if problems:
+            raise RuntimeError(
+                "Refusing to start with insecure default secrets outside dev auth mode:\n  - "
+                + "\n  - ".join(problems)
+            )

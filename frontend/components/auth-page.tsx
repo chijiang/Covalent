@@ -48,7 +48,11 @@ export function AuthPage({ mode }: AuthPageProps) {
       } else {
         await login({ identifier, password });
       }
-      router.replace(searchParams.get("next") || "/");
+      const next = searchParams.get("next");
+      // Only allow same-origin relative targets: a leading "//" is protocol-relative
+      // (treated as absolute by browsers), and any scheme:// is absolute.
+      const safeNext = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+      router.replace(safeNext);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Authentication failed.");
     } finally {

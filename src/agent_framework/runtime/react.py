@@ -1228,7 +1228,6 @@ class ReactAgentRuntime(AgentRuntime):
                 tools=request_tools,
                 reasoning_level=agent.reasoning_level,
                 metadata=(context.metadata if context else {}),
-                max_tokens=get_context_window(agent.provider.model),
             )
             started_at = perf_counter()
             try:

@@ -324,6 +324,7 @@ async def build_registry(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = AppSettings()
+    settings.validate_runtime_secrets()
     database_url = settings.database_url
     if not database_url:
         raise RuntimeError("AGENT_FRAMEWORK_DATABASE_URL must be set when using persistent config storage")
@@ -1035,7 +1036,7 @@ def create_app() -> FastAPI:
                     detail=f"File '{safe_name}' exceeds maximum upload size ({settings.max_upload_bytes} bytes)",
                 )
             target_path.write_bytes(content)
-            content_type = str(file.content_type or metadata.get("type") or "application/octet-xx")
+            content_type = str(file.content_type or metadata.get("type") or "application/octet-stream")
             workspace_path = target_path.relative_to(workspace_root).as_posix()
             try:
                 processed = process_attachment_bytes(
@@ -2071,6 +2072,18 @@ def _console_session_max_age(settings: AppSettings) -> int:
     return max(int(settings.console_session_max_age_seconds or 0), 60)
 
 
+def _console_session_cookie_secure(settings: AppSettings) -> bool:
+    """Resolve the console session cookie `secure` flag.
+
+    Explicit setting wins. Otherwise default to False only in dev auth mode
+    (which is meant for local, non-TLS development); production auth modes
+    default to True so the cookie never travels over plain HTTP.
+    """
+    if settings.console_session_cookie_secure is not None:
+        return bool(settings.console_session_cookie_secure)
+    return (settings.console_auth_mode or "local").strip().lower() != "dev"
+
+
 def _make_console_session_token(settings: AppSettings, principal: ConsolePrincipalContext) -> str:
     now = datetime.now(UTC)
     max_age = _console_session_max_age(settings)
@@ -2099,7 +2112,7 @@ def _set_console_session_cookie(response: Response, settings: AppSettings, princ
         max_age=_console_session_max_age(settings),
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=_console_session_cookie_secure(settings),
         path="/",
     )
 
@@ -2109,7 +2122,7 @@ def _clear_console_session_cookie(response: Response, settings: AppSettings) -> 
         key=settings.console_session_cookie_name,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=_console_session_cookie_secure(settings),
         path="/",
     )
 

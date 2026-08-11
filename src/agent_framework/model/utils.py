@@ -10,11 +10,6 @@ def derive_openai_base_url(chat_url: str) -> str:
             return normalized[: -len(suffix)]
     return normalized
 
-def completion_token_kwargs(model: str, max_tokens: int) -> dict[str, int]:
-    normalized = model.strip().lower()
-    key = "max_completion_tokens" if normalized.startswith("gpt-5") else "max_tokens"
-    return {key: max_tokens}
-
 
 def reasoning_level_kwargs(model: str, reasoning_level: str = 'none') -> dict[str, Any]:
     """Return model-specific reasoning/thinking kwargs for a given model and level.
