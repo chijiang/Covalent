@@ -341,6 +341,17 @@ async def lifespan(app: FastAPI):
             "that can reach the app directly can forge admin identity via headers. "
             "Configure the secret and have your reverse proxy sign the identity headers."
         )
+    if (
+        settings.is_dev_auth_mode() is False
+        and (settings.execution_backend_kind or "filesystem").strip().lower() == "filesystem"
+    ):
+        logger.warning(
+            "execution_backend_kind=filesystem provides NO OS-level isolation. Skills run as "
+            "local subprocesses with the backend process's full filesystem/network reach, and "
+            "the in-skill PermissionGuard only patches builtins.open (trivially bypassed). "
+            "Only run trusted skill code in this mode; set EXECUTION_BACKEND_KIND=docker for "
+            "untrusted or third-party skills."
+        )
     database_url = settings.database_url
     if not database_url:
         raise RuntimeError("AGENT_FRAMEWORK_DATABASE_URL must be set when using persistent config storage")

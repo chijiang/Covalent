@@ -140,10 +140,16 @@
 - **落地**：`_read_loop` EOF 退出前，`_ready.clear()`（让 `is_available` 返回 False，池不再分发该 handle），再把所有 `_pending` future set 一个 `SkillProcessError`（code -32003，说明 stdout 提前关闭），调用方立刻收到错误而非等到自己的超时。健康检查循环仍会随后回收该 handle。
 
 ### H9 — `PermissionGuard` 只拦 `builtins.open`
-- [ ] **状态**：未修复
+- [x] **状态**：已修复 (2026-08-11，按你确认的方向 a：文档化 best-effort + 告知用户)
 - **位置**：`src/agent_framework/skills/runners/python_runner.py:14-37`
-- **问题**：`os.open`/`pathlib`/`io.FileIO`/`subprocess`/`shutil`/`ctypes`/第三方库全绕过。filesystem backend 上的技能隔离形同虚设。
-- **修复**：文档明确"仅 best-effort，靠后端隔离"；或 filesystem backend 不暴露带 `fs.write` 限制的技能；或真正用 OS 级隔离。
+- **问题**：`os.open`/`pathlib`/`io.FileIO`/`subprocess`/`shutil`/`sqlite3`/`ctypes`/第三方库全绕过。filesystem backend 上的技能隔离形同虚设。
+- **修复**：要么文档明确"仅 best-effort，靠后端隔离"，要么 filesystem backend 不暴露带 `fs.write` 限制的技能，要么不在 FS backend 跑第三方 skill；要么真正用 OS 级隔离。
+- **落地**（方向 a：把风险明确告知用户，多层触点）：
+  - **代码层**：三处 `PermissionGuard`（`python_runner.py`、`sdk/python/skill_sdk.py`、`sdk/nodejs/skill_sdk.js`）加 docstring/注释，明确"BEST-EFFORT，非安全边界"，列出绕过路径（`os`/`pathlib`/`io`/`subprocess`/`ctypes`/Node 的 `createReadStream`/`child_process`）。修正 Node SDK 顶部"patches fs and child_process"的错误注释（实际没 patch `child_process`）。
+  - **后端层**：`filesystem_backend.py` 模块 docstring + 类 docstring 加 `.. warning::`，说明"无 OS 隔离，仅用于可信 skill；不可信 skill 用 docker"。
+  - **启动层**：`lifespan` 在非 dev + `execution_backend_kind=filesystem` 时 `logger.warning`（告警但不阻塞）。
+  - **配置层**：`.env.example` 的 `EXECUTION_BACKEND_KIND` 注释加 SECURITY 段，明确 filesystem 无隔离 / docker 用于不可信 skill；`settings.execution_backend_kind` 字段加注释。
+  - **触发条件验证**：dev+fs 不告警、local+fs 告警、local+docker 不告警、trusted_header+fs 告警，全对。测试 176 passed（纯文档/注释/配置改动，无逻辑变化）。
 
 ### H10 — git clone/pull 无超时、stderr 管道不读
 - [x] **状态**：已修复 (2026-08-11)
@@ -285,8 +291,8 @@
 3. **顺手清理**：D1（死且分叉的 `model/context_window.py`，隐患源）✅、G1（`.git-backup-*`）、G2（`tmp/`）。
 4. **重构窗口**：L1–L6（后端 visibility helper）、L7 + 前端 `useAsyncResource`——能削上千行重复。
 
-> 前四批累计已修复：**S1、S2、S3、S4、S5、S6 + H1、H2、H3、H4、H5、H6、H7、H8、H10、H11 + M11 + D1、D2**（共 20 项，含全部 6 个 SEVERE）。
-> 剩余高危：H9（PermissionGuard 只拦 open，沙箱隔离哲学，需确认方向）、M2（沙箱 env 泄漏）。
+> 前五批累计已修复：**S1、S2、S3、S4、S5、S6 + H1、H2、H3、H4、H5、H6、H7、H8、H9、H10、H11 + M11 + D1、D2**（共 21 项，含全部 6 个 SEVERE 和全部 11 个 HIGH）。
+> **SEVERE 与 HIGH 已全部处理完毕。** 剩余仅 MEDIUM 与结构性清理（L1–L7、G1–G5、M2/M4 等）。
 
 ---
 

@@ -12,8 +12,13 @@
  *
  *   server.run();
  *
- * Permissions are enforced at runtime via environment variables injected by
- * the framework. The SDK patches fs and child_process to restrict access.
+ * SECURITY: this SDK patches only fs.readFileSync / writeFileSync / openSync
+ * as a BEST-EFFORT tripwire for benign skill bugs. It is NOT a security
+ * boundary — fs.createReadStream, fs.promises, child_process, net, http,
+ * native addons, and any C-level file access all bypass it. Real skill
+ * isolation is provided by the execution backend (Docker = OS-level
+ * container isolation). The FileSystem backend has NO OS-level isolation;
+ * never run untrusted skills there.
  */
 
 const readline = require('readline');
@@ -23,6 +28,10 @@ const path = require('path');
 const PERM_ERROR_CODE = -32001;
 
 class _PermissionGuard {
+    // BEST-EFFORT tripwire for benign skill bugs. NOT a security boundary —
+    // see the file header. Only patches fs.readFileSync / writeFileSync /
+    // openSync; everything else (createReadStream, promises, child_process,
+    // net, native addons) bypasses it.
     constructor() {
         this.fsReadPrefixes = this._parsePaths(process.env.SKILL_FS_READ || '');
         this.fsWritePrefixes = this._parsePaths(process.env.SKILL_FS_WRITE || '');

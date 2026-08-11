@@ -12,6 +12,23 @@ from typing import Any, Callable
 
 
 class PermissionGuard:
+    """BEST-EFFORT filesystem permission gate — NOT a security boundary.
+
+    This only monkeypatches ``builtins.open``. Any other file-access path the
+    skill uses bypasses it entirely, including but not limited to:
+    ``os.open`` / ``os.read`` / ``os.write``, ``pathlib.Path.read_text`` /
+    ``write_text``, ``io.FileIO``, ``subprocess``, ``shutil``, ``sqlite3``,
+    ``ctypes``, and any third-party library that calls the C-level ``open(2)``
+    directly. It is trivially bypassed by design.
+
+    Treat skill permission isolation as provided by the **execution backend**:
+    the Docker backend runs skills in a container with bind-mounted,
+    network-isolated filesystems (OS-level isolation). The FileSystem backend
+    offers NO OS-level isolation — do NOT run untrusted skills on it. This
+    guard exists only as a tripwire for benign skill bugs, not as enforcement
+    against adversarial code.
+    """
+
     def __init__(self) -> None:
         self.fs_read_prefixes = self._parse_paths(os.environ.get("SKILL_FS_READ", ""))
         self.fs_write_prefixes = self._parse_paths(os.environ.get("SKILL_FS_WRITE", ""))

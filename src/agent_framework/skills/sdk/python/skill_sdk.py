@@ -34,7 +34,19 @@ _PERM_ERROR_CODE = -32001
 
 
 class _PermissionGuard:
-    """Enforces manifest-declared permissions at runtime inside the skill process."""
+    """BEST-EFFORT permission gate — NOT a security boundary.
+
+    Only monkeypatches ``builtins.open``. All other filesystem and OS access
+    (``os.open``, ``pathlib``, ``io.FileIO``, ``subprocess``, ``shutil``,
+    ``sqlite3``, ``ctypes``, third-party C extensions) bypasses it. Network
+    and subprocess checks here are similarly advisory: they only fire on the
+    SDK's own helpers, not on raw ``socket`` / ``os.system`` / ``os.exec*``.
+
+    Real skill isolation comes from the execution backend (Docker = OS-level
+    container isolation). The FileSystem backend has no OS-level isolation —
+    never run untrusted skills there. This guard exists only to catch benign
+    skill bugs, not to resist adversarial code.
+    """
 
     def __init__(self) -> None:
         self.fs_read_prefixes: list[str] = self._parse_paths(os.environ.get("SKILL_FS_READ", ""))

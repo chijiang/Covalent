@@ -89,6 +89,9 @@ class AppSettings(BaseSettings):
     workspace_root_dir: str = "."
     session_workspace_enabled: bool = True
     session_workspace_root_dir: str | None = None
+    # Where skills run. "filesystem" = local subprocesses with NO OS-level
+    # isolation (only safe for trusted skills; PermissionGuard is best-effort).
+    # "docker" = per-session container (use for untrusted/third-party skills).
     execution_backend_kind: Literal["filesystem", "docker", "kubernetes"] = "filesystem"
     execution_backend_docker_image: str = "covalent-sandbox:dev"
     execution_backend_docker_mem_limit: str = "512m"

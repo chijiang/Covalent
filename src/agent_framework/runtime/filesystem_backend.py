@@ -1,5 +1,19 @@
 """FileSystem execution backend — runs code as local subprocesses on the host.
 
+.. warning::
+    This backend provides **NO OS-level isolation**. Skill and agent code runs
+    as ordinary subprocesses of the backend process, with the full filesystem
+    and network access of that process. The in-skill ``PermissionGuard`` (see
+    :mod:`agent_framework.skills.runners.python_runner`) only monkeypatches
+    ``open`` and is trivially bypassed via ``os``/``pathlib``/``io``/
+    ``subprocess``/``ctypes`` — it is a tripwire for benign bugs, not a
+    security boundary.
+
+    Only use this backend for **trusted** skill code (built-in / first-party /
+    locally authored). To run untrusted or third-party skills, configure
+    ``EXECUTION_BACKEND_KIND=docker`` (or ``kubernetes``) for OS-level sandbox
+    isolation.
+
 This is the default backend. ``spawn_stream`` is a verbatim extraction of the
 original ``SkillProcessManager._spawn`` subprocess call, so behavior is identical
 to the pre-backend code path. ``session_id`` and the lifecycle methods
@@ -22,7 +36,12 @@ if TYPE_CHECKING:
 
 
 class FileSystemBackend(ExecutionBackend):
-    """Run skill runners and scripts as local OS subprocesses (no isolation)."""
+    """Run skill runners and scripts as local OS subprocesses.
+
+    **No OS-level isolation** — see the module docstring. Skill code runs with
+    the backend process's full filesystem and network reach. Not safe for
+    untrusted skills; use the Docker backend for those.
+    """
 
     name = "filesystem"
 
