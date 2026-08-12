@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 
 import { useChatSessions } from "@/components/chat-sessions-provider";
+import { useAuth } from "@/components/auth-provider";
 
 import {
   getAgents,
@@ -1800,6 +1801,7 @@ function isTraceStreamEvent(event: string): boolean {
 }
 
 export function ChatWorkspace() {
+  const { user } = useAuth();
   const {
     threads,
     activeThreadId,
@@ -1828,10 +1830,17 @@ export function ChatWorkspace() {
   const [tracePanelWidth, setTracePanelWidth] = useState(DEFAULT_TRACE_PANEL_WIDTH);
   const [isTracePanelOpen, setIsTracePanelOpen] = useState(true);
   const [isTraceResizing, setIsTraceResizing] = useState(false);
+  const defaultAgentName = user?.preferences.default_agent?.trim() || "";
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatSplitRef = useRef<HTMLDivElement | null>(null);
   const skipLayoutPersistRef = useRef(true);
+  const defaultAgentNameRef = useRef(defaultAgentName);
+
+  useEffect(() => {
+    defaultAgentNameRef.current = defaultAgentName;
+  }, [defaultAgentName]);
+
   // Tracks the in-flight agent run. A new run (or unmount) aborts the previous
   // one so its stream can no longer mutate thread state.
   const activeRunRef = useRef<{ id: number; controller: AbortController } | null>(null);
@@ -1912,7 +1921,9 @@ export function ChatWorkspace() {
         const sortedAgents = sortAgentsForPicker(agentResult);
         setHealth(healthResult);
         setAgents(sortedAgents);
-        setSelectedAgent((current) => pickAvailableAgentName(sortedAgents, current, sortedAgents[0]?.name));
+        setSelectedAgent((current) =>
+          pickAvailableAgentName(sortedAgents, defaultAgentNameRef.current, current, sortedAgents[0]?.name),
+        );
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load agents.");
@@ -1931,11 +1942,10 @@ export function ChatWorkspace() {
   }, []);
 
   useEffect(() => {
-    const nextSelectedAgent = pickAvailableAgentName(agents, selectedAgent, activeThread?.agentName, threads[0]?.agentName);
-    if (nextSelectedAgent !== selectedAgent) {
-      setSelectedAgent(nextSelectedAgent);
-    }
-  }, [activeThread?.agentName, agents, selectedAgent, threads]);
+    setSelectedAgent((current) =>
+      pickAvailableAgentName(agents, activeThread?.agentName, defaultAgentName, current, threads[0]?.agentName),
+    );
+  }, [activeThread?.agentName, activeThread?.id, agents, defaultAgentName, threads]);
 
   useEffect(() => {
     setIsRenamingTitle(false);
@@ -1957,7 +1967,7 @@ export function ChatWorkspace() {
         }
         const hydratedThread = threadFromSession(session);
         upsertThread(hydratedThread);
-        setSelectedAgent((current) => pickAvailableAgentName(agents, current, hydratedThread.agentName));
+        setSelectedAgent((current) => pickAvailableAgentName(agents, hydratedThread.agentName, defaultAgentName, current));
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load conversation.");
@@ -1969,7 +1979,7 @@ export function ChatWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, [activeThread, agents, upsertThread]);
+  }, [activeThread, agents, defaultAgentName, upsertThread]);
 
   useEffect(() => {
     setInput("");

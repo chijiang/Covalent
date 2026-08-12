@@ -343,7 +343,7 @@ export function AccountSettingsWorkspace() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-[13px] text-muted-foreground">Used as the preferred agent when a workflow does not specify one.</p>
+                <p className="text-[13px] text-muted-foreground">Used for new chat sessions when no agent is explicitly selected.</p>
               </div>
             </div>
           </ConsolePanel>

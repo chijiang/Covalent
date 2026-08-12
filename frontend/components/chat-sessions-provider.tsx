@@ -13,6 +13,7 @@ import {
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { deleteChatSession, listChatSessions } from "@/lib/client-api";
+import { useAuth } from "@/components/auth-provider";
 import { buildChatHref, getChatSessionId } from "@/lib/chat-session-routing";
 import {
   createThread,
@@ -48,13 +49,20 @@ export function ChatSessionsProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { user } = useAuth();
   const sessionFromUrl = getChatSessionId(searchParams);
   const isChatPage = pathname === "/";
+  const defaultAgentName = user?.preferences.default_agent?.trim() || "";
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [historyQuery, setHistoryQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const threadsRef = useRef<ChatThread[]>([]);
+  const defaultAgentNameRef = useRef(defaultAgentName);
+
+  useEffect(() => {
+    defaultAgentNameRef.current = defaultAgentName;
+  }, [defaultAgentName]);
 
   useEffect(() => {
     threadsRef.current = threads;
@@ -72,11 +80,11 @@ export function ChatSessionsProvider({ children }: { children: ReactNode }) {
         }
         const initialThreads = sessionResult.length
           ? sessionResult.map((session) => threadFromSummary(session))
-          : [createThread("")];
+          : [createThread(defaultAgentNameRef.current)];
         setThreads(initialThreads);
       } catch {
         if (!cancelled) {
-          setThreads([createThread("")]);
+          setThreads([createThread(defaultAgentNameRef.current)]);
         }
       } finally {
         if (!cancelled) {
@@ -121,7 +129,7 @@ export function ChatSessionsProvider({ children }: { children: ReactNode }) {
     }
 
     if (threads.length === 0) {
-      const draft = createThread("");
+      const draft = createThread(defaultAgentName);
       setThreads([draft]);
       navigateToSession(draft.id, true);
       return;
@@ -136,7 +144,7 @@ export function ChatSessionsProvider({ children }: { children: ReactNode }) {
     if (!exists) {
       navigateToSession(threads[0].id, true);
     }
-  }, [isChatPage, loading, navigateToSession, sessionFromUrl, threads]);
+  }, [defaultAgentName, isChatPage, loading, navigateToSession, sessionFromUrl, threads]);
 
   const updateThread = useCallback((threadId: string, updater: (thread: ChatThread) => ChatThread) => {
     setThreads((current) => current.map((thread) => (thread.id === threadId ? updater(thread) : thread)));
@@ -176,9 +184,18 @@ export function ChatSessionsProvider({ children }: { children: ReactNode }) {
 
   const handleNewChat = useCallback(
     (agentName = "") => {
-      const resolvedAgentName = agentName || activeThread?.agentName || threadsRef.current[0]?.agentName || "";
+      const resolvedAgentName = agentName || defaultAgentName || activeThread?.agentName || threadsRef.current[0]?.agentName || "";
       const topQueuedThread = getTopQueuedThread(threadsRef.current);
       if (topQueuedThread && isReusableDraftThread(topQueuedThread)) {
+        if (topQueuedThread.agentName !== resolvedAgentName) {
+          setThreads((current) => {
+            const nextThreads = current.map((thread) =>
+              thread.id === topQueuedThread.id ? { ...thread, agentName: resolvedAgentName } : thread,
+            );
+            threadsRef.current = nextThreads;
+            return nextThreads;
+          });
+        }
         navigateToSession(topQueuedThread.id, true);
         return;
       }
@@ -191,7 +208,7 @@ export function ChatSessionsProvider({ children }: { children: ReactNode }) {
       });
       navigateToSession(nextThread.id, true);
     },
-    [activeThread?.agentName, navigateToSession],
+    [activeThread?.agentName, defaultAgentName, navigateToSession],
   );
 
   const handleDeleteThread = useCallback(
@@ -206,14 +223,14 @@ export function ChatSessionsProvider({ children }: { children: ReactNode }) {
       }
 
       const remaining = threadsRef.current.filter((thread) => thread.id !== threadId);
-      const nextThreads = remaining.length ? remaining : [createThread(fallbackAgentName)];
+      const nextThreads = remaining.length ? remaining : [createThread(defaultAgentName || fallbackAgentName)];
       setThreads(nextThreads);
 
       if (activeThreadId === threadId) {
         navigateToSession(nextThreads[0]?.id || "", true);
       }
     },
-    [activeThreadId, navigateToSession],
+    [activeThreadId, defaultAgentName, navigateToSession],
   );
 
   const value = useMemo<ChatSessionsContextValue>(
