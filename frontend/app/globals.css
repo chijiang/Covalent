@@ -6280,13 +6280,16 @@ textarea::placeholder {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .chat-page-shell .chat-trace-panel .trace-delegate-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  display: block;
+  min-width: 0;
   width: 100%;
+  max-width: 100%;
   text-align: left;
   cursor: pointer;
   font: inherit;
@@ -6297,6 +6300,8 @@ textarea::placeholder {
   border-left: 3px solid #7c3aed;
   padding: 0;
   min-height: 1.5rem;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .chat-page-shell .chat-trace-panel .trace-delegate-header:hover {
@@ -6367,6 +6372,13 @@ textarea::placeholder {
   background: rgba(217, 119, 6, 0.12);
   border-color: rgba(217, 119, 6, 0.24);
   color: #b45309;
+}
+
+.chat-page-shell .chat-trace-panel .trace-step-actor.is-subagent {
+  flex: 0 0 58px;
+  background: rgba(124, 58, 237, 0.1);
+  border-color: rgba(124, 58, 237, 0.22);
+  color: #6d28d9;
 }
 
 .chat-page-shell .chat-trace-panel .trace-step-actor.is-user {

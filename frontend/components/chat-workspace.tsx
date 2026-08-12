@@ -1417,7 +1417,7 @@ function getTraceEventLabel(title: string, rawPayload?: unknown): string {
   const baseTitle = getBaseEventTitle(title);
   const isDelegate = isDelegateEventTitle(title);
   if (isDelegate) {
-    return "Delegate";
+    return "Subagent";
   }
   if (baseTitle === "error") {
     return "Error";
@@ -1632,7 +1632,7 @@ function TraceDelegateGroup({ node }: { node: Extract<TraceNode, { kind: "delega
     ? node.delegatedBy
       ? `${node.agentName} via ${node.delegatedBy}`
       : node.agentName
-    : "delegate";
+    : "subagent";
   const indentStyle = { marginLeft: `${Math.min(node.depth - 1, MAX_DELEGATE_NESTING_DEPTH - 1) * 12}px` };
 
   return (
@@ -1643,14 +1643,16 @@ function TraceDelegateGroup({ node }: { node: Extract<TraceNode, { kind: "delega
         onClick={() => setExpanded((current) => !current)}
         type="button"
       >
-        <span className="trace-step-actor shrink-0 is-tool">Delegate</span>
-        <span className="trace-step-event w-[52px] shrink-0 truncate">delegate</span>
-        <span className="trace-step-summary min-w-0 flex-1 truncate">
-          {sourceLabel} · {eventCount} event{eventCount === 1 ? "" : "s"}
-        </span>
-        <span className="trace-step-time w-14 shrink-0 text-right">depth {node.depth}</span>
-        <span className="trace-step-payload-toggle w-14 shrink-0 truncate text-right">
-          {expanded ? "hide" : "show"}
+        <span className="trace-step-line">
+          <span className="trace-step-actor shrink-0 is-subagent">Subagent</span>
+          <span className="trace-step-event w-[52px] shrink-0 truncate">subagent</span>
+          <span className="trace-step-summary min-w-0 flex-1 truncate">
+            {sourceLabel} · {eventCount} event{eventCount === 1 ? "" : "s"}
+          </span>
+          <span className="trace-step-time w-14 shrink-0 text-right">depth {node.depth}</span>
+          <span className="trace-step-payload-toggle w-14 shrink-0 truncate text-right">
+            {expanded ? "hide" : "show"}
+          </span>
         </span>
       </button>
       {expanded ? (
@@ -1679,12 +1681,12 @@ function withTraceSourcePrefix(isDelegate: boolean, payload: Record<string, unkn
 
   const agentName = typeof payload.agent_name === "string" ? payload.agent_name.trim() : "";
   if (!agentName) {
-    return `Delegate: ${summary}`;
+    return `Subagent: ${summary}`;
   }
 
   const delegatedBy = typeof payload.delegated_by === "string" ? payload.delegated_by.trim() : "";
   const sourceLabel = delegatedBy ? `${agentName} via ${delegatedBy}` : agentName;
-  return `Delegate ${sourceLabel}: ${summary}`;
+  return `Subagent ${sourceLabel}: ${summary}`;
 }
 
 function getTraceSummary(item: ActivityItem): string | null {
