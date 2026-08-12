@@ -54,7 +54,15 @@ from covalent.skills.meta_tools import register_skill_meta_tools
 
 logger = logging.getLogger(__name__)
 
-LEGACY_REASONING_SKILL_NAME = "general_reasoning"
+# Default reasoning prompt for the seeded default agent. Previously sourced from
+# the removed `reasoning_skill_instructions` legacy-skill setting; kept here so
+# the default agent's behavior is unchanged now that the migration shim is gone.
+DEFAULT_REASONING_PROMPT = (
+    "Use a ReAct loop when it helps: understand the task, decide whether the current context is sufficient, "
+    "use the most relevant tool or delegate only when it reduces uncertainty, incorporate observations, "
+    "repeat only as needed, and stop once you can answer confidently. Keep the final response clear, direct, "
+    "and grounded in the evidence you observed."
+)
 
 WORKSPACE_AGENT_TOOLS = (
     "list_workspace_files",
@@ -82,7 +90,6 @@ def _default_agent_local_tools(settings: AppSettings | None) -> list[str]:
 
 def _normalize_agent_payload_item(item: dict[str, object], settings: AppSettings | None) -> dict[str, object]:
     normalized = dict(item)
-    legacy_reasoning_skill_name = settings.reasoning_skill_name if settings is not None else LEGACY_REASONING_SKILL_NAME
     skills = _dedupe_strings([str(value) for value in normalized.get("skills", []) if isinstance(value, str)])
     local_tools = [t for t in _dedupe_strings([str(value) for value in normalized.get("local_tools", []) if isinstance(value, str)]) if t != "echo"]
     reasoning_prompt_raw = normalized.get("reasoning_prompt")
@@ -91,11 +98,6 @@ def _normalize_agent_payload_item(item: dict[str, object], settings: AppSettings
     reasoning_level = reasoning_level_raw.strip().lower() if isinstance(reasoning_level_raw, str) else "none"
     if not reasoning_level:
         reasoning_level = "none"
-
-    if legacy_reasoning_skill_name in skills:
-        skills = [skill for skill in skills if skill != legacy_reasoning_skill_name]
-        if not reasoning_prompt and settings is not None:
-            reasoning_prompt = settings.reasoning_skill_instructions
 
     normalized["skills"] = skills
     if "local_tools" not in item:
@@ -744,7 +746,7 @@ def _seed_agent_payload(
         name="default",
         description=settings.agent_description,
         system_prompt=settings.agent_system_prompt,
-        reasoning_prompt=settings.reasoning_skill_instructions,
+        reasoning_prompt=DEFAULT_REASONING_PROMPT,
         provider=provider_config,
         skills=[],
         local_tools=_default_agent_local_tools(settings),

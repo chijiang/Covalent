@@ -44,8 +44,31 @@ async function forward(request: NextRequest, pathSegments: string[]): Promise<Re
 
   try {
     const upstream = await fetch(target, init);
-    const responseHeaders = new Headers(upstream.headers);
-    responseHeaders.delete("content-length");
+    // Allowlist response headers instead of forwarding everything upstream sends.
+    // The backend runs in-process; we don't want to leak Set-Cookie, Server,
+    // X-Powered-By, or other transport-internal headers to the browser. Keep
+    // only the headers the client genuinely needs to interpret the body/flow.
+    const allowedResponseHeaders = new Set([
+      "content-type",
+      "content-disposition",
+      "content-language",
+      "content-encoding",
+      "cache-control",
+      "expires",
+      "pragma",
+      "etag",
+      "last-modified",
+      "location",
+      "x-request-id",
+      "x-accel-buffering",
+      "vary",
+    ]);
+    const responseHeaders = new Headers();
+    upstream.headers.forEach((value, key) => {
+      if (allowedResponseHeaders.has(key.toLowerCase())) {
+        responseHeaders.set(key, value);
+      }
+    });
     if (streamingRequest) {
       responseHeaders.set("cache-control", "no-cache, no-transform");
       responseHeaders.set("content-encoding", "identity");

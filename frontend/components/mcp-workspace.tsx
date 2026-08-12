@@ -351,13 +351,26 @@ export function McpWorkspace() {
     [draftServers, inspectionByServer],
   );
 
-  async function runAction(action: string, runner: () => Promise<void>) {
+  async function runAction(
+    action: string,
+    runner: () => Promise<void>,
+    rollback?: () => void,
+  ) {
     setBusyAction(action);
     setError(null);
     setMessage(null);
     try {
       await runner();
     } catch (actionError) {
+      // Restore optimistic state changes so the editor doesn't show a delete/save
+      // that actually failed server-side.
+      if (rollback) {
+        try {
+          rollback();
+        } catch {
+          // Best-effort rollback; the error message is the primary signal.
+        }
+      }
       setError(actionError instanceof Error ? actionError.message : "Action failed.");
     } finally {
       setBusyAction(null);
@@ -503,28 +516,39 @@ export function McpWorkspace() {
     }
     const nextServers = draftServers.map((server) => (server.name === selectedServer.name ? nextServer : server));
     const nextRaw = `${JSON.stringify(nextServers, null, 2)}\n`;
+    const snapshotEditor = editor;
+    const snapshotSelectedName = selectedName;
+    const snapshotInspection = inspectionByServer;
     setEditor(nextRaw);
     setSelectedName(nextServer.name);
-    await runAction("save", async () => {
-      if (selectedServer.name !== nextServer.name) {
-        setInspectionByServer((current) => {
-          const nextInspection = { ...current };
-          const previous = nextInspection[selectedServer.name];
-          delete nextInspection[selectedServer.name];
-          if (previous) {
-            nextInspection[nextServer.name] = {
-              ...previous,
-              server: { ...previous.server, name: nextServer.name },
-            };
-          }
-          return nextInspection;
-        });
-      }
-      const saved = await saveConfig("mcp", nextRaw);
-      setEditor(saved.raw);
-      setMessage(`Saved service: ${nextServer.name}.`);
-      await refresh();
-    });
+    await runAction(
+      "save",
+      async () => {
+        if (selectedServer.name !== nextServer.name) {
+          setInspectionByServer((current) => {
+            const nextInspection = { ...current };
+            const previous = nextInspection[selectedServer.name];
+            delete nextInspection[selectedServer.name];
+            if (previous) {
+              nextInspection[nextServer.name] = {
+                ...previous,
+                server: { ...previous.server, name: nextServer.name },
+              };
+            }
+            return nextInspection;
+          });
+        }
+        const saved = await saveConfig("mcp", nextRaw);
+        setEditor(saved.raw);
+        setMessage(`Saved service: ${nextServer.name}.`);
+        await refresh();
+      },
+      () => {
+        setEditor(snapshotEditor);
+        setSelectedName(snapshotSelectedName);
+        setInspectionByServer(snapshotInspection);
+      },
+    );
   }
 
   async function deleteSelectedServer() {
@@ -535,6 +559,12 @@ export function McpWorkspace() {
       return;
     }
 
+    // Snapshot state before the optimistic delete so we can restore it if the
+    // server-side save fails.
+    const snapshotEditor = editor;
+    const snapshotSelectedName = selectedName;
+    const snapshotInspection = inspectionByServer;
+
     const remainingServers = draftServers.filter((server) => server.name !== selectedServer.name);
     const nextRaw = `${JSON.stringify(remainingServers, null, 2)}\n`;
     setEditor(nextRaw);
@@ -544,12 +574,20 @@ export function McpWorkspace() {
       delete nextInspection[selectedServer.name];
       return nextInspection;
     });
-    await runAction("delete", async () => {
-      const saved = await saveConfig("mcp", nextRaw);
-      setEditor(saved.raw);
-      setMessage(`Deleted service: ${selectedServer.name}.`);
-      await refresh();
-    });
+    await runAction(
+      "delete",
+      async () => {
+        const saved = await saveConfig("mcp", nextRaw);
+        setEditor(saved.raw);
+        setMessage(`Deleted service: ${selectedServer.name}.`);
+        await refresh();
+      },
+      () => {
+        setEditor(snapshotEditor);
+        setSelectedName(snapshotSelectedName);
+        setInspectionByServer(snapshotInspection);
+      },
+    );
   }
 
   async function inspectSelectedServer() {

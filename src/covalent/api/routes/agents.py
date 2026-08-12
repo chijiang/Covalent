@@ -214,7 +214,7 @@ async def stream_agent(request: Request, agent_name: str, run_request: AgentRunR
                             _published_download_attachments_from_tool_results(payload),
                         )
 
-                yield runtime._encode_sse(event_name, payload)
+                yield runtime.encode_sse(event_name, payload)
         except ModelProviderError as exc:
             status_code = 502 if exc.status_code is None else min(max(exc.status_code, 400), 599)
             payload = {"status_code": status_code, "detail": exc.detail}
@@ -253,7 +253,7 @@ async def stream_agent(request: Request, agent_name: str, run_request: AgentRunR
                     activity=activity,
                 )
             )
-            yield runtime._encode_sse(
+            yield runtime.encode_sse(
                 SSE_EVENT_SESSION,
                 {
                     "id": saved.id,

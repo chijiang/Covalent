@@ -1151,5 +1151,10 @@ class ReactAgentRuntime(AgentRuntime):
         )
 
     @staticmethod
-    def _encode_sse(event_name: str, payload: dict[str, Any]) -> str:
+    def encode_sse(event_name: str, payload: dict[str, Any]) -> str:
+        """Public SSE encoder. Routes and other API-layer callers should use
+        this rather than the private ``_encode_sse`` alias."""
         return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    # Backwards-compatible private alias; prefer ``encode_sse``.
+    _encode_sse = staticmethod(encode_sse)

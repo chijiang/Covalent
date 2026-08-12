@@ -78,14 +78,6 @@ class AppSettings(BaseSettings):
         "and providing clear, grounded final answers."
     )
     agent_description: str = "General-purpose ReAct agent"
-    reasoning_skill_name: str = "general_reasoning"
-    reasoning_skill_description: str = "Base reasoning and tool usage skill"
-    reasoning_skill_instructions: str = (
-        "Use a ReAct loop when it helps: understand the task, decide whether the current context is sufficient, "
-        "use the most relevant tool or delegate only when it reduces uncertainty, incorporate observations, "
-        "repeat only as needed, and stop once you can answer confidently. Keep the final response clear, direct, "
-        "and grounded in the evidence you observed."
-    )
     workspace_root_dir: str = "."
     session_workspace_enabled: bool = True
     session_workspace_root_dir: str | None = None

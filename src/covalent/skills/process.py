@@ -211,6 +211,15 @@ class SkillProcessManager:
         busy = sum(1 for h in handles if h._busy)
         return {"total": len(handles), "alive": alive, "ready": ready, "busy": busy}
 
+    def active_skill_names(self) -> set[str]:
+        """Names of skills that currently have at least one process in the pool.
+
+        Public read surface for ops/health checks — callers must not reach into
+        the private ``_pools`` dict (and the pool is keyed by (skill, session),
+        so a bare ``_pools.get(skill_name)`` would never match).
+        """
+        return {key[0] for key, pool in self._pools.items() if pool}
+
     async def stop_skill(self, skill_name: str) -> None:
         keys = [key for key in self._pools if key[0] == skill_name]
         for key in keys:

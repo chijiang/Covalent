@@ -41,8 +41,14 @@ async def list_provider_models(request: Request, provider_name: str) -> list[str
             base_url=base_url,
             timeout=settings.request_timeout_seconds,
         )
-        result = await client.models.list()
-        models = sorted([m.id for m in result.data if m.id])
-        return models
+        try:
+            result = await client.models.list()
+            models = sorted([m.id for m in result.data if m.id])
+            return models
+        finally:
+            # AsyncOpenAI owns an httpx AsyncClient with a connection pool. Close
+            # it explicitly so connections aren't left dangling until GC (the
+            # underlying transport isn't reliably cleaned up by reference loss).
+            await client.close()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to fetch models: {exc}") from exc

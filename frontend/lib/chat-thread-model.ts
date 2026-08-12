@@ -102,7 +102,7 @@ export function mergeSummaryIntoThread(thread: ChatThread, summary: ChatSessionS
   };
 }
 
-export function historyLabel(timestamp: number): string {
+function historyLabel(timestamp: number): string {
   const now = new Date();
   const target = new Date(timestamp);
   const midnightNow = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();

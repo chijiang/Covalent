@@ -46,10 +46,8 @@ async def healthz(request: Request) -> dict[str, Any]:
     spm = registry.skill_process_manager
     if spm is not None:
         pool_summaries: dict[str, dict[str, Any]] = {}
-        for skill_name in registry.manifest_skills:
-            pool = spm._pools.get(skill_name)
-            if pool:
-                pool_summaries[skill_name] = spm.pool_status(skill_name)
+        for skill_name in spm.active_skill_names():
+            pool_summaries[skill_name] = spm.pool_status(skill_name)
         checks["skill_processes"] = pool_summaries if pool_summaries else "none_active"
 
     backend = getattr(request.app.state, "execution_backend", None)

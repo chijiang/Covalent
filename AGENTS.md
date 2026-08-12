@@ -1,19 +1,21 @@
-# Agent Framework Instructions
+# Covalent Instructions
 
 ## Scope
 
-This repository is a FastAPI backend plus a Next.js control plane for managing agents, MCP services, skills, and chat sessions. Favor incremental changes that preserve the current architecture and UX over broad rewrites.
+This repository is a FastAPI backend plus a Next.js control plane for managing agents, MCP services, skills, and chat sessions. The Python package is `covalent` (env vars retain the legacy `AGENT_FRAMEWORK_*` prefix for deploy compatibility). Favor incremental changes that preserve the current architecture and UX over broad rewrites.
 
 ## Architectural Boundaries
 
 - Treat the backend and frontend as one product with an explicit contract boundary.
+- **Dependency rule:** `api → application → (core, runtime, infra)`. The application layer must not import `covalent.api.*`, `fastapi`, or read `app.state` — there is an import-guard test (`tests/test_application_boundary.py`) enforcing this.
 - Backend layers:
-  - `src/covalent/api/`: FastAPI routes and request/response schema wiring only. Keep handlers thin.
+  - `src/covalent/api/`: thin FastAPI controllers — routes (`routes/`), SSE constants (`sse_events.py`), auth middleware/cookie helpers (`_auth_helpers.py`), and shared leaf utilities (`_shared.py`/`_session_helpers.py`). `api/auth.py` is a re-export shim over `application/crypto` + `application/principal` for legacy import paths. Routes do auth, input conversion, DTO/exception mapping only — no business logic.
+  - `src/covalent/application/`: framework-independent use-case layer. `services/` (token/user/session/invoke/management/skill/audit/agent_invocation/runtime_apply) owns business orchestration; plus `schemas.py` (Pydantic request/response models — moved here from `api/`), `errors.py` (`ApplicationError` family), `principal.py`, `audit.py`, `crypto.py`, `_utils.py`.
   - `src/covalent/core/`: agent orchestration, attachment handling, tool wiring, workspace tools.
-  - `src/covalent/infra/`: settings, database, config persistence, session persistence.
+  - `src/covalent/infra/`: settings, database, config persistence (`config_store.py` + `agent_repository.py`/`mcp_repository.py`), session persistence.
   - `src/covalent/mcp/`: MCP transport/client/spec concerns.
   - `src/covalent/model/`: OpenAI-compatible provider adapters and model configuration (`openai_compatible` only).
-  - `src/covalent/registry/` and `src/covalent/runtime/`: runtime assembly and ReAct execution.
+  - `src/covalent/registry/` and `src/covalent/runtime/`: runtime assembly and ReAct execution. Context-window compaction lives in `runtime/context_window_manager.py` (extracted from `react.py`).
   - `src/covalent/skills/`: skill discovery, metadata, lifecycle, and process management.
 - Frontend layers:
   - `frontend/app/**`: route entrypoints, redirects, and shell composition. Keep them thin.
@@ -52,8 +54,8 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 
 ## Implementation Habits
 
-- Keep route files thin. Put substantial behavior in reusable components or backend modules.
-- Keep backend route handlers thin. Push parsing, normalization, and orchestration into the owning abstraction.
+- Keep route files thin. Put substantial behavior in reusable components or `application/services/` use cases.
+- Keep backend route handlers thin: routes do auth, input→command conversion, and response/exception mapping; business logic belongs in `application/services/`. Application services must stay framework-independent (no `Request`/`HTTPException`/`FastAPI`/`app.state`) — surface failures via `application/errors.py` types, which the API layer maps to HTTP.
 - Prefer existing helpers and conventions over re-implementing normalization logic in multiple places.
 - Preserve naming conventions already in use: Python and API payloads use `snake_case`; frontend form state and local component state may stay camelCase when it improves ergonomics.
 - When touching chat, agent settings, provider settings, MCP services, or skill settings, preserve the existing workspace layout and management rail patterns before inventing new page structures.
@@ -66,6 +68,9 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 - Frontend lint: `cd frontend && pnpm lint`
 - Backend setup: `uv sync`
 - Backend serve: `uv run python main.py serve --port 5170` or `./dev.sh backend`
+- Backend schema migrations: `uv run python main.py migrate` (run explicitly — the web lifespan does not auto-migrate, to avoid multi-replica startup races). `alembic/env.py` reads `AGENT_FRAMEWORK_DATABASE_URL`.
+- Backend tests: `uv run python -m pytest tests/`. Set `TEST_DATABASE_URL=postgresql+asyncpg://...` to also run the real-DB integration tests (auto-skipped otherwise).
+- Backend lint gate: `uvx ruff check --select F src/ main.py` — catches undefined names / redefinitions / unused imports left by extractions. Keep it green.
 - Local full stack: `./dev.sh both`
 - The frontend proxy in `frontend/app/api/backend/[...path]/route.ts` falls back to `http://127.0.0.1:5170`. If you move the backend, update env vars or proxy assumptions deliberately.
 - If backend route changes seem to have no effect in the running app, restart the backend before debugging the proxy. `main.py` runs uvicorn with `reload=False`.
