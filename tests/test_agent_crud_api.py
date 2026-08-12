@@ -127,13 +127,13 @@ def _build_app(*, config_store=None, settings=None):
     app.state.session_store = SimpleNamespace()
 
     # Seed the initial agent so /agents/{name} works.
-    from agent_framework.api.app import _resolve_default_provider, _build_agent_specs
+    from agent_framework.api._config_helpers import _resolve_default_provider, _build_agent_specs
     return app, TestClient(app)
 
 
 async def _seed_registry(app) -> None:
     """Run build_agent_specs after creating the app (must be async)."""
-    from agent_framework.api.app import _resolve_default_provider, _build_agent_specs
+    from agent_framework.api._config_helpers import _resolve_default_provider, _build_agent_specs
     from agent_framework.mcp.spec import McpServerConfig
     settings = app.state.settings
     config_store = app.state.config_store

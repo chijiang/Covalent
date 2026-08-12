@@ -293,7 +293,7 @@
 
 ### 其他结构
 - [ ] **X1**：`chat-workspace.tsx` 2958 行混 6 个关注点，trace 树构建（~700 行）与 React 无关 → 挪到 `lib/`。
-- [~] **X2**：`app.py` 5283 行 → **正在拆分**（方案 A：抽 helper，路由暂留）。
+- [x] **X2**：`app.py` 5283 行 → **拆分完成**（方案 A：抽 helper，路由暂留）。
   - ✅ 第一步 (2026-08-11)：抽出**叶子层 `api/_shared.py`（432 行，22 个成员）**——`_new_chat_item_id`/`_coerce_int`/`_coerce_positive_int`/`_dedupe_strings`/`_safe_storage_component`(+`_SAFE_STORAGE_COMPONENT_RE`)/`_safe_extract_zip`/`_rmtree_async`/`_payload_text`/`_audit_request_metadata`/`_record_audit_log`/`_record_sandbox_session`/`_augment_sandbox_snapshot`/`_usage_int`/`to_agent_summary`/`to_chat_session_summary_response`/`to_chat_session_response`/`_api_token_summary_response`/`_agent_run_log_response`/`_audit_log_response`/`ConsolePrincipalContext`/`_sandbox_reaper_loop`。**app.py 5503 → 5212**。
   - 方法：AST 定位 + 脚本提取源码段（保留缩进注释）+ 从后往前删行；用 basedpyright 诊断捕获缺 import（`zipfile`/`anyio`/`functools`/`re`/`dataclass`）与孤立装饰器（`@dataclass(frozen=True)` 残留在删除范围外，会错误装饰 `_console_user_response`——已删）。
   - 测试 176 passed 零回归。
@@ -304,7 +304,12 @@
   - ✅ 第三步 (2026-08-12)：抽出 **`api/_session_helpers.py`（321 行，23 个函数 + 2 常量）**——会话目录/附件路径（`_attachment_session_dir`/`_chat_upload_*`/`_download_session_dir`/`_safe_uploaded_filename`）、transcript 消息构建与替换（`_build_user_transcript_message`/`_upsert/_replace_assistant_transcript`/`_append_assistant_attachments`）、下载附件元数据（`_published_download_attachments_from_tool_results`）、会话标题（`_fallback_session_title`/`_normalize_generated_title`/`_generate_session_title`）、pending input（`_extract_pending_user_input`/`_build_resume_tool_result`）。**app.py 4112 → 3864**。
   - 注意：`SSE_EVENT_INPUT_REQUIRED`/`SSE_EVENT_INPUT_RESOLVED` 常量在 `_session_helpers` 内重复定义（字符串字面量），app.py 自己的保留——避免循环 import。
   - 清理 app.py 顶部 6 个随移走而失效的 import（`GenerationRequest`/`Message`/`ResumedToolResult`/`ChatTranscriptMessage`/`_SAFE_STORAGE_COMPONENT_RE`/`_safe_storage_component`）。测试无需适配（测试不直接引用 session 函数）。测试 176 passed 零回归。
-  - ⏳ 剩余：`_public_invoke_helpers.py`、`_config_helpers.py`+`_skill_helpers.py`（二者有循环依赖，用户已定用**第三模块 `_runtime_apply.py`** 拆 `_apply_runtime_config`）。全部完成预计 app.py → ~2500 行。
+  - ✅ 第四步 (2026-08-12)：抽出 **`api/_public_invoke_helpers.py`（382 行，13 个成员）**——`_ApiTokenRunLimiter`/`_resolve_public_invoke_session_id`/`_encode_public_sse`/`_usage_payload`/`_public_run_completed_payload`/`_public_stream_events`/trace-tool payload 序列化/`_record_public_agent_run`/`_enforce_api_token_policy_limits`/`_record_denied_public_agent_invoke`。**app.py 3864 → 3529**。
+  - ✅ 第五步 (2026-08-12)：抽出 **`api/_config_helpers.py`（1065 行，47 成员 + 4 常量）**、**`api/_skill_helpers.py`（545 行，28 成员 + 2 常量）**、**`api/_runtime_apply.py`（61 行，`_apply_runtime_config`）**。**app.py 3529 → 2067**。**helpers 全部分离完成。**
+  - 循环依赖：按第三模块方案——`_apply_runtime_config` 拆到 `_runtime_apply.py`（模块级 import skill 的 `_reload_git_skills`）；`_config_helpers` 模块级 import skill（2 个）+ runtime_apply（1 个）；`_skill_helpers` 对 config 的 `_validate_config_payload`、runtime_apply 的 `_apply_runtime_config` 用**函数内 lazy import**。模块级 DAG：`_shared ← _skill_helpers ← _runtime_apply ← _config_helpers`，无循环（三模块顺序 import 实测成功）。
+  - 常量迁移：`RESOURCE_METADATA_FIELDS` 移 `_shared`（config/skill 共用）；`LEGACY_REASONING_SKILL_NAME`/`WORKSPACE_AGENT_TOOLS`/`BUILTIN_AGENT_TOOLS`/`DEFAULT_AGENT_LOCAL_TOOLS` 随 config；`_SKILL_PREVIEW_*` 随 skill。
+  - 补缺 import（`zipfile`/`json`/`yaml`/`RESOURCE_METADATA_FIELDS`）；`PersistedProviderConfig` 保持函数内 lazy。测试适配：`test_public_invoke_api`/`test_agent_crud_api`/`test_production_readiness` 的 config/skill 函数 import 改指新模块。清理 app.py 约 40 行失效 import。测试 176 passed 零回归。
+  - **app.py 最终 2067 行（原 5503，-3436 行）。**
 - [ ] **X3**：`app.py:1243` 调 `runtime._encode_sse`（私有）；`:465` 读 `spm._pools`（私有）——暴露公开方法。
 - [ ] **X4**：`app.py:912-942` 每请求 `from openai import AsyncOpenAI` 且不 close → httpx 连接池泄漏。缓存/lazy-init。
 - [ ] **X5**：`react.py:1033` 上下文压缩早退条件几乎恒真，可能在真实超限时误判"无需压缩"——信任 `last_prompt_tokens`。
@@ -323,8 +328,8 @@
 3. **顺手清理**：D1（死且分叉的 `model/context_window.py`，隐患源）✅、G1（`.git-backup-*`）、G2（`tmp/`）。
 4. **重构窗口**：L1–L6（后端 visibility helper）、L7 + 前端 `useAsyncResource`——能削上千行重复。
 
-> 前八批累计已修复：**S1–S6 + H1–H11 + M2、M3、M5、M7、M9、M10、M11 + D1、D2 + L1、L3、L6、L7 + G1、G2、G4**（共 33 项，含全部 6 个 SEVERE 和全部 11 个 HIGH）。
-> **SEVERE 与 HIGH 已全部处理完毕。** 剩余仅 M1/M4/M6/M8（语义敏感，需确认产品意图）与少量结构性清理（L2/L4/L5、G3/G5、X1-X6）。
+> 前八批累计已修复：**S1–S6 + H1–H11 + M2、M3、M5、M7、M9、M10、M11 + D1、D2 + L1、L3、L6、L7 + G1、G2、G4 + X2**（共 34 项，含全部 6 个 SEVERE 和全部 11 个 HIGH）。
+> **SEVERE 与 HIGH 已全部处理完毕，app.py 已从 5503 行拆到 2067 行（helpers 全部分离到 6 个模块）。** 剩余仅 M1/M4/M6/M8（语义敏感，需确认产品意图）与少量结构性清理（L2/L4/L5、G3/G5、X1/X3-X6）。
 
 ---
 

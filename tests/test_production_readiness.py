@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from pydantic import ValidationError
 
 from agent_framework.api._shared import to_agent_summary
-from agent_framework.api.app import _normalize_agent_payload_item
+from agent_framework.api._config_helpers import _normalize_agent_payload_item
 from agent_framework.api.schemas import AgentRunRequest
 from agent_framework.core.agent import AgentSpec
 from agent_framework.core.types import RunContext, ToolCall

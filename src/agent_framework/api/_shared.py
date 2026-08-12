@@ -56,6 +56,16 @@ logger = logging.getLogger(__name__)
 
 _SAFE_STORAGE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
+RESOURCE_METADATA_FIELDS = (
+    "owner_user_id",
+    "workspace_id",
+    "visibility",
+    "publication_status",
+    "publication_requested_at",
+    "publication_reviewed_at",
+    "publication_reviewed_by_user_id",
+)
+
 
 def _new_chat_item_id(prefix: str) -> str:
     return f"{prefix}-{int(datetime.now(UTC).timestamp() * 1000)}-{uuid4().hex[:8]}"
