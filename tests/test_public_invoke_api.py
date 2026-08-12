@@ -17,12 +17,12 @@ from covalent.api._shared import (
     _audit_request_metadata,
 )
 from covalent.api._auth_helpers import (
-    _build_api_token_usage_response,
-    _list_audit_logs,
-    _list_api_token_runs,
     _resolve_console_identity,
 )
+from covalent.application.services.audit_service import _list_audit_logs
 from covalent.application.services.token_service import (
+    _build_api_token_usage_response,
+    _list_api_token_runs,
     _normalize_token_policy,
     _normalize_token_scopes,
     _revoke_api_token,

@@ -9,7 +9,6 @@ from fastapi import Request
 from sqlalchemy import text
 from typing import Any
 
-from covalent.api._auth_helpers import _list_audit_logs
 from covalent.api._auth_helpers import _resolve_console_principal
 from covalent.api._shared import _augment_sandbox_snapshot
 from covalent.api.schemas import AuditLogResponse

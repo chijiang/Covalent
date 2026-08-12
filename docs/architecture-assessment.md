@@ -81,7 +81,7 @@ src/covalent/
   runtime/        ReAct 循环 + execution backend 协议/实现（保持现名）
   model/          LLM 端口 + 适配器（保持现名）
   mcp/            MCP 客户端/适配器（保持现名）
-  skills/         技能子系统（暂留，后续再定归属）
+  skills/         技能子系统（保持现有包名，暂留 covalent/ 下；不强行归位）
   infra/          数据库、settings、config_store、memory
 ```
 
@@ -126,4 +126,4 @@ src/covalent/
 - [x] 2026-08-12：**endpoints 拆分完成**——create_app 闭包的 51 路由拆到 `api/routes/` 11 个 APIRouter 文件（agents/auth/config/mcp/ops/providers/public/sessions/skills/tokens/users）。`app.state` → `request.app.state`（脚本批量，处理了 `getattr(app.state,...)` 与裸 `app` 传参两种形态）；SSE 常量移 `api/sse_events.py` 避免循环 import；缺 `request` 参数的路由补参；`public_invoke_agent` 保留 `response_model=None`。**app.py 从 1744 → 162 行**（只剩 lifespan + create_app 装配）。
   - 每步跑 176 测试验证，最终 176 passed 零回归。
 - [x] 2026-08-12：**包前缀改名 `agent_framework` → `covalent`**。`git mv src/agent_framework src/covalent` + 替换全部 .py import + pyproject packages + main.py/Dockerfile 的 uvicorn 入口 + Dockerfile.sandbox COPY 路径 + docs 路径。**关键：避免 `src/mcp/` 变顶层包与第三方 MCP SDK 冲突**（`mcp/client.py` 依赖 `from mcp import ClientSession`）。env 前缀 `AGENT_FRAMEWORK_*` 保留（运行时配置，保持部署兼容）。测试 176 passed 零回归。
-- [ ] 可选后续：helper 模块（_auth_helpers/_session_helpers）里剩余函数可进一步归位；路由按需再细分。
+- [x] 2026-08-12：**helper 归位完成**——`_auth_helpers` 剩余的数据访问用例（`_list_api_token_summaries`/`_list_api_token_runs`/`_build_api_token_usage_response`/`_get_api_token_usage` → `token_service`，`_list_audit_logs` → 新 `audit_service`）归位 application。`_auth_helpers` 656 → 380 行，只剩认证跨切面（中间件/cookie/身份解析/principal）；`_session_helpers`（89 行）只剩路径工具（纯工具，留 api 合理）。`skills/` 保持现有包名（确认不强行归位）。**架构评估的全部遗留项已闭合。**
