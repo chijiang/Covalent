@@ -14,21 +14,24 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-import os
-import re
 import shutil
 import zipfile
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 import anyio
 from fastapi import Request
 
+from covalent.application._utils import (
+    _coerce_int,  # noqa: F401  (re-exported for API-layer callers)
+    _new_chat_item_id,
+    _payload_text,  # noqa: F401  (re-exported for API-layer callers)
+    _safe_storage_component,  # noqa: F401  (re-exported for API-layer callers)
+)
+from covalent.application.principal import Principal as ConsolePrincipalContext
+
 from covalent.api.auth import ApiPrincipal
-from covalent.api.schemas import (
+from covalent.application.schemas import (
     AgentRunLogResponse,
     AgentSummaryResponse,
     ApiTokenSummaryResponse,
@@ -40,7 +43,6 @@ from covalent.api.schemas import (
     ProviderSummaryResponse,
 )
 from covalent.core.agent import AgentSpec
-from covalent.infra.config_store import ConfigPrincipal
 from covalent.infra.db import (
     AgentRunLogRow,
     ApiTokenRow,
@@ -54,73 +56,21 @@ from covalent.runtime.backend import ExecutionBackend
 
 logger = logging.getLogger(__name__)
 
-_SAFE_STORAGE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
-
-RESOURCE_METADATA_FIELDS = (
-    "owner_user_id",
-    "workspace_id",
-    "visibility",
-    "publication_status",
-    "publication_requested_at",
-    "publication_reviewed_at",
-    "publication_reviewed_by_user_id",
-)
-
-
-def _new_chat_item_id(prefix: str) -> str:
-    return f"{prefix}-{int(datetime.now(UTC).timestamp() * 1000)}-{uuid4().hex[:8]}"
 
 
 
-def _coerce_int(value: Any) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return 0
-    return 0
 
 
 
-def _coerce_positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value if value > 0 else None
-    if isinstance(value, float):
-        return int(value) if value > 0 else None
-    if isinstance(value, str):
-        try:
-            parsed = int(value.strip())
-        except ValueError:
-            return None
-        return parsed if parsed > 0 else None
-    return None
 
 
 
-def _dedupe_strings(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    results: list[str] = []
-    for value in values:
-        normalized = value.strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        results.append(normalized)
-    return results
 
 
 
-def _safe_storage_component(raw: str, default: str) -> str:
-    normalized = _SAFE_STORAGE_COMPONENT_RE.sub("-", raw.strip()).strip("._-")
-    return normalized or default
+
+
+
 
 
 
@@ -146,11 +96,6 @@ async def _rmtree_async(path: Path, *, ignore_errors: bool = False) -> None:
 
 
 
-def _payload_text(payload: Any) -> str:
-    if isinstance(payload, dict):
-        value = payload.get("text")
-        return "" if value is None else str(value)
-    return ""
 
 
 
@@ -372,30 +317,6 @@ def _audit_log_response(row: AuditLogRow) -> AuditLogResponse:
         metadata=dict(row.metadata_json or {}),
         created_at=row.created_at,
     )
-
-
-
-@dataclass(frozen=True)
-class ConsolePrincipalContext:
-    user_id: str
-    email: str
-    display_name: str
-    role: str
-    workspace_id: str
-    workspace_name: str
-    workspace_slug: str
-    workspace_role: str
-    username: str | None = None
-    avatar_url: str | None = None
-    preferences: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def is_admin(self) -> bool:
-        return self.role == "admin"
-
-    @property
-    def config(self) -> ConfigPrincipal:
-        return ConfigPrincipal(user_id=self.user_id, workspace_id=self.workspace_id, role=self.role)
 
 
 

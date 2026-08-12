@@ -18,9 +18,9 @@ import types
 import uuid
 from pathlib import Path
 
-from agent_framework.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
-from agent_framework.infra.settings import AppSettings
-from agent_framework.runtime.docker_backend import DockerBackend
+from covalent.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
+from covalent.infra.settings import AppSettings
+from covalent.runtime.docker_backend import DockerBackend
 
 
 async def main() -> int:

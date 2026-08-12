@@ -12,11 +12,11 @@ from covalent.api._auth_helpers import _clear_console_session_cookie
 from covalent.api._auth_helpers import _resolve_console_principal
 from covalent.api._auth_helpers import _set_console_session_cookie
 from covalent.api._shared import _record_audit_log
-from covalent.api.schemas import ConsoleAccountUpdateRequest
-from covalent.api.schemas import ConsoleLoginRequest
-from covalent.api.schemas import ConsolePasswordUpdateRequest
-from covalent.api.schemas import ConsoleRegisterRequest
-from covalent.api.schemas import ConsoleUserResponse
+from covalent.application.schemas import ConsoleAccountUpdateRequest
+from covalent.application.schemas import ConsoleLoginRequest
+from covalent.application.schemas import ConsolePasswordUpdateRequest
+from covalent.application.schemas import ConsoleRegisterRequest
+from covalent.application.schemas import ConsoleUserResponse
 from covalent.application.services.user_service import _authenticate_console_password
 from covalent.application.services.user_service import _console_user_response
 from covalent.application.services.user_service import _register_console_user

@@ -124,6 +124,7 @@ def _build_app(*, config_store=None, settings=None):
     app.state.runtime = SimpleNamespace()
     app.state.config_store = config_store or _FakeConfigStore({"agents": _AGENT_PAYLOAD, "providers": [_DEFAULT_PROVIDER]})
     app.state.execution_backend = SimpleNamespace(name="filesystem")
+    app.state.skill_loader = SimpleNamespace()
     app.state.session_store = SimpleNamespace()
 
     # Seed the initial agent so /agents/{name} works.

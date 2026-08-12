@@ -15,10 +15,10 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from agent_framework.infra.settings import AppSettings
-from agent_framework.runtime.docker_backend import DockerBackend
-from agent_framework.skills.process import SkillProcessHandle
-from agent_framework.skills.spec import ManifestSkillSpec
+from covalent.infra.settings import AppSettings
+from covalent.runtime.docker_backend import DockerBackend
+from covalent.skills.process import SkillProcessHandle
+from covalent.skills.spec import ManifestSkillSpec
 
 # Space-tolerant sh JSON-RPC server: SkillProcessHandle.send_request emits
 # json.dumps with spaces (e.g. "method": "ping"), so we extract id/method via

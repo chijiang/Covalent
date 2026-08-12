@@ -11,7 +11,6 @@ from datetime import datetime
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import text
 import json
 
 from covalent.api._auth_helpers import _resolve_console_principal
@@ -19,10 +18,10 @@ from covalent.api._shared import _new_chat_item_id
 from covalent.api._shared import _payload_text
 from covalent.api._shared import _record_sandbox_session
 from covalent.api._shared import to_agent_summary
-from covalent.api.schemas import AgentRunRequest
-from covalent.api.schemas import AgentRunResponse
-from covalent.api.schemas import AgentSummaryResponse
-from covalent.api.schemas import LocalToolSummaryResponse
+from covalent.application.schemas import AgentRunRequest
+from covalent.application.schemas import AgentRunResponse
+from covalent.application.schemas import AgentSummaryResponse
+from covalent.application.schemas import LocalToolSummaryResponse
 from covalent.api.sse_events import SSE_EVENT_ASSISTANT
 from covalent.api.sse_events import SSE_EVENT_DELEGATE_TOOL_RESULTS
 from covalent.api.sse_events import SSE_EVENT_ERROR
@@ -35,6 +34,7 @@ from covalent.application.services.management_service import _available_local_to
 from covalent.application.services.management_service import _ensure_console_principal_can_access_agent
 from covalent.application.services.management_service import _ensure_console_principal_can_access_session
 from covalent.application.services.management_service import _resolve_console_agent_name
+from covalent.application.services.session_service import AgentRunInput
 from covalent.application.services.session_service import _append_assistant_attachments
 from covalent.application.services.session_service import _build_resume_tool_result
 from covalent.application.services.session_service import _build_session_preview
@@ -45,7 +45,6 @@ from covalent.application.services.session_service import _payload_output_text
 from covalent.application.services.session_service import _published_download_attachments_from_tool_results
 from covalent.application.services.session_service import _replace_assistant_transcript
 from covalent.application.services.session_service import _upsert_assistant_transcript
-from covalent.core.types import RunContext
 from covalent.infra.config_store import ConfigStore
 from covalent.infra.db import DatabaseManager
 from covalent.infra.memory import ChatActivityItem
@@ -54,9 +53,12 @@ from covalent.infra.memory import SessionStore
 from covalent.infra.settings import AppSettings
 from covalent.model.base import ModelProviderError
 from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.react import ReactAgentRuntime
 
 router = APIRouter()
+
+
+def _agent_run_input(run_request):
+    return AgentRunInput(input=run_request.input, metadata=dict(run_request.metadata or {}))
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +80,7 @@ async def list_local_tools(request: Request) -> list[LocalToolSummaryResponse]:
     registry: FrameworkRegistry = request.app.state.registry
     settings: AppSettings = request.app.state.settings
     db_manager: DatabaseManager = request.app.state.db_manager
-    principal = await _resolve_console_principal(request, db_manager)
+    await _resolve_console_principal(request, db_manager)
     return _available_local_tool_summaries(registry, settings)
 
 @router.get("/agents/{agent_name}")
@@ -98,7 +100,7 @@ async def get_agent(request: Request, agent_name: str) -> AgentSummaryResponse:
 async def run_agent(request: Request, agent_name: str, run_request: AgentRunRequest) -> AgentRunResponse:
     db_manager: DatabaseManager = request.app.state.db_manager
     registry: FrameworkRegistry = request.app.state.registry
-    runtime: ReactAgentRuntime = request.app.state.runtime
+    service = request.app.state.agent_invocation
     principal = await _resolve_console_principal(request, db_manager)
     resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
     await _ensure_console_principal_can_access_agent(db_manager, principal, resolved_agent_name)
@@ -115,10 +117,9 @@ async def run_agent(request: Request, agent_name: str, run_request: AgentRunRequ
         raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}") from exc
 
     try:
-        result = await runtime.run(
-            agent,
-            run_request.input,
-            RunContext(agent_name=resolved_agent_name, session_id=session_id, metadata=run_request.metadata, execution_backend=getattr(request.app.state, "execution_backend", None)),
+        result = await service.run(
+            resolved_agent_name, run_request.input, session_id, run_request.metadata,
+            getattr(request.app.state, "execution_backend", None),
         )
     except ModelProviderError as exc:
         status_code = 502 if exc.status_code is None else min(max(exc.status_code, 400), 599)
@@ -136,7 +137,8 @@ async def run_agent(request: Request, agent_name: str, run_request: AgentRunRequ
 async def stream_agent(request: Request, agent_name: str, run_request: AgentRunRequest) -> StreamingResponse:
     db_manager: DatabaseManager = request.app.state.db_manager
     registry: FrameworkRegistry = request.app.state.registry
-    runtime: ReactAgentRuntime = request.app.state.runtime
+    service = request.app.state.agent_invocation
+    runtime = request.app.state.runtime
     session_store: SessionStore = request.app.state.session_store
     principal = await _resolve_console_principal(request, db_manager)
     resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
@@ -157,7 +159,7 @@ async def stream_agent(request: Request, agent_name: str, run_request: AgentRunR
     if existing is not None:
         _ensure_console_principal_can_access_session(principal, existing)
     pending_input = _extract_pending_user_input(existing.activity) if existing else None
-    resume_tool_result = _build_resume_tool_result(run_request, pending_input)
+    resume_tool_result = _build_resume_tool_result(_agent_run_input(run_request), pending_input)
     if pending_input is not None and resume_tool_result is None:
         raise HTTPException(
             status_code=409,
@@ -170,7 +172,7 @@ async def stream_agent(request: Request, agent_name: str, run_request: AgentRunR
     async def event_stream():
         transcript_messages = [message.model_copy(deep=True) for message in existing.messages] if existing else []
         activity = [item.model_copy(deep=True) for item in existing.activity] if existing else []
-        user_transcript = _build_user_transcript_message(run_request)
+        user_transcript = _build_user_transcript_message(_agent_run_input(run_request))
         transcript_messages.append(user_transcript)
         assistant_message_id = _new_chat_item_id("assistant")
         runtime_metadata = dict(run_request.metadata or {})
@@ -189,10 +191,9 @@ async def stream_agent(request: Request, agent_name: str, run_request: AgentRunR
             )
 
         try:
-            async for event in runtime.stream_events(
-                agent,
-                run_request.input,
-                RunContext(agent_name=resolved_agent_name, session_id=session_id, metadata=runtime_metadata, execution_backend=getattr(request.app.state, "execution_backend", None)),
+            async for event in service.stream(
+                resolved_agent_name, run_request.input, session_id, runtime_metadata,
+                getattr(request.app.state, "execution_backend", None),
             ):
                 event_name = event["event"]
                 payload = event["payload"]

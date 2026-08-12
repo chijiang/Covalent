@@ -11,12 +11,22 @@ from typing import Any
 
 from covalent.api._auth_helpers import _resolve_console_principal
 from covalent.api._shared import _augment_sandbox_snapshot
-from covalent.api.schemas import AuditLogResponse
+from covalent.application.services.audit_service import AuditLogEntry, list_audit_logs as _list_audit_logs
+from covalent.application.schemas import AuditLogResponse
 from covalent.infra.db import DatabaseManager
 from covalent.infra.memory import SessionStore
 from covalent.registry.registry import FrameworkRegistry
 
 router = APIRouter()
+
+
+def _audit_dto(e: AuditLogEntry) -> AuditLogResponse:
+    return AuditLogResponse(
+        id=e.id, actor_user_id=e.actor_user_id, actor_token_id=e.actor_token_id, workspace_id=e.workspace_id,
+        action=e.action, target_type=e.target_type, target_id=e.target_id, outcome=e.outcome,
+        request_id=e.request_id, ip_address=e.ip_address, user_agent=e.user_agent,
+        metadata=dict(e.metadata), created_at=e.created_at,
+    )
 
 
 @router.get("/healthz")
@@ -89,7 +99,7 @@ async def list_audit_logs(
 ) -> list[AuditLogResponse]:
     db_manager: DatabaseManager = request.app.state.db_manager
     principal = await _resolve_console_principal(request, db_manager)
-    return await _list_audit_logs(
+    entries = await _list_audit_logs(
         db_manager,
         principal,
         limit=limit,
@@ -99,3 +109,4 @@ async def list_audit_logs(
         actor_token_id=actor_token_id,
         target_type=target_type,
     )
+    return [_audit_dto(e) for e in entries]

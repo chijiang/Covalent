@@ -29,11 +29,11 @@ from covalent.api._shared import _coerce_int
 from covalent.api._shared import _rmtree_async
 from covalent.api._shared import to_chat_session_response
 from covalent.api._shared import to_chat_session_summary_response
-from covalent.api.schemas import AttachmentUploadItemResponse
-from covalent.api.schemas import AttachmentUploadResponse
-from covalent.api.schemas import ChatSessionResponse
-from covalent.api.schemas import ChatSessionSummaryResponse
-from covalent.api.schemas import ChatSessionUpdateRequest
+from covalent.application.schemas import AttachmentUploadItemResponse
+from covalent.application.schemas import AttachmentUploadResponse
+from covalent.application.schemas import ChatSessionResponse
+from covalent.application.schemas import ChatSessionSummaryResponse
+from covalent.application.schemas import ChatSessionUpdateRequest
 from covalent.application.services.management_service import _ensure_console_principal_can_access_session
 from covalent.core.attachment_processing import process_attachment_bytes
 from covalent.infra.db import DatabaseManager

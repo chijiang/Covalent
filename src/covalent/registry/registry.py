@@ -7,7 +7,6 @@ import re
 from typing import Any
 
 from covalent.core.agent import AgentSpec
-from covalent.core.shell_tools import RUN_SHELL_TOOL
 from covalent.core.tooling import ToolDefinition, ToolHandler
 from covalent.core.types import RunContext, ToolCall, ToolResult, UserInputRequest
 from covalent.mcp.adapter import McpClient
@@ -495,7 +494,6 @@ class FrameworkRegistry:
         if len(parts) < 3:
             return None
 
-        server_raw = parts[1]
         tool_raw = parts[2]
 
         # Check if tool_raw itself looks like an MCP name (mcp__b64server__b64tool)

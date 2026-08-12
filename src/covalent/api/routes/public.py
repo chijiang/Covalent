@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from time import perf_counter
 from typing import Any
 
+from covalent.api._auth_helpers import _request_metadata
 from covalent.api._shared import _new_chat_item_id
 from covalent.api._shared import _record_sandbox_session
 from covalent.api.auth import authenticate_api_token
@@ -21,8 +22,9 @@ from covalent.api.auth import require_agent_allowed
 from covalent.api.auth import require_memory_mode_allowed
 from covalent.api.auth import require_scope
 from covalent.api.auth import require_trace_level_allowed
-from covalent.api.schemas import PublicAgentInvokeRequest
-from covalent.api.schemas import PublicAgentInvokeResponse
+from covalent.application.errors import ApplicationError
+from covalent.application.schemas import PublicAgentInvokeRequest
+from covalent.application.schemas import PublicAgentInvokeResponse
 from covalent.application.services.invoke_service import _ApiTokenRunLimiter
 from covalent.application.services.invoke_service import _encode_public_sse
 from covalent.application.services.invoke_service import _enforce_api_token_policy_limits
@@ -61,14 +63,14 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
             settings=settings,
             session_factory=db_manager.session_factory,
         )
-    except HTTPException as exc:
+    except (HTTPException, ApplicationError) as exc:
         await _record_denied_public_agent_invoke(
             db_manager,
             principal=None,
             agent_name=invoke_request.agent,
             memory_mode=memory_mode,
-            request=request,
-            reason=str(exc.detail),
+            request_metadata=_request_metadata(request),
+            reason=exc.message if isinstance(exc, ApplicationError) else str(exc.detail),
             status_code=exc.status_code,
         )
         raise
@@ -81,14 +83,14 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
         resolved_agent_name = await _resolve_api_agent_name(db_manager, principal, invoke_request.agent)
         await _ensure_api_principal_can_invoke_agent(db_manager, principal, resolved_agent_name)
         await _enforce_api_token_policy_limits(db_manager, principal, agent_name=resolved_agent_name)
-    except HTTPException as exc:
+    except (HTTPException, ApplicationError) as exc:
         await _record_denied_public_agent_invoke(
             db_manager,
             principal=principal,
             agent_name=resolved_agent_name,
             memory_mode=memory_mode,
-            request=request,
-            reason=str(exc.detail),
+            request_metadata=_request_metadata(request),
+            reason=exc.message if isinstance(exc, ApplicationError) else str(exc.detail),
             status_code=exc.status_code,
         )
         raise

@@ -9,12 +9,12 @@ on:
     branches: [main]
     paths:
       - "Dockerfile.sandbox"
-      - "src/agent_framework/skills/runners/**"
+      - "src/covalent/skills/runners/**"
       - ".github/workflows/sandbox-image.yml"
   pull_request:
     paths:
       - "Dockerfile.sandbox"
-      - "src/agent_framework/skills/runners/**"
+      - "src/covalent/skills/runners/**"
       - ".github/workflows/sandbox-image.yml"
   workflow_dispatch:
 

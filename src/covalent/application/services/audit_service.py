@@ -5,16 +5,55 @@ Extracted from ``api._auth_helpers`` into the application layer.
 
 from __future__ import annotations
 
-from fastapi import HTTPException
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
 from sqlalchemy import select
 
-from covalent.api._shared import ConsolePrincipalContext, _audit_log_response
-from covalent.api.schemas import AuditLogResponse
+from covalent.application.errors import ForbiddenError
+from covalent.application.principal import Principal
 from covalent.infra.db import AuditLogRow, DatabaseManager
 
-async def _list_audit_logs(
+
+@dataclass(frozen=True)
+class AuditLogEntry:
+    id: str
+    action: str
+    target_type: str
+    target_id: str | None = None
+    outcome: str = "success"
+    actor_user_id: str | None = None
+    actor_token_id: str | None = None
+    workspace_id: str | None = None
+    request_id: str | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+def _audit_log_entry(row: AuditLogRow) -> AuditLogEntry:
+    return AuditLogEntry(
+        id=row.id,
+        action=row.action,
+        target_type=row.target_type,
+        target_id=row.target_id,
+        outcome=row.outcome,
+        actor_user_id=row.actor_user_id,
+        actor_token_id=row.actor_token_id,
+        workspace_id=row.workspace_id,
+        request_id=row.request_id,
+        ip_address=row.ip_address,
+        user_agent=row.user_agent,
+        metadata=dict(row.metadata_json or {}),
+        created_at=row.created_at,
+    )
+
+
+async def list_audit_logs(
     db_manager: DatabaseManager,
-    principal: ConsolePrincipalContext,
+    principal: Principal,
     *,
     limit: int = 100,
     action: str | None = None,
@@ -22,9 +61,9 @@ async def _list_audit_logs(
     actor_user_id: str | None = None,
     actor_token_id: str | None = None,
     target_type: str | None = None,
-) -> list[AuditLogResponse]:
+) -> list[AuditLogEntry]:
     if not principal.is_admin:
-        raise HTTPException(status_code=403, detail="Only admins can list audit logs")
+        raise ForbiddenError("Only admins can list audit logs")
     bounded_limit = min(max(limit, 1), 500)
     async with db_manager.session_factory() as session:
         stmt = (
@@ -46,4 +85,4 @@ async def _list_audit_logs(
         if target_type:
             stmt = stmt.where(AuditLogRow.target_type == target_type)
         rows = (await session.execute(stmt)).scalars()
-        return [_audit_log_response(row) for row in rows]
+        return [_audit_log_entry(row) for row in rows]

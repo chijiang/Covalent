@@ -11,18 +11,13 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from fastapi import HTTPException, Request
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from covalent.api._shared import (
-    _coerce_int,
-    _coerce_positive_int,
-    _new_chat_item_id,
-    _payload_text,
-    _record_audit_log,
-)
-from covalent.api.auth import ApiPrincipal
+from covalent.application._utils import _coerce_int, _coerce_positive_int, _new_chat_item_id, _payload_text
+from covalent.application.audit import RequestMetadata, record_audit
+from covalent.application.errors import ConflictError, InvalidInputError, NotFoundError, QuotaExceededError
+from covalent.application.principal import ApiPrincipal
 from covalent.infra.db import AgentRunLogRow, AuditLogRow, ChatSessionRow, DatabaseManager
 
 class _ApiTokenRunLimiter:
@@ -74,7 +69,7 @@ async def _resolve_public_invoke_session_id(
 ) -> str | None:
     if memory_mode == "none":
         if requested_session_id:
-            raise HTTPException(status_code=400, detail="session_id is only allowed when memory.mode is 'session'")
+            raise InvalidInputError("session_id is only allowed when memory.mode is 'session'")
         return None
 
     session_id = (requested_session_id or "").strip() or _new_chat_item_id("session")
@@ -94,7 +89,7 @@ async def _resolve_public_invoke_session_id(
                     return session_id
 
                 if row.owner_user_id != principal.user_id or row.workspace_id != principal.workspace_id:
-                    raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
+                    raise NotFoundError(f"Unknown session: {session_id}")
                 if row.created_by_token_id is None:
                     row.created_by_token_id = principal.token_id
                 return session_id
@@ -110,9 +105,9 @@ async def _resolve_public_invoke_session_id(
             if row is None:
                 # The row vanished between the conflict and the re-read (e.g. the
                 # winning request rolled back / deleted it). Let the caller retry.
-                raise HTTPException(status_code=409, detail=f"Session conflict, retry: {session_id}")
+                raise ConflictError(f"Session conflict, retry: {session_id}")
             if row.owner_user_id != principal.user_id or row.workspace_id != principal.workspace_id:
-                raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
+                raise NotFoundError(f"Unknown session: {session_id}")
             if row.created_by_token_id is None:
                 row.created_by_token_id = principal.token_id
             return session_id
@@ -325,10 +320,7 @@ async def _enforce_api_token_policy_limits(
                 )
             )
             if int(minute_count or 0) >= max_requests_per_minute:
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"API token request rate limit exceeded for agent '{agent_name}'",
-                )
+                raise QuotaExceededError(f"API token request rate limit exceeded for agent '{agent_name}'")
 
         daily_rows = None
         if max_requests_per_day is not None or max_tokens_per_day is not None:
@@ -342,18 +334,12 @@ async def _enforce_api_token_policy_limits(
             )
 
         if max_requests_per_day is not None and daily_rows is not None and len(daily_rows) >= max_requests_per_day:
-            raise HTTPException(
-                status_code=429,
-                detail=f"API token daily request quota exceeded for agent '{agent_name}'",
-            )
+            raise QuotaExceededError(f"API token daily request quota exceeded for agent '{agent_name}'")
 
         if max_tokens_per_day is not None and daily_rows is not None:
             used_tokens = sum(_coerce_int((row.usage_json or {}).get("total_tokens")) for row in daily_rows)
             if used_tokens >= max_tokens_per_day:
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"API token daily token quota exceeded for agent '{agent_name}'",
-                )
+                raise QuotaExceededError(f"API token daily token quota exceeded for agent '{agent_name}'")
 
 async def _record_denied_public_agent_invoke(
     db_manager: DatabaseManager,
@@ -361,18 +347,18 @@ async def _record_denied_public_agent_invoke(
     principal: ApiPrincipal | None,
     agent_name: str,
     memory_mode: Literal["none", "session"],
-    request: Request | None,
+    request_metadata: RequestMetadata | None,
     reason: str,
     status_code: int,
 ) -> None:
-    await _record_audit_log(
+    await record_audit(
         db_manager,
         action="agent.invoke.denied",
         target_type="agent",
         target_id=agent_name,
         outcome="denied",
         api_principal=principal,
-        request=request,
+        request_metadata=request_metadata,
         metadata={
             "memory_mode": memory_mode,
             "reason": reason,

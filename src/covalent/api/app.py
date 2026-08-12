@@ -5,10 +5,12 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
-import anyio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+from covalent.application.errors import ApplicationError
+from covalent.application.services.agent_invocation import AgentInvocationService
 from covalent.api._auth_helpers import ConsoleAuthGuardMiddleware
 from covalent.api._shared import _sandbox_reaper_loop
 from covalent.application.services.invoke_service import _ApiTokenRunLimiter
@@ -21,12 +23,16 @@ from covalent.application.services.user_service import _seed_initial_admin_user
 from covalent.infra.config_store import ConfigStore
 from covalent.infra.db import DatabaseManager
 from covalent.infra.memory import PersistentSessionStore
-from covalent.infra.migrations import run_database_migrations
 from covalent.infra.settings import AppSettings
 from covalent.runtime.backend import make_backend
 from covalent.runtime.react import ReactAgentRuntime
 
 logger = logging.getLogger(__name__)
+
+
+async def _application_error_handler(request: Request, exc: ApplicationError) -> JSONResponse:
+    """Map application-layer errors to HTTP responses."""
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
 
 
 @asynccontextmanager
@@ -58,7 +64,8 @@ async def lifespan(app: FastAPI):
     database_url = settings.database_url
     if not database_url:
         raise RuntimeError("AGENT_FRAMEWORK_DATABASE_URL must be set when using persistent config storage")
-    await anyio.to_thread.run_sync(run_database_migrations, database_url.replace('+asyncpg', ''))
+    # Schema migrations are run by the explicit `migrate` command (main.py) or a deploy job —
+    # not in the web lifespan — to avoid multi-replica startup races.
     db_manager = DatabaseManager(database_url)
     await _seed_initial_admin_user(db_manager, settings)
     config_store = ConfigStore(db_manager.session_factory)
@@ -122,6 +129,7 @@ async def lifespan(app: FastAPI):
         context_summary_model=settings.context_summary_model,
         enable_llm_summarization=settings.enable_llm_summarization,
     )
+    app.state.agent_invocation = AgentInvocationService(registry, app.state.runtime)
 
     yield
     reaper_task.cancel()
@@ -144,6 +152,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.add_exception_handler(ApplicationError, _application_error_handler)
 
     from covalent.api.routes import agents, auth, config, mcp, ops, providers, public, sessions, skills, tokens, users
     app.include_router(ops.router)

@@ -1,25 +1,16 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { Inter, JetBrains_Mono } from "next/font/google";
+
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
 
 import { AppShell } from "@/components/app-shell";
 import { Providers } from "@/components/providers";
 import "./globals.css";
 
-// Self-hosted via next/font so every client renders the same Inter / JetBrains
-// Mono regardless of local installs. The CSS variables are consumed by the
-// --font-display / --font-mono stacks in globals.css.
-const inter = Inter({
-  subsets: ["latin"],
-  display: "swap",
-  variable: "--font-inter",
-});
-
-const jetBrainsMono = JetBrains_Mono({
-  subsets: ["latin"],
-  display: "swap",
-  variable: "--font-jetbrains-mono",
-});
+// Inter / JetBrains Mono are bundled locally via @fontsource-variable, so every
+// client renders the same typefaces regardless of local installs and without any
+// Google Fonts network dependency. The CSS variables are defined in globals.css.
 
 export const metadata: Metadata = {
   title: "Covalent",
@@ -44,7 +35,6 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${inter.variable} ${jetBrainsMono.variable}`}
     >
       <head>
         <script

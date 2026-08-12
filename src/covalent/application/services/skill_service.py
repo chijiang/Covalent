@@ -15,10 +15,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
 
-from covalent.api._shared import ConsolePrincipalContext, RESOURCE_METADATA_FIELDS
-from covalent.api.schemas import (
+from covalent.application.errors import (ForbiddenError, InvalidInputError, NotFoundError)
+from covalent.application._utils import RESOURCE_METADATA_FIELDS
+from covalent.application.principal import Principal as ConsolePrincipalContext
+from covalent.application.schemas import (
     ManagementImportResponse,
     SkillManagementItemResponse,
     SkillManagementSourceResponse,
@@ -120,53 +121,57 @@ def _inline_skill_summary_response(
     )
 
 async def _ensure_skill_access(
-    app: FastAPI,
+    registry: FrameworkRegistry,
+    config_store: ConfigStore,
+    settings: AppSettings,
     skill_name: str,
     principal: ConsolePrincipalContext,
 ) -> None:
-    registry: FrameworkRegistry = app.state.registry
     manifest = registry.manifest_skills.get(skill_name)
     if manifest is None:
         if skill_name in registry.skills:
             return
-        raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
+        raise NotFoundError(f"Unknown skill: {skill_name}")
 
     source_payload = _visible_skill_source_payload_for_spec(
         manifest,
-        await app.state.config_store.get_document("skill_sources", principal.config),
+        await config_store.get_document("skill_sources", principal.config),
     )
-    if not _can_access_manifest_skill(manifest, app.state.settings, source_payload):
-        raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
+    if not _can_access_manifest_skill(manifest, settings, source_payload):
+        raise NotFoundError(f"Unknown skill: {skill_name}")
 
 async def _ensure_skill_state_mutation_allowed(
-    app: FastAPI,
+    registry: FrameworkRegistry,
+    config_store: ConfigStore,
+    settings: AppSettings,
     skill_name: str,
     principal: ConsolePrincipalContext,
 ) -> None:
     if principal.is_admin:
         return
-
-    registry: FrameworkRegistry = app.state.registry
-    settings: AppSettings = app.state.settings
     manifest = registry.manifest_skills.get(skill_name)
     if manifest is None:
-        raise HTTPException(status_code=403, detail="Only admins can change global skill state")
+        raise ForbiddenError("Only admins can change global skill state")
     if _skill_category(manifest, settings) != "github_synced":
-        raise HTTPException(status_code=403, detail="Only admins can change global skill state")
+        raise ForbiddenError("Only admins can change global skill state")
 
     source_payload = _visible_skill_source_payload_for_spec(
         manifest,
-        await app.state.config_store.get_document("skill_sources", principal.config),
+        await config_store.get_document("skill_sources", principal.config),
     )
     if not source_payload or source_payload.get("owner_user_id") != principal.user_id:
-        raise HTTPException(status_code=403, detail="Only the skill owner can change this skill state")
+        raise ForbiddenError("Only the skill owner can change this skill state")
 
-async def _set_skill_enabled(app: FastAPI, skill_name: str, enabled: bool) -> None:
-    registry: FrameworkRegistry = app.state.registry
-    config_store: ConfigStore = app.state.config_store
+async def _set_skill_enabled(
+    registry: FrameworkRegistry,
+    config_store: ConfigStore,
+    execution_backend: ExecutionBackend,
+    skill_name: str,
+    enabled: bool,
+) -> None:
 
     if skill_name not in registry.skills:
-        raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
+        raise NotFoundError(f"Unknown skill: {skill_name}")
 
     registry.set_skill_enabled(skill_name, enabled)
     await config_store.set_skill_enabled(skill_name, enabled)
@@ -174,7 +179,7 @@ async def _set_skill_enabled(app: FastAPI, skill_name: str, enabled: bool) -> No
     if not enabled and registry.skill_process_manager is not None:
         await registry.skill_process_manager.stop_skill(skill_name)
 
-    await _reconcile_skill_process_manager(registry, app.state.execution_backend)
+    await _reconcile_skill_process_manager(registry, execution_backend)
 
 async def _sync_registry_skill_states(registry: FrameworkRegistry, config_store: ConfigStore) -> None:
     registry.sync_skill_enabled_states(await config_store.get_skill_state_map())
@@ -265,10 +270,12 @@ def _build_skill_management_source(
         return SkillManagementSourceResponse(type="managed", category=category)
     return SkillManagementSourceResponse(type="unknown", category="unknown")
 
-async def _build_skill_management_export_payload(app: FastAPI, principal: ConsolePrincipalContext) -> dict[str, Any]:
-    registry: FrameworkRegistry = app.state.registry
-    settings: AppSettings = app.state.settings
-    config_store: ConfigStore = app.state.config_store
+async def _build_skill_management_export_payload(
+    registry: FrameworkRegistry,
+    settings: AppSettings,
+    config_store: ConfigStore,
+    principal: ConsolePrincipalContext,
+) -> dict[str, Any]:
     skill_sources = await config_store.get_document("skill_sources", principal.config)
 
     items: list[dict[str, Any]] = []
@@ -322,13 +329,13 @@ def _validate_skill_management_items(items: list[object]) -> list[SkillManagemen
     seen_names: set[str] = set()
     for item in items:
         if not isinstance(item, dict):
-            raise HTTPException(status_code=400, detail="Skill entries must be objects")
+            raise InvalidInputError("Skill entries must be objects")
         try:
             parsed = SkillManagementItemResponse.model_validate(item)
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid skill entry: {exc}") from exc
+            raise InvalidInputError(f"Invalid skill entry: {exc}") from exc
         if parsed.name in seen_names:
-            raise HTTPException(status_code=400, detail=f"Duplicate skill entry: {parsed.name}")
+            raise InvalidInputError(f"Duplicate skill entry: {parsed.name}")
         seen_names.add(parsed.name)
         validated.append(parsed)
     return validated
@@ -370,11 +377,11 @@ def _extract_skill_management_payload(
         return imported_items, _derive_skill_sources_from_skill_items(imported_items)
 
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Imported skill configuration must be a YAML/JSON object or array")
+        raise InvalidInputError("Imported skill configuration must be a YAML/JSON object or array")
 
     payload_kind = payload.get("kind")
     if isinstance(payload_kind, str) and payload_kind not in {"skills", "skill_sources"}:
-        raise HTTPException(status_code=400, detail=f"Imported file is for '{payload_kind}', not 'skills'")
+        raise InvalidInputError(f"Imported file is for '{payload_kind}', not 'skills'")
 
     if payload_kind == "skill_sources":
         raw_sources = payload.get("items")
@@ -383,7 +390,7 @@ def _extract_skill_management_payload(
         if raw_sources is None:
             raw_sources = payload.get("skill_sources")
         if not isinstance(raw_sources, list):
-            raise HTTPException(status_code=400, detail="Imported skill source payload must include an array of sources")
+            raise InvalidInputError("Imported skill source payload must include an array of sources")
         return [], _validate_config_payload("skill_sources", raw_sources)
 
     items_raw = payload.get("items")
@@ -392,28 +399,30 @@ def _extract_skill_management_payload(
     if items_raw is None:
         items_raw = []
     if not isinstance(items_raw, list):
-        raise HTTPException(status_code=400, detail="Imported skill configuration 'items' field must be an array")
+        raise InvalidInputError("Imported skill configuration 'items' field must be an array")
 
     imported_items = _validate_skill_management_items(items_raw)
     raw_sources = payload.get("skill_sources")
     if raw_sources is None:
         return imported_items, _derive_skill_sources_from_skill_items(imported_items)
     if not isinstance(raw_sources, list):
-        raise HTTPException(status_code=400, detail="Imported skill configuration 'skill_sources' field must be an array")
+        raise InvalidInputError("Imported skill configuration 'skill_sources' field must be an array")
     return imported_items, _validate_config_payload("skill_sources", raw_sources)
 
 async def _import_skill_management_payload(
-    app: FastAPI,
+    registry: FrameworkRegistry,
+    config_store: ConfigStore,
+    settings: AppSettings,
+    loader: SkillLoader,
+    execution_backend: ExecutionBackend,
     payload: Any,
     principal: ConsolePrincipalContext,
 ) -> ManagementImportResponse:
     from .runtime_apply import _apply_runtime_config
-    registry: FrameworkRegistry = app.state.registry
-    config_store: ConfigStore = app.state.config_store
 
     imported_items, imported_sources = _extract_skill_management_payload(payload)
     saved_sources = await config_store.save_document("skill_sources", imported_sources, principal=principal.config)
-    await _apply_runtime_config(app, "skill_sources", await config_store.get_document("skill_sources"))
+    await _apply_runtime_config(registry, config_store, settings, loader, execution_backend, "skill_sources", await config_store.get_document("skill_sources"))
 
     warnings: list[str] = []
     applied_items = 0
@@ -421,7 +430,7 @@ async def _import_skill_management_payload(
 
     for item in imported_items:
         if item.name in seen_names:
-            raise HTTPException(status_code=400, detail=f"Duplicate skill entry: {item.name}")
+            raise InvalidInputError(f"Duplicate skill entry: {item.name}")
         seen_names.add(item.name)
 
         if item.name not in registry.skills:
@@ -433,14 +442,14 @@ async def _import_skill_management_payload(
             )
             continue
 
-        await _ensure_skill_state_mutation_allowed(app, item.name, principal)
+        await _ensure_skill_state_mutation_allowed(registry, config_store, settings, item.name, principal)
         registry.set_skill_enabled(item.name, item.enabled)
         await config_store.set_skill_enabled(item.name, item.enabled)
         if not item.enabled and registry.skill_process_manager is not None:
             await registry.skill_process_manager.stop_skill(item.name)
         applied_items += 1
 
-    await _reconcile_skill_process_manager(registry, app.state.execution_backend)
+    await _reconcile_skill_process_manager(registry, execution_backend)
 
     summary = (
         f"Imported {len(imported_items)} skill entries and synced {len(saved_sources)} git skill sources. "
@@ -454,23 +463,31 @@ async def _import_skill_management_payload(
         warnings=warnings,
     )
 
-async def _reload_git_skills(app: FastAPI, payload: list[dict[str, object]]) -> None:
-    registry: FrameworkRegistry = app.state.registry
-    loader: SkillLoader = app.state.skill_loader
-    config_store: ConfigStore = app.state.config_store
+async def _reload_git_skills(
+    registry: FrameworkRegistry,
+    loader: SkillLoader,
+    config_store: ConfigStore,
+    execution_backend: ExecutionBackend,
+    payload: list[dict[str, object]],
+) -> None:
 
-    existing_git_skills = [name for name, spec in registry.manifest_skills.items() if spec.source_type == "git"]
-    if registry.skill_process_manager:
-        for skill_name in existing_git_skills:
-            await registry.skill_process_manager.stop_skill(skill_name)
-    for skill_name in existing_git_skills:
-        registry.unregister_skill(skill_name)
-
+    # Build the full candidate manifest first (discover may fail), then swap the
+    # registry's manifest dict in one atomic assignment. Running runs hold refs to
+    # the old ManifestSkillSpec objects, so they are unaffected by the swap.
+    existing_non_git = {name: spec for name, spec in registry.manifest_skills.items() if spec.source_type != "git"}
+    new_git: dict[str, ManifestSkillSpec] = {}
     for spec in await loader.discover_git(payload):
-        registry.register_manifest_skill(spec)
+        new_git[spec.name] = spec
+    new_manifest = {**existing_non_git, **new_git}
 
+    removed = [name for name, spec in registry.manifest_skills.items() if spec.source_type == "git" and name not in new_manifest]
+    if registry.skill_process_manager:
+        for skill_name in removed:
+            await registry.skill_process_manager.stop_skill(skill_name)
+
+    registry.manifest_skills = new_manifest
     await _sync_registry_skill_states(registry, config_store)
-    await _reconcile_skill_process_manager(registry, app.state.execution_backend)
+    await _reconcile_skill_process_manager(registry, execution_backend)
 
 def _language_from_path(path: Path) -> str:
     suffix = path.suffix.lower()

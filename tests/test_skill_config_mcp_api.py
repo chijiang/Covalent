@@ -118,6 +118,7 @@ def _build_app(*, registry=None, config_store=None, skill_loader=None, settings=
     app.state.config_store = config_store or _FakeConfigStore()
     app.state.skill_loader = skill_loader or SimpleNamespace()
     app.state.execution_backend = SimpleNamespace(name="filesystem")
+    app.state.skill_loader = SimpleNamespace()
     app.state.session_store = _DummySessionStore()
     return app, TestClient(app)
 

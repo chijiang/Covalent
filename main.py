@@ -8,8 +8,6 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 import uvicorn
 
-# from api.app import create_app, sync_env_seeds
-
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Covalent entrypoint")
@@ -20,25 +18,29 @@ def _parse_args() -> argparse.Namespace:
     default_port = int(os.getenv("AGENT_FRAMEWORK_BACKEND_PORT", "5170"))
     serve_parser.add_argument("--port", type=int, default=default_port)
 
-    sync_parser = subparsers.add_parser("sync-config", help="Sync env seed config into the database")
-    sync_parser.add_argument("--overwrite", action="store_true")
+    subparsers.add_parser("migrate", help="Apply database schema migrations")
 
     return parser.parse_args()
 
 
-# async def _run_sync_config(overwrite: bool) -> None:
-#     app = create_app()
-#     async with app.router.lifespan_context(app):
-#         result = await sync_env_seeds(app, ["mcp", "skill_sources", "agents"], overwrite=overwrite)
-#         for item in result.results:
-#             print(f"{item.kind}: {item.status} ({item.items})")
+def _run_migrate() -> None:
+    from covalent.infra.settings import AppSettings
+    from covalent.infra.migrations import run_database_migrations
+
+    settings = AppSettings()
+    database_url = settings.database_url
+    if not database_url:
+        raise SystemExit("AGENT_FRAMEWORK_DATABASE_URL must be set to run migrations")
+    asyncio.run(run_database_migrations(database_url.replace("+asyncpg", "")))
+    print("Database migrations applied.")
 
 
 def main() -> None:
     args = _parse_args()
-    # if args.command == "sync-config":
-    #     asyncio.run(_run_sync_config(args.overwrite))
-    #     return
+
+    if args.command == "migrate":
+        _run_migrate()
+        return
 
     host = getattr(args, "host", "0.0.0.0")
     port = getattr(args, "port", 5170)

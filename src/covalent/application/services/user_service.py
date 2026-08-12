@@ -11,13 +11,14 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
-from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from covalent.api._shared import ConsolePrincipalContext, _new_chat_item_id, _safe_storage_component
-from covalent.api.auth import hash_password, verify_password
-from covalent.api.schemas import (
+from covalent.application.errors import (ConflictError, ForbiddenError, InvalidInputError, NotFoundError, UnauthorizedError)
+from covalent.application._utils import _new_chat_item_id, _safe_storage_component
+from covalent.application.principal import Principal as ConsolePrincipalContext
+from covalent.application.crypto import hash_password, verify_password
+from covalent.application.schemas import (
     ConsoleAccountUpdateRequest,
     ConsoleLoginRequest,
     ConsolePasswordUpdateRequest,
@@ -64,7 +65,7 @@ async def _principal_for_user(
     workspace_slug: str = "default",
 ) -> ConsolePrincipalContext:
     if user.status != "active":
-        raise HTTPException(status_code=403, detail="Current user is not active")
+        raise ForbiddenError("Current user is not active")
 
     member = await session.scalar(select(WorkspaceMemberRow).where(WorkspaceMemberRow.user_id == user.id))
     workspace: WorkspaceRow | None = None
@@ -124,7 +125,7 @@ async def _register_console_user(
     request: ConsoleRegisterRequest,
 ) -> ConsolePrincipalContext:
     if not settings.console_signup_enabled:
-        raise HTTPException(status_code=403, detail="Console sign up is disabled")
+        raise ForbiddenError("Console sign up is disabled")
     email = request.email.strip().lower()
     username = request.username.strip().lower()
     display_name = request.display_name.strip() or username
@@ -132,12 +133,12 @@ async def _register_console_user(
         async with session.begin():
             existing = await session.scalar(select(UserRow).where(UserRow.email == email))
             if existing is not None:
-                raise HTTPException(status_code=409, detail="A user with this email already exists")
+                raise ConflictError("A user with this email already exists")
             existing_username = await session.scalar(
                 select(UserRow).where(func.lower(UserRow.username) == username)
             )
             if existing_username is not None:
-                raise HTTPException(status_code=409, detail="A user with this username already exists")
+                raise ConflictError("A user with this username already exists")
             existing_user_count = await session.scalar(select(func.count(UserRow.id)))
             user = UserRow(
                 id=_new_chat_item_id("user"),
@@ -168,7 +169,7 @@ async def _authenticate_console_password(
             else:
                 user = await session.scalar(select(UserRow).where(func.lower(UserRow.username) == identifier))
             if user is None or not verify_password(request.password, user.password_hash):
-                raise HTTPException(status_code=401, detail="Invalid username/email or password")
+                raise UnauthorizedError("Invalid username/email or password")
             return await _principal_for_user(session, user)
 
 async def _update_current_account(
@@ -180,7 +181,7 @@ async def _update_current_account(
         async with session.begin():
             user = await session.get(UserRow, principal.user_id)
             if user is None:
-                raise HTTPException(status_code=404, detail="Current user was not found")
+                raise NotFoundError("Current user was not found")
 
             if request.username is not None and request.username != (user.username or ""):
                 existing_user_id = await session.scalar(
@@ -190,7 +191,7 @@ async def _update_current_account(
                     )
                 )
                 if existing_user_id is not None:
-                    raise HTTPException(status_code=409, detail="A user with this username already exists")
+                    raise ConflictError("A user with this username already exists")
                 user.username = request.username
 
             if request.email is not None and request.email != user.email:
@@ -201,13 +202,13 @@ async def _update_current_account(
                     )
                 )
                 if existing_user_id is not None:
-                    raise HTTPException(status_code=409, detail="A user with this email already exists")
+                    raise ConflictError("A user with this email already exists")
                 user.email = request.email
 
             if request.display_name is not None:
                 display_name = request.display_name.strip()
                 if not display_name:
-                    raise HTTPException(status_code=422, detail="Display name must not be empty")
+                    raise InvalidInputError("Display name must not be empty")
                 user.display_name = display_name
 
             if "avatar_url" in request.model_fields_set:
@@ -233,11 +234,11 @@ async def _update_current_password(
         async with session.begin():
             user = await session.get(UserRow, principal.user_id)
             if user is None:
-                raise HTTPException(status_code=404, detail="Current user was not found")
+                raise NotFoundError("Current user was not found")
             if not user.password_hash:
-                raise HTTPException(status_code=400, detail="This account does not use a local password")
+                raise InvalidInputError("This account does not use a local password")
             if not verify_password(request.current_password, user.password_hash):
-                raise HTTPException(status_code=400, detail="Current password is incorrect")
+                raise InvalidInputError("Current password is incorrect")
             user.password_hash = hash_password(request.new_password)
 
 async def _seed_initial_admin_user(db_manager: DatabaseManager, settings: AppSettings) -> None:
@@ -342,7 +343,7 @@ async def _list_console_users(
     principal: ConsolePrincipalContext,
 ) -> list[ConsoleUserSummaryResponse]:
     if not principal.is_admin:
-        raise HTTPException(status_code=403, detail="Only admins can list users")
+        raise ForbiddenError("Only admins can list users")
     async with db_manager.session_factory() as session:
         rows = (
             await session.execute(
@@ -382,12 +383,12 @@ async def _update_console_user(
     request: ConsoleUserUpdateRequest,
 ) -> ConsoleUserSummaryResponse:
     if not principal.is_admin:
-        raise HTTPException(status_code=403, detail="Only admins can update users")
+        raise ForbiddenError("Only admins can update users")
     async with db_manager.session_factory() as session:
         async with session.begin():
             user = await session.get(UserRow, user_id)
             if user is None:
-                raise HTTPException(status_code=404, detail=f"Unknown user: {user_id}")
+                raise NotFoundError(f"Unknown user: {user_id}")
             # Scope the update to the admin's own workspace: a user who is not a
             # member of this workspace is treated as unknown, so one tenant's
             # admin cannot mutate another tenant's users.
@@ -398,7 +399,7 @@ async def _update_console_user(
                 )
             )
             if member is None:
-                raise HTTPException(status_code=404, detail=f"Unknown user: {user_id}")
+                raise NotFoundError(f"Unknown user: {user_id}")
             user_changed = False
             if request.display_name is not None:
                 user.display_name = request.display_name.strip()

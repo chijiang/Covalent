@@ -8,13 +8,13 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 
 - Treat the backend and frontend as one product with an explicit contract boundary.
 - Backend layers:
-  - `src/agent_framework/api/`: FastAPI routes and request/response schema wiring only. Keep handlers thin.
-  - `src/agent_framework/core/`: agent orchestration, attachment handling, tool wiring, workspace tools.
-  - `src/agent_framework/infra/`: settings, database, config persistence, session persistence.
-  - `src/agent_framework/mcp/`: MCP transport/client/spec concerns.
-  - `src/agent_framework/model/`: OpenAI-compatible provider adapters and model configuration (`openai_compatible` only).
-  - `src/agent_framework/registry/` and `src/agent_framework/runtime/`: runtime assembly and ReAct execution.
-  - `src/agent_framework/skills/`: skill discovery, metadata, lifecycle, and process management.
+  - `src/covalent/api/`: FastAPI routes and request/response schema wiring only. Keep handlers thin.
+  - `src/covalent/core/`: agent orchestration, attachment handling, tool wiring, workspace tools.
+  - `src/covalent/infra/`: settings, database, config persistence, session persistence.
+  - `src/covalent/mcp/`: MCP transport/client/spec concerns.
+  - `src/covalent/model/`: OpenAI-compatible provider adapters and model configuration (`openai_compatible` only).
+  - `src/covalent/registry/` and `src/covalent/runtime/`: runtime assembly and ReAct execution.
+  - `src/covalent/skills/`: skill discovery, metadata, lifecycle, and process management.
 - Frontend layers:
   - `frontend/app/**`: route entrypoints, redirects, and shell composition. Keep them thin.
   - `frontend/components/**`: page-level workspaces and client behavior.

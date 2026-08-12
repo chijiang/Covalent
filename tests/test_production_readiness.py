@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from covalent.api._shared import to_agent_summary
 from covalent.application.services.management_service import _normalize_agent_payload_item
-from covalent.api.schemas import AgentRunRequest
+from covalent.application.schemas import AgentRunRequest
 from covalent.core.agent import AgentSpec
 from covalent.core.types import RunContext, ToolCall
 from covalent.infra.settings import AppSettings

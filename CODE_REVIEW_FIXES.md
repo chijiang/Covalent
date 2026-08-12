@@ -12,14 +12,14 @@
 
 ### S1 — 会话 cookie 硬编码 `secure=False`
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/api/app.py:2095-2104`（`_set_console_session_cookie`）
+- **位置**：`src/covalent/api/app.py:2095-2104`（`_set_console_session_cookie`）
 - **问题**：`response.set_cookie(..., secure=False)` 硬编码。生产 TLS 部署下会话 cookie 仍可经 HTTP 跳传输，配合 `samesite=lax` 构成会话劫持面。
 - **修复**：`secure` 从 settings 派生（生产默认 True，或读 `X-Forwarded-Proto`）。新增 `console_session_cookie_secure: bool` 配置项。
 - **落地**：新增 `settings.console_session_cookie_secure: bool | None`（`None`=自动：dev 模式 False，其余 True）；新增 `_console_session_cookie_secure(settings)` helper；`_set_console_session_cookie` 和 `_clear_console_session_cookie` 两处都改用 helper（**delete 时 secure 必须与 set 一致，否则浏览器不删 cookie**）；`.env.example` 补 `AGENT_FRAMEWORK_CONSOLE_SESSION_COOKIE_SECURE` 说明。
 
 ### S2 — 代码层弱默认密钥/密码
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/infra/settings.py:39,44,51` + `.env.example:82,86,92`
+- **位置**：`src/covalent/infra/settings.py:39,44,51` + `.env.example:82,86,92`
 - **问题**：
   - `api_token_hash_pepper = "dev-token-pepper-change-me"`
   - `console_session_secret = "dev-session-secret-change-me"`
@@ -30,7 +30,7 @@
 
 ### S3 — `trusted_header` 模式 header 伪造提权（前置条件性）
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/api/app.py:2208-2232`（`_resolve_console_principal`）
+- **位置**：`src/covalent/api/app.py:2208-2232`（`_resolve_console_principal`）
 - **问题**：该模式从裸 header（`x-covalent-user-id`/`x-covalent-user-role` 等）取身份并自动建用户/工作区，无签名校验。若未部署在会剥离这些 header 的可信 IdP 网关后，任何调用方可伪造 admin 身份。
 - **前置条件**：仅当 `console_auth_mode=trusted_header` 且直连可达时触发。
 - **修复**：加共享密钥签名头（HMAC over header 值），或启动时强制该模式必须配可信代理白名单；至少在日志里大声告警该模式已启用。
@@ -43,21 +43,21 @@
 
 ### S4 — `max_tokens` 被设成完整上下文窗口
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/runtime/react.py:1231`（`max_tokens=get_context_window(...)`）+ `src/agent_framework/model/openai_compatible.py:120-122`
+- **位置**：`src/covalent/runtime/react.py:1231`（`max_tokens=get_context_window(...)`）+ `src/covalent/model/openai_compatible.py:120-122`
 - **问题**：把 128K/1M 的 input 上下文窗口当 completion 的 max_tokens 发给 provider。多数模型输出上限是 4K–64K，会触发 provider 400 或浪费预算。
 - **修复**：`max_tokens` 用合理的 completion 上限（新增 `max_output_tokens`，默认 4096–8192），或省略让 provider 默认。不要混淆 input 窗口与 output 上限。
 - **落地**：删掉 `react.py:1231` 的 `max_tokens=get_context_window(...)`，`GenerationRequest.max_tokens` 用默认 `None`。`openai_compatible.py:120` 在 `max_tokens is None` 时不向 provider 发该字段，由 provider 用自己的输出上限——这是最安全的语义，不改变任何 agent 的输出行为预期。`get_context_window` import 仍被 `:948`（token budget 估算）使用，保留。
 
 ### S5 — `publish_downloadable_file` 允许读取系统 `/tmp` 任意文件
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/core/workspace_tools.py:934-969`（`_resolve_publishable_source_path`）
+- **位置**：`src/covalent/core/workspace_tools.py:934-969`（`_resolve_publishable_source_path`）
 - **问题**：除工作区外，允许读取 `tempfile.gettempdir()` 下任意文件并作为下载返回。其他用户/进程写入 `/tmp` 的临时文件（含临时凭证）可被 agent 发布出去。
 - **修复**：临时目录访问限定到 per-session 子目录，不要用全局 `tempfile.gettempdir()`。
 - **落地**：收紧为**仅允许 workspace 内**文件。删除全局 `/tmp` 放行分支；绝对路径仍走"翻译为 workspace 相对路径"（`/tmp/file` → `workspace/tmp/file`，与 `write_workspace_file("/tmp/...")` 的落点一致），所以 agent 用绝对路径写的文件仍可发布——只是不再能发布 workspace 外 OS 级 `/tmp` 文件。用脚本验证：workspace 外 `/tmp` 探针文件被拒、workspace 相对路径正常。`test_publish_downloadable_file_*` 现有测试 11 passed。`tempfile` import 因不再使用已删除。
 
 ### S6 — 工作区绝对路径静默改写 + symlink 检查缺失
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/core/workspace_tools.py:905-931`（`_resolve_workspace_path`）
+- **位置**：`src/covalent/core/workspace_tools.py:905-931`（`_resolve_workspace_path`）
 - **问题**：绝对路径被改写成相对（`/etc/passwd` → `etc/passwd`）落进 workspace，掩盖 agent 路径错误；`resolve()` 后未逐组件检查 symlink，写入路径存在 TOCTOU；`shutil.copytree` 未传 `symlinks=False`。
 - **修复**：普通工作区工具直接拒绝绝对路径并报错；`resolve()` 后逐组件检查 `is_symlink()`；`copytree` 传 `symlinks=False`；解压时拒绝指向 workspace 外的符号链接条目。
 - **落地**（按你确认的"保留改写 + 加 symlink 检查"）：
@@ -82,28 +82,28 @@
 
 ### H2 — `assistant` 事件累加拼接 bug
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/runtime/react.py:1273-1274`（后端）+ `frontend/components/chat-workspace.tsx:2271-2279`（前端）
+- **位置**：`src/covalent/runtime/react.py:1273-1274`（后端）+ `frontend/components/chat-workspace.tsx:2271-2279`（前端）
 - **问题**：后端每个 iteration yield 的 `payload.text` 是**该轮全量** output_text，前端却做 `content + text` 累加。多轮 ReAct（边输出文本边调工具）会重复累积。
 - **修复**：明确语义——若后端发全量，前端用 `text` 覆盖（按 iteration 区分累加新轮）；若要增量，后端改发 chunk。
 - **落地**：保留后端全量语义（payload 已带 `iteration` 字段），改前端：`runThreadRequest` 内引入 `currentAssistantIteration` 跟踪；收到 `assistant` 事件时，若 `iteration !== currentAssistantIteration` 则**覆盖**为该轮 `text`，否则累加（为未来后端改 chunk 流式留余地）。`final` 事件仍覆盖为最终值，行为不变。单轮场景（绝大多数聊天）行为完全不变。
 
 ### H3 — session 创建 TOCTOU
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/api/app.py:3450-3482`（`_resolve_public_invoke_session_id`）
+- **位置**：`src/covalent/api/app.py:3450-3482`（`_resolve_public_invoke_session_id`）
 - **问题**：SELECT 后 INSERT，并发同名 `session_id` 撞主键 `IntegrityError` 未捕获→500。
 - **修复**：`INSERT ... ON CONFLICT DO NOTHING` 后重读并校验 owner，或 catch `IntegrityError`。
 - **落地**：catch `IntegrityError`（新增 `from sqlalchemy.exc import IntegrityError`），冲突时在新 session 重读并走与现有分支一致的 owner 校验（不属于本用户→404）；若重读时行已消失（胜方回滚）→409 让调用方重试。保留了原有全部 owner/workspace 校验语义。
 
 ### H4 — `export_skill` 临时文件泄漏
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/api/app.py:1664-1681`
+- **位置**：`src/covalent/api/app.py:1664-1681`
 - **问题**：`NamedTemporaryFile(delete=False)` 生成的 zip 返回后从不 unlink，反复导出堆积。
 - **修复**：`FileResponse(..., background=BackgroundTask(os.unlink, path))`。
 - **落地**：`from starlette.background import BackgroundTask`；`FileResponse` 加 `background=BackgroundTask(os.unlink, tmp.name)`，响应流结束后清理。`try/except` 构建失败时仍 `os.unlink`（既有逻辑保留）。
 
 ### H5 — async 路径跑同步 FS
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/api/app.py:990-994` 等多处（`shutil.rmtree`/`copytree`/`rglob`）
+- **位置**：`src/covalent/api/app.py:990-994` 等多处（`shutil.rmtree`/`copytree`/`rglob`）
 - **问题**：阻塞事件循环，网络存储或大会话时严重卡顿。
 - **修复**：用 `anyio.to_thread.run_sync`（仓库已有先例 :330）。
 - **落地**：
@@ -116,7 +116,7 @@
 
 ### H6 — 单 token 无并发上限
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/api/app.py:706-910`（`public_invoke_agent`）
+- **位置**：`src/covalent/api/app.py:706-910`（`public_invoke_agent`）
 - **问题**：只有基于历史调用的限流（`_enforce_api_token_policy_limits`），无 in-flight 计数；单 token 可开无数并发流。
 - **修复**：按 token_id 加 `asyncio.Semaphore`。
 - **落地**：
@@ -134,14 +134,14 @@
 
 ### H8 — skill 进程 EOF 后 pending futures 不 fail
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/skills/process.py:85-98`（`_read_loop`）
+- **位置**：`src/covalent/skills/process.py:85-98`（`_read_loop`）
 - **问题**：`readline()` 返回 `b""` 仅 break，未 reject `_pending`，调用方等到超时；handle 也未立即踢出池（靠 30s 健康检查）。
 - **修复**：EOF 时 fail 所有 `_pending` 并立即从池移除。
 - **落地**：`_read_loop` EOF 退出前，`_ready.clear()`（让 `is_available` 返回 False，池不再分发该 handle），再把所有 `_pending` future set 一个 `SkillProcessError`（code -32003，说明 stdout 提前关闭），调用方立刻收到错误而非等到自己的超时。健康检查循环仍会随后回收该 handle。
 
 ### H9 — `PermissionGuard` 只拦 `builtins.open`
 - [x] **状态**：已修复 (2026-08-11，按你确认的方向 a：文档化 best-effort + 告知用户)
-- **位置**：`src/agent_framework/skills/runners/python_runner.py:14-37`
+- **位置**：`src/covalent/skills/runners/python_runner.py:14-37`
 - **问题**：`os.open`/`pathlib`/`io.FileIO`/`subprocess`/`shutil`/`sqlite3`/`ctypes`/第三方库全绕过。filesystem backend 上的技能隔离形同虚设。
 - **修复**：要么文档明确"仅 best-effort，靠后端隔离"，要么 filesystem backend 不暴露带 `fs.write` 限制的技能，要么不在 FS backend 跑第三方 skill；要么真正用 OS 级隔离。
 - **落地**（方向 a：把风险明确告知用户，多层触点）：
@@ -153,7 +153,7 @@
 
 ### H10 — git clone/pull 无超时、stderr 管道不读
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/skills/loader.py:190-230`
+- **位置**：`src/covalent/skills/loader.py:190-230`
 - **问题**：`await proc.wait()` 无 timeout；大 clone 填满 stderr pipe→永久死锁；URL 未校验 scheme。
 - **修复**：`asyncio.wait_for` 包裹，用 `proc.communicate()`，校验 `https://`。
 - **落地**：
@@ -164,7 +164,7 @@
 
 ### H11 — 管理接口跨 workspace
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/api/app.py:616-704`
+- **位置**：`src/covalent/api/app.py:616-704`
 - **问题**：`_list_console_users` 无 workspace 过滤；`_list_audit_logs` 不过滤 workspace——admin 可见/改其他 workspace 用户，审计（含 IP、UA）跨租户泄漏。
 - **修复**：SELECT/UPDATE 加 `workspace_id == principal.workspace_id`（除非超级管理员）。
 - **落地**：确认无"平台超级管理员"概念（`is_admin` 仅 `role=="admin"`，admin 是 per-user），故 admin 也限定到自己 workspace：
@@ -184,7 +184,7 @@
 
 ### M2 — host env 进沙箱
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/skills/permissions.py`（`_ALLOW_ALL_SYSTEM_ENV` + `filter_env`）—— 所有 skill env 构造的统一入口（`process.py`/`meta_tools.py` 都走 `PermissionChecker.filter_env`）
+- **位置**：`src/covalent/skills/permissions.py`（`_ALLOW_ALL_SYSTEM_ENV` + `filter_env`）—— 所有 skill env 构造的统一入口（`process.py`/`meta_tools.py` 都走 `PermissionChecker.filter_env`）
 - **问题**：从 `dict(os.environ)` 起步做 denylist；`LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH`/`PYTHONPATH`/`PYTHONHOME` 在白名单（库劫持/Python 注入面）；不剥离任何 `*_KEY/*_TOKEN/*_SECRET`。
 - **修复**：最小 allowlist（PATH/HOME/LANG/TMPDIR/`SKILL_*` markers/manifest 声明的 env_vars），显式剥离 `*_KEY/*_TOKEN/*_SECRET/AUTHORIZATION`。
 - **落地**：
@@ -196,7 +196,7 @@
 
 ### M3 — 附件无字节上限
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/core/attachment_processing.py:20-127`
+- **位置**：`src/covalent/core/attachment_processing.py:20-127`
 - **问题**：PDF/文本无字节上限（仅 9 页限制），单页巨图 base64 进 model content 可致内存爆炸。
 - **修复**：上传边界加字节上限 + 渲染像素上限；`_unzip_workspace_archive` 加解压总字节上限。
 - **落地**：上传边界本就有 `max_upload_bytes`（默认 100MB）总字节校验，所以补的是**进 model content 的 inline 上限**：
@@ -206,26 +206,26 @@
 
 ### M4 — 每轮迭代可能触发 LLM summarize 且静默吞错
 - [ ] **状态**：未修复
-- **位置**：`src/agent_framework/runtime/react.py:954-1016`
+- **位置**：`src/covalent/runtime/react.py:954-1016`
 - **问题**：每轮都可能额外一次 model 调用；`except Exception` 静默回退本地摘要，掩盖 provider 错误。
 - **修复**：缓存/限频并 log 失败。
 
 ### M5 — `_kill_exec` 未走 to_thread
 - [x] **状态**：已处理 (2026-08-11，降级为可观测 + 文档权衡)
-- **位置**：`src/agent_framework/runtime/docker_backend.py:615-633`
+- **位置**：`src/covalent/runtime/docker_backend.py:615-633`
 - **问题**：`container.exec_run` 阻塞调用未包 `asyncio.to_thread`，daemon 慢时阻塞事件循环。
 - **修复**：改为 async + `await asyncio.to_thread(...)`。
 - **落地**（不强改 async，避免协议扩散）：`_kill_exec` 由 `DockerExecProcess.terminate/kill`（sync `Process` 协议）调用，`SkillProcessManager._terminate`（async）调 sync 方法。改 async 需要破坏 `Process` 协议签名、扩散到所有调用点，性价比低。改为：两处 `except: pass` → `logger.debug(..., exc_info=True)`（kill 失败可观测）；docstring 写清"只在异常 terminate 路径触发，daemon 慢时短暂阻塞可接受"的权衡。这是有意识的折中。
 
 ### M6 — delegate context session_id=None
 - [ ] **状态**：未修复
-- **位置**：`src/agent_framework/runtime/react.py:636-652`（`_build_delegate_context`）
+- **位置**：`src/covalent/runtime/react.py:636-652`（`_build_delegate_context`）
 - **问题**：子 agent 的 trace/最终答复不入会话存储，历史回放缺失。
 - **修复**：继承父 session_id（或派生委托链范围的 id）。
 
 ### M7 — 多处裸 `except Exception` 静默吞错
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/api/app.py`（5 处裸 except）
+- **位置**：`src/covalent/api/app.py`（5 处裸 except）
 - **问题**：无日志；provider 解析的异常变"空列表"→静默回退默认 provider，可能路由到错误 model/key。
 - **修复**：至少 `logger.exception(...)`；provider 解析的异常应 re-raise。
 - **落地**（5 处加 log，保留原回退行为不破坏功能）：
@@ -250,14 +250,14 @@
 
 ### M10 — delegate 结果回退序列化混入 `[image]` 字面量
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/runtime/react.py:308-318`（`_response_output_text`）
+- **位置**：`src/covalent/runtime/react.py:308-318`（`_response_output_text`）
 - **问题**：image 部分变 `[image]` 喂给父 agent，可能误导。
 - **修复**：只转发 text parts，丢弃 image marker。
 - **落地**：新增 `_serialize_text_content(content)`——text-only 版本，丢弃 image_url 和结构化 part（trace 用的 `_serialize_content` 保留 `[image]` 不变，因为那是给可观测看的）。`_response_output_text` 回退路径改用 `_serialize_text_content`，确保父 agent 拿到的是纯文本不含 `[image]` 字面量。纯字符串 content 行为不变。
 
 ### M11 — MIME 类型 typo
 - [x] **状态**：已修复 (2026-08-11)
-- **位置**：`src/agent_framework/api/app.py:1038`
+- **位置**：`src/covalent/api/app.py:1038`
 - **问题**：`"application/octet-xx"`（应为 `application/octet-stream`）。
 - **修复**：改回正确值。
 - **落地**：改为 `"application/octet-stream"`。注意：该行只在 `content_type` 缺失时作 fallback，且 `download_published_file`(:1088) 已独立用 `mimetypes.guess_type(...) or "application/octet-stream"`，本次修复让上传路径与之一致。
@@ -267,9 +267,9 @@
 ## 🟢 LOW（结构 / 废弃 / 冗余）
 
 ### 死代码
-- [x] **D1**：`src/agent_framework/model/context_window.py` **整个文件死且已分叉**（默认 1M vs 活版 128K，`qwen3` 128K vs 64K，缺 `gpt-5.2`），零引用——**直接删**。这是潜在隐患源（有人误 import 会拿到错误常量）。
+- [x] **D1**：`src/covalent/model/context_window.py` **整个文件死且已分叉**（默认 1M vs 活版 128K，`qwen3` 128K vs 64K，缺 `gpt-5.2`），零引用——**直接删**。这是潜在隐患源（有人误 import 会拿到错误常量）。
   - **落地 (2026-08-11)**：已删除文件 + pyc。删除前确认全仓零源码引用（仅 `.pyc` 缓存）；`model/__init__.py` 为 `__all__ = []`，无 re-export；活版 `runtime/context_window.py` 仍被 `openai_compatible.py:15` 和 `react.py:17` 正常引用。
-- [x] **D2**：`src/agent_framework/model/utils.py:13` `completion_token_kwargs()` 零引用——删。
+- [x] **D2**：`src/covalent/model/utils.py:13` `completion_token_kwargs()` 零引用——删。
   - **落地 (2026-08-11)**：已删除函数。同文件 `derive_openai_base_url`/`reasoning_level_kwargs` 保留（被 `openai_compatible.py` 引用）。
 - [ ] **D3**：`frontend/lib/chat-thread-model.ts:105` `historyLabel` export 多余——去掉 `export`。
 

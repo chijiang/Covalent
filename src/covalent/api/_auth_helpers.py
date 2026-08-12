@@ -19,6 +19,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from covalent.application.audit import RequestMetadata
+
 from covalent.api._shared import (
     ConsolePrincipalContext,
     _new_chat_item_id,
@@ -33,6 +35,16 @@ from covalent.infra.db import (
 from covalent.infra.settings import AppSettings
 
 from covalent.application.services.user_service import _derive_unique_username
+
+
+def _request_metadata(request: Request) -> RequestMetadata:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    client_host = request.client.host if request.client else None
+    return RequestMetadata(
+        request_id=request.headers.get("x-request-id") or request.headers.get("x-correlation-id"),
+        ip_address=(forwarded_for.split(",", 1)[0].strip() if forwarded_for else client_host),
+        user_agent=request.headers.get("user-agent"),
+    )
 
 logger = logging.getLogger(__name__)
 

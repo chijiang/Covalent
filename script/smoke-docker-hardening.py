@@ -18,8 +18,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from agent_framework.infra.settings import AppSettings
-from agent_framework.runtime.docker_backend import DockerBackend
+from covalent.infra.settings import AppSettings
+from covalent.runtime.docker_backend import DockerBackend
 
 
 async def main() -> int:

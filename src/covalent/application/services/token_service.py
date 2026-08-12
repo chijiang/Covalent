@@ -1,45 +1,134 @@
 """API token use cases.
 
-Extracted from ``api._auth_helpers`` into the application layer. These are the
-business rules for creating / updating / revoking API tokens, independent of
-the HTTP layer. Dependencies (``db_manager``, ``settings``) are passed in.
+Business rules for creating / updating / revoking API tokens and reading their
+usage. Framework-independent: no FastAPI, no API DTOs — inputs are commands,
+outputs are results, errors are ``ApplicationError`` subclasses. The API layer
+maps commands from HTTP requests and results back to response DTOs.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import HTTPException, Request
 from sqlalchemy import select
 
-from covalent.api._shared import (
-    ConsolePrincipalContext,
-    _api_token_summary_response,
-    _coerce_positive_int,
-    _agent_run_log_response,
-    _dedupe_strings,
-    _new_chat_item_id,
-    _record_audit_log,
-    _usage_int,
-)
-from covalent.api.auth import generate_api_token, hash_api_token
-from covalent.api.schemas import (
-    ApiTokenCreateRequest,
-    ApiTokenCreateResponse,
-    AgentRunLogResponse,
-    ApiTokenSummaryResponse,
-    ApiTokenUpdateRequest,
-    ApiTokenUsageByTokenResponse,
-    ApiTokenUsageDailyResponse,
-    ApiTokenUsageResponse,
-)
+from covalent.application._utils import _coerce_positive_int, _dedupe_strings, _new_chat_item_id
+from covalent.application.audit import RequestMetadata, record_audit
+from covalent.application.crypto import generate_api_token, hash_api_token
+from covalent.application.errors import ApplicationError, ConflictError, InvalidInputError, NotFoundError
+from covalent.application.principal import Principal
 from covalent.infra.db import AgentRunLogRow, ApiTokenRow, DatabaseManager, UserRow, WorkspaceRow
 from covalent.infra.settings import AppSettings
+
+
+@dataclass(frozen=True)
+class CreateApiTokenCommand:
+    name: str
+    scopes: list[str] = field(default_factory=list)
+    policy: dict[str, Any] = field(default_factory=dict)
+    expires_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class UpdateApiTokenCommand:
+    name: str | None = None
+    scopes: list[str] | None = None
+    policy: dict[str, Any] | None = None
+    expires_at: datetime | None = None
+    fields_to_update: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class TokenSummary:
+    id: str
+    name: str
+    user_id: str
+    user_email: str
+    workspace_id: str
+    workspace_name: str
+    token_prefix: str
+    scopes: list[str]
+    policy: dict[str, Any]
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class TokenCreated:
+    summary: TokenSummary
+    token: str
+
+
+@dataclass(frozen=True)
+class TokenRunLogEntry:
+    id: str
+    user_id: str | None
+    token_id: str | None
+    workspace_id: str | None
+    agent_name: str
+    memory_mode: str
+    session_id: str | None
+    status: str
+    latency_ms: int | None
+    provider: str | None
+    model: str | None
+    usage: dict[str, Any]
+    error: dict[str, Any]
+    metadata: dict[str, Any]
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class TokenUsageDaily:
+    date: str
+    requests: int
+    successful_requests: int
+    failed_requests: int
+    total_tokens: int
+    input_tokens: int
+    output_tokens: int
+    average_latency_ms: int | None
+
+
+@dataclass(frozen=True)
+class TokenUsageByToken:
+    token_id: str
+    token_name: str
+    token_prefix: str
+    requests: int
+    successful_requests: int
+    failed_requests: int
+    total_tokens: int
+    average_latency_ms: int | None
+    last_used_at: datetime | None
+
+
+@dataclass(frozen=True)
+class TokenUsageOverview:
+    days: int
+    starts_at: datetime
+    ends_at: datetime
+    active_tokens: int
+    total_requests: int
+    successful_requests: int
+    failed_requests: int
+    total_tokens: int
+    input_tokens: int
+    output_tokens: int
+    average_latency_ms: int | None
+    daily: list[TokenUsageDaily]
+    by_token: list[TokenUsageByToken]
+
 
 def _normalize_token_scopes(scopes: list[str]) -> list[str]:
     normalized = _dedupe_strings([scope.strip() for scope in scopes if isinstance(scope, str)])
     return normalized or ["agent:invoke"]
+
 
 def _normalize_token_policy(policy: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(policy or {})
@@ -60,13 +149,33 @@ def _normalize_token_policy(policy: dict[str, Any]) -> dict[str, Any]:
             normalized[key] = value
     return normalized
 
-async def _create_api_token(
+
+def _token_summary(token: ApiTokenRow, user: UserRow, workspace: WorkspaceRow) -> TokenSummary:
+    return TokenSummary(
+        id=token.id,
+        name=token.name,
+        user_id=token.user_id,
+        user_email=user.email,
+        workspace_id=token.workspace_id,
+        workspace_name=workspace.name,
+        token_prefix=token.token_prefix,
+        scopes=list(token.scopes or []),
+        policy=dict(token.policy_json or {}),
+        expires_at=token.expires_at,
+        last_used_at=token.last_used_at,
+        revoked_at=token.revoked_at,
+        created_at=token.created_at,
+        updated_at=token.updated_at,
+    )
+
+
+async def create_api_token(
     db_manager: DatabaseManager,
     settings: AppSettings,
-    request: ApiTokenCreateRequest,
-    principal: ConsolePrincipalContext,
-    http_request: Request | None = None,
-) -> ApiTokenCreateResponse:
+    cmd: CreateApiTokenCommand,
+    principal: Principal,
+    request_metadata: RequestMetadata | None = None,
+) -> TokenCreated:
     token, token_prefix = generate_api_token()
     token_hash = hash_api_token(token, settings.api_token_hash_pepper)
     async with db_manager.session_factory() as session:
@@ -74,81 +183,82 @@ async def _create_api_token(
             user = await session.get(UserRow, principal.user_id)
             workspace = await session.get(WorkspaceRow, principal.workspace_id)
             if user is None or workspace is None:
-                raise HTTPException(status_code=404, detail="Current token owner or workspace was not found")
+                raise NotFoundError("Current token owner or workspace was not found")
             row = ApiTokenRow(
                 id=_new_chat_item_id("token"),
                 user_id=user.id,
                 workspace_id=workspace.id,
-                name=request.name.strip(),
+                name=cmd.name.strip(),
                 token_prefix=token_prefix,
                 token_hash=token_hash,
-                scopes=_normalize_token_scopes(request.scopes),
-                policy_json=_normalize_token_policy(request.policy),
-                expires_at=request.expires_at,
+                scopes=_normalize_token_scopes(cmd.scopes),
+                policy_json=_normalize_token_policy(cmd.policy),
+                expires_at=cmd.expires_at,
             )
             session.add(row)
             await session.flush()
             user = await session.get(UserRow, row.user_id)
             workspace = await session.get(WorkspaceRow, row.workspace_id)
             if user is None or workspace is None:
-                raise HTTPException(status_code=500, detail="API token owner was not saved")
-            summary = _api_token_summary_response(row, user, workspace)
-    await _record_audit_log(
+                raise ApplicationError("API token owner was not saved")
+            summary = _token_summary(row, user, workspace)
+    await record_audit(
         db_manager,
         action="api_token.created",
         target_type="api_token",
         target_id=summary.id,
         principal=principal,
-        request=http_request,
+        request_metadata=request_metadata,
         metadata={"token_prefix": summary.token_prefix, "token_user_id": summary.user_id, "scopes": summary.scopes},
     )
-    return ApiTokenCreateResponse(**summary.model_dump(), token=token)
+    return TokenCreated(summary=summary, token=token)
 
-async def _update_api_token(
+
+async def update_api_token(
     db_manager: DatabaseManager,
     token_id: str,
-    request: ApiTokenUpdateRequest,
-    principal: ConsolePrincipalContext,
-    http_request: Request | None = None,
-) -> ApiTokenSummaryResponse:
-    changed_fields = set(request.model_fields_set)
+    cmd: UpdateApiTokenCommand,
+    principal: Principal,
+    request_metadata: RequestMetadata | None = None,
+) -> TokenSummary:
+    changed_fields = cmd.fields_to_update
     if not changed_fields:
-        raise HTTPException(status_code=400, detail="At least one API token field must be provided")
+        raise InvalidInputError("At least one API token field must be provided")
 
     async with db_manager.session_factory() as session:
         async with session.begin():
             saved = await session.get(ApiTokenRow, token_id)
             if saved is None or saved.user_id != principal.user_id or saved.workspace_id != principal.workspace_id:
-                raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+                raise NotFoundError(f"Unknown API token: {token_id}")
             if saved.revoked_at is not None:
-                raise HTTPException(status_code=409, detail="Revoked API tokens cannot be updated")
+                raise ConflictError("Revoked API tokens cannot be updated")
 
             if "name" in changed_fields:
-                normalized_name = (request.name or "").strip()
+                normalized_name = (cmd.name or "").strip()
                 if not normalized_name:
-                    raise HTTPException(status_code=422, detail="API token name must not be empty")
+                    raise InvalidInputError("API token name must not be empty")
                 saved.name = normalized_name
             if "scopes" in changed_fields:
-                saved.scopes = _normalize_token_scopes(request.scopes or [])
+                saved.scopes = _normalize_token_scopes(cmd.scopes or [])
             if "policy" in changed_fields:
-                saved.policy_json = _normalize_token_policy(request.policy or {})
+                saved.policy_json = _normalize_token_policy(cmd.policy or {})
             if "expires_at" in changed_fields:
-                saved.expires_at = request.expires_at
+                saved.expires_at = cmd.expires_at
             saved.updated_at = datetime.now(UTC)
 
             user = await session.get(UserRow, saved.user_id)
             workspace = await session.get(WorkspaceRow, saved.workspace_id)
             if user is None or workspace is None:
-                raise HTTPException(status_code=500, detail="API token owner is missing")
-            summary = _api_token_summary_response(saved, user, workspace)
+                raise ApplicationError("API token owner is missing")
+            summary = _token_summary(saved, user, workspace)
 
-    await _record_audit_log(
+    await record_audit(
         db_manager,
         action="api_token.updated",
         target_type="api_token",
         target_id=summary.id,
         principal=principal,
-        request=http_request,
+        request_metadata=request_metadata,
         metadata={
             "token_prefix": summary.token_prefix,
             "token_user_id": summary.user_id,
@@ -157,19 +267,20 @@ async def _update_api_token(
     )
     return summary
 
-async def _revoke_api_token(
+
+async def revoke_api_token(
     db_manager: DatabaseManager,
     token_id: str,
-    principal: ConsolePrincipalContext,
-    http_request: Request | None = None,
-) -> ApiTokenSummaryResponse:
+    principal: Principal,
+    request_metadata: RequestMetadata | None = None,
+) -> TokenSummary:
     async with db_manager.session_factory() as session:
         async with session.begin():
             saved = await session.get(ApiTokenRow, token_id)
             if saved is None:
-                raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+                raise NotFoundError(f"Unknown API token: {token_id}")
             if saved.user_id != principal.user_id or saved.workspace_id != principal.workspace_id:
-                raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+                raise NotFoundError(f"Unknown API token: {token_id}")
             if saved.revoked_at is None:
                 revoked_at = datetime.now(UTC)
                 saved.revoked_at = revoked_at
@@ -177,24 +288,24 @@ async def _revoke_api_token(
             user = await session.get(UserRow, saved.user_id)
             workspace = await session.get(WorkspaceRow, saved.workspace_id)
             if user is None or workspace is None:
-                raise HTTPException(status_code=500, detail="API token owner is missing")
-            summary = _api_token_summary_response(saved, user, workspace)
-    await _record_audit_log(
+                raise ApplicationError("API token owner is missing")
+            summary = _token_summary(saved, user, workspace)
+    await record_audit(
         db_manager,
         action="api_token.revoked",
         target_type="api_token",
         target_id=summary.id,
         principal=principal,
-        request=http_request,
+        request_metadata=request_metadata,
         metadata={"token_prefix": summary.token_prefix, "token_user_id": summary.user_id},
     )
     return summary
 
 
-async def _list_api_token_summaries(
+async def list_api_token_summaries(
     db_manager: DatabaseManager,
-    principal: ConsolePrincipalContext,
-) -> list[ApiTokenSummaryResponse]:
+    principal: Principal,
+) -> list[TokenSummary]:
     async with db_manager.session_factory() as session:
         stmt = (
             select(ApiTokenRow, UserRow, WorkspaceRow)
@@ -206,25 +317,44 @@ async def _list_api_token_summaries(
             ApiTokenRow.user_id == principal.user_id,
             ApiTokenRow.workspace_id == principal.workspace_id,
         )
-        rows = (
-            await session.execute(stmt)
-        ).all()
-        return [_api_token_summary_response(token, user, workspace) for token, user, workspace in rows]
+        rows = (await session.execute(stmt)).all()
+        return [_token_summary(token, user, workspace) for token, user, workspace in rows]
 
-async def _list_api_token_runs(
+
+def _token_run_log_entry(row: AgentRunLogRow) -> TokenRunLogEntry:
+    return TokenRunLogEntry(
+        id=row.id,
+        user_id=row.user_id,
+        token_id=row.token_id,
+        workspace_id=row.workspace_id,
+        agent_name=row.agent_name,
+        memory_mode=row.memory_mode,
+        session_id=row.session_id,
+        status=row.status,
+        latency_ms=row.latency_ms,
+        provider=row.provider,
+        model=row.model,
+        usage=dict(row.usage_json or {}),
+        error=dict(row.error_json or {}),
+        metadata=dict(row.metadata_json or {}),
+        created_at=row.created_at,
+    )
+
+
+async def list_api_token_runs(
     db_manager: DatabaseManager,
     token_id: str,
-    principal: ConsolePrincipalContext,
+    principal: Principal,
     *,
     limit: int = 50,
-) -> list[AgentRunLogResponse]:
+) -> list[TokenRunLogEntry]:
     bounded_limit = min(max(limit, 1), 200)
     async with db_manager.session_factory() as session:
         token = await session.get(ApiTokenRow, token_id)
         if token is None:
-            raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+            raise NotFoundError(f"Unknown API token: {token_id}")
         if token.user_id != principal.user_id or token.workspace_id != principal.workspace_id:
-            raise HTTPException(status_code=404, detail=f"Unknown API token: {token_id}")
+            raise NotFoundError(f"Unknown API token: {token_id}")
         rows = (
             await session.execute(
                 select(AgentRunLogRow)
@@ -233,15 +363,31 @@ async def _list_api_token_runs(
                 .limit(bounded_limit)
             )
         ).scalars()
-        return [_agent_run_log_response(row) for row in rows]
+        return [_token_run_log_entry(row) for row in rows]
 
-def _build_api_token_usage_response(
+
+def _usage_int(usage: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return max(int(value), 0)
+        if isinstance(value, str):
+            try:
+                return max(int(value.strip()), 0)
+            except ValueError:
+                continue
+    return 0
+
+
+def build_api_token_usage(
     tokens: list[ApiTokenRow],
     runs: list[AgentRunLogRow],
     *,
     days: int,
     now: datetime,
-) -> ApiTokenUsageResponse:
+) -> TokenUsageOverview:
     starts_at = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
     daily_metrics: dict[str, dict[str, Any]] = {}
     for offset in range(days):
@@ -330,7 +476,7 @@ def _build_api_token_usage_response(
     )
 
     daily = [
-        ApiTokenUsageDailyResponse(
+        TokenUsageDaily(
             date=day,
             requests=metrics["requests"],
             successful_requests=metrics["successful_requests"],
@@ -346,7 +492,7 @@ def _build_api_token_usage_response(
     ]
 
     by_token = [
-        ApiTokenUsageByTokenResponse(
+        TokenUsageByToken(
             token_id=token_id,
             token_name=metrics["token"].name,
             token_prefix=metrics["token"].token_prefix,
@@ -365,7 +511,7 @@ def _build_api_token_usage_response(
         )
     ]
 
-    return ApiTokenUsageResponse(
+    return TokenUsageOverview(
         days=days,
         starts_at=starts_at,
         ends_at=now,
@@ -381,12 +527,13 @@ def _build_api_token_usage_response(
         by_token=by_token,
     )
 
-async def _get_api_token_usage(
+
+async def get_api_token_usage(
     db_manager: DatabaseManager,
-    principal: ConsolePrincipalContext,
+    principal: Principal,
     *,
     days: int = 30,
-) -> ApiTokenUsageResponse:
+) -> TokenUsageOverview:
     bounded_days = min(max(days, 1), 365)
     now = datetime.now(UTC)
     starts_at = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=bounded_days - 1)
@@ -419,4 +566,4 @@ async def _get_api_token_usage(
                     )
                 ).scalars()
             )
-    return _build_api_token_usage_response(tokens, runs, days=bounded_days, now=now)
+    return build_api_token_usage(tokens, runs, days=bounded_days, now=now)

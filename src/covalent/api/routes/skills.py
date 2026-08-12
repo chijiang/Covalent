@@ -23,11 +23,11 @@ import zipfile
 from covalent.api._auth_helpers import _resolve_console_principal
 from covalent.api._shared import _rmtree_async
 from covalent.api._shared import _safe_extract_zip
-from covalent.api.schemas import SkillInstallRequest
-from covalent.api.schemas import SkillInstallResponse
-from covalent.api.schemas import SkillPreviewFileResponse
-from covalent.api.schemas import SkillPreviewResponse
-from covalent.api.schemas import SkillSummaryResponse
+from covalent.application.schemas import SkillInstallRequest
+from covalent.application.schemas import SkillInstallResponse
+from covalent.application.schemas import SkillPreviewFileResponse
+from covalent.application.schemas import SkillPreviewResponse
+from covalent.application.schemas import SkillSummaryResponse
 from covalent.application.services.runtime_apply import _apply_runtime_config
 from covalent.application.services.skill_service import _build_skill_export_zip
 from covalent.application.services.skill_service import _can_access_manifest_skill
@@ -193,7 +193,7 @@ async def install_skill(request: Request, install_request: SkillInstallRequest) 
         existing_sources.append(normalized_payload)
         existing_sources = await config_store.save_document("skill_sources", existing_sources, principal=principal.config)
     global_sources = await config_store.get_document("skill_sources")
-    await _apply_runtime_config(request.app, "skill_sources", global_sources)
+    await _apply_runtime_config(request.app.state.registry, request.app.state.config_store, request.app.state.settings, request.app.state.skill_loader, request.app.state.execution_backend, "skill_sources", global_sources)
 
     installed_spec = _find_matching_git_skill(registry, normalized_payload)
     if installed_spec is None:
@@ -205,7 +205,7 @@ async def install_skill(request: Request, install_request: SkillInstallRequest) 
             for item in existing_sources
         ]
         await config_store.save_document("skill_sources", patched_sources, principal=principal.config)
-        await _apply_runtime_config(request.app, "skill_sources", await config_store.get_document("skill_sources"))
+        await _apply_runtime_config(request.app.state.registry, request.app.state.config_store, request.app.state.settings, request.app.state.skill_loader, request.app.state.execution_backend, "skill_sources", await config_store.get_document("skill_sources"))
 
     return SkillInstallResponse(
         name=installed_spec.name,
@@ -266,7 +266,7 @@ async def uninstall_skill(request: Request, skill_name: str) -> dict[str, str]:
     principal = await _resolve_console_principal(request, db_manager)
     if skill_name not in registry.manifest_skills and skill_name not in registry.skills:
         raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
-    await _ensure_skill_access(request.app, skill_name, principal)
+    await _ensure_skill_access(request.app.state.registry, request.app.state.config_store, request.app.state.settings, skill_name, principal)
 
     if registry.skill_process_manager:
         await registry.skill_process_manager.stop_skill(skill_name)
@@ -291,7 +291,7 @@ async def uninstall_skill(request: Request, skill_name: str) -> dict[str, str]:
             ]
             if len(remaining_sources) != len(existing_sources):
                 await config_store.save_document("skill_sources", remaining_sources, principal=principal.config)
-                await _apply_runtime_config(request.app, "skill_sources", await config_store.get_document("skill_sources"))
+                await _apply_runtime_config(request.app.state.registry, request.app.state.config_store, request.app.state.settings, request.app.state.skill_loader, request.app.state.execution_backend, "skill_sources", await config_store.get_document("skill_sources"))
             still_referenced = any(
                 _matches_skill_source(spec, PersistedSkillSourceConfig.model_validate(item).model_dump(mode="json"))
                 for item in await config_store.get_document("skill_sources")
@@ -312,7 +312,7 @@ async def export_skill(request: Request, skill_name: str) -> FileResponse:
     registry: FrameworkRegistry = request.app.state.registry
     db_manager: DatabaseManager = request.app.state.db_manager
     principal = await _resolve_console_principal(request, db_manager)
-    await _ensure_skill_access(request.app, skill_name, principal)
+    await _ensure_skill_access(request.app.state.registry, request.app.state.config_store, request.app.state.settings, skill_name, principal)
     manifest = registry.manifest_skills.get(skill_name)
     if not manifest:
         raise HTTPException(status_code=404, detail=f"Unknown skill: {skill_name}")
@@ -342,23 +342,23 @@ async def export_skill(request: Request, skill_name: str) -> FileResponse:
 @router.post("/skills/{skill_name}/enable")
 async def enable_skill(request: Request, skill_name: str) -> dict[str, str]:
     principal = await _resolve_console_principal(request, request.app.state.db_manager)
-    await _ensure_skill_access(request.app, skill_name, principal)
-    await _ensure_skill_state_mutation_allowed(request.app, skill_name, principal)
-    await _set_skill_enabled(request.app, skill_name, True)
+    await _ensure_skill_access(request.app.state.registry, request.app.state.config_store, request.app.state.settings, skill_name, principal)
+    await _ensure_skill_state_mutation_allowed(request.app.state.registry, request.app.state.config_store, request.app.state.settings, skill_name, principal)
+    await _set_skill_enabled(request.app.state.registry, request.app.state.config_store, request.app.state.execution_backend, skill_name, True)
     return {"status": "enabled", "skill": skill_name}
 
 @router.post("/skills/{skill_name}/disable")
 async def disable_skill(request: Request, skill_name: str) -> dict[str, str]:
     principal = await _resolve_console_principal(request, request.app.state.db_manager)
-    await _ensure_skill_access(request.app, skill_name, principal)
-    await _ensure_skill_state_mutation_allowed(request.app, skill_name, principal)
-    await _set_skill_enabled(request.app, skill_name, False)
+    await _ensure_skill_access(request.app.state.registry, request.app.state.config_store, request.app.state.settings, skill_name, principal)
+    await _ensure_skill_state_mutation_allowed(request.app.state.registry, request.app.state.config_store, request.app.state.settings, skill_name, principal)
+    await _set_skill_enabled(request.app.state.registry, request.app.state.config_store, request.app.state.execution_backend, skill_name, False)
     return {"status": "disabled", "skill": skill_name}
 
 @router.post("/skills/{skill_name}/start")
 async def start_skill(request: Request, skill_name: str) -> dict[str, Any]:
     principal = await _resolve_console_principal(request, request.app.state.db_manager)
-    await _ensure_skill_access(request.app, skill_name, principal)
+    await _ensure_skill_access(request.app.state.registry, request.app.state.config_store, request.app.state.settings, skill_name, principal)
     registry: FrameworkRegistry = request.app.state.registry
     manifest = registry.manifest_skills.get(skill_name)
     if not manifest:
@@ -377,7 +377,7 @@ async def start_skill(request: Request, skill_name: str) -> dict[str, Any]:
 @router.post("/skills/{skill_name}/stop")
 async def stop_skill(request: Request, skill_name: str) -> dict[str, str]:
     principal = await _resolve_console_principal(request, request.app.state.db_manager)
-    await _ensure_skill_access(request.app, skill_name, principal)
+    await _ensure_skill_access(request.app.state.registry, request.app.state.config_store, request.app.state.settings, skill_name, principal)
     registry: FrameworkRegistry = request.app.state.registry
     if not registry.skill_process_manager:
         return {"status": "stopped", "skill": skill_name}
@@ -388,7 +388,7 @@ async def stop_skill(request: Request, skill_name: str) -> dict[str, str]:
 @router.get("/skills/{skill_name}/health")
 async def skill_health(request: Request, skill_name: str) -> dict[str, Any]:
     principal = await _resolve_console_principal(request, request.app.state.db_manager)
-    await _ensure_skill_access(request.app, skill_name, principal)
+    await _ensure_skill_access(request.app.state.registry, request.app.state.config_store, request.app.state.settings, skill_name, principal)
     registry: FrameworkRegistry = request.app.state.registry
     manifest = registry.manifest_skills.get(skill_name)
     if manifest is None:

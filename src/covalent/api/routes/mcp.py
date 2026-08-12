@@ -8,11 +8,11 @@ from fastapi import HTTPException
 from fastapi import Request
 
 from covalent.api._auth_helpers import _resolve_console_principal
-from covalent.api.schemas import McpInspectRequest
-from covalent.api.schemas import McpInspectResponse
-from covalent.api.schemas import McpToolCallRequest
-from covalent.api.schemas import McpToolCallResponse
-from covalent.api.schemas import McpToolSummaryResponse
+from covalent.application.schemas import McpInspectRequest
+from covalent.application.schemas import McpInspectResponse
+from covalent.application.schemas import McpToolCallRequest
+from covalent.application.schemas import McpToolCallResponse
+from covalent.application.schemas import McpToolSummaryResponse
 from covalent.application.services.management_service import _ensure_console_principal_can_access_mcp_server
 from covalent.infra.db import DatabaseManager
 from covalent.mcp.client import McpSdkClient

@@ -8,8 +8,8 @@ from fastapi import Request
 
 from covalent.api._auth_helpers import _resolve_console_principal
 from covalent.api._shared import _record_audit_log
-from covalent.api.schemas import ConsoleUserSummaryResponse
-from covalent.api.schemas import ConsoleUserUpdateRequest
+from covalent.application.schemas import ConsoleUserSummaryResponse
+from covalent.application.schemas import ConsoleUserUpdateRequest
 from covalent.application.services.user_service import _list_console_users
 from covalent.application.services.user_service import _update_console_user
 from covalent.infra.db import DatabaseManager

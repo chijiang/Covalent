@@ -14,8 +14,8 @@ SRC_PATH = PROJECT_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from agent_framework.infra.db import Base  # noqa: E402
-from agent_framework.infra.settings import AppSettings  # noqa: E402
+from covalent.infra.db import Base  # noqa: E402
+from covalent.infra.settings import AppSettings  # noqa: E402
 
 config = context.config
 

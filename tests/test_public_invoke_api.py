@@ -19,15 +19,10 @@ from covalent.api._shared import (
 from covalent.api._auth_helpers import (
     _resolve_console_identity,
 )
-from covalent.application.services.audit_service import _list_audit_logs
-from covalent.application.services.token_service import (
-    _build_api_token_usage_response,
-    _list_api_token_runs,
-    _normalize_token_policy,
-    _normalize_token_scopes,
-    _revoke_api_token,
-    _update_api_token,
-)
+from covalent.application.services.audit_service import list_audit_logs
+from covalent.application.errors import ForbiddenError, NotFoundError, QuotaExceededError
+from covalent.application.services import token_service
+from covalent.application.services.token_service import _normalize_token_policy, _normalize_token_scopes
 from covalent.application.services.invoke_service import (
     _enforce_api_token_policy_limits,
     _public_stream_events,
@@ -70,7 +65,7 @@ from covalent.infra.settings import AppSettings
 from covalent.infra.config_store import _is_editable_by_principal
 from covalent.model.base import ProviderConfig
 from covalent.registry.registry import FrameworkRegistry
-from covalent.api.schemas import (
+from covalent.application.schemas import (
     ConsoleAccountUpdateRequest,
     ConsoleLoginRequest,
     ConsoleRegisterRequest,
@@ -137,7 +132,7 @@ class ApiTokenPolicyTests(unittest.TestCase):
             ),
         ]
 
-        summary = _build_api_token_usage_response([active_token, revoked_token], runs, days=7, now=now)
+        summary = token_service.build_api_token_usage([active_token, revoked_token], runs, days=7, now=now)
 
         self.assertEqual(summary.active_tokens, 1)
         self.assertEqual(summary.total_requests, 2)
@@ -175,13 +170,13 @@ class ApiTokenPolicyTests(unittest.TestCase):
         )
 
         async def update_token():
-            return await _update_api_token(
+            return await token_service.update_api_token(
                 SimpleNamespace(session_factory=state.session_factory),
                 "token_1",
-                ApiTokenUpdateRequest(
+                token_service.UpdateApiTokenCommand(
                     name="  Production token  ",
                     policy={"allowed_agents": ["support", "support"], "max_requests_per_day": "50"},
-                    expires_at=None,
+                    fields_to_update=frozenset({"name", "policy"}),
                 ),
                 principal,
             )
@@ -218,7 +213,7 @@ class ApiTokenPolicyTests(unittest.TestCase):
         )
 
         async def revoke_token():
-            return await _revoke_api_token(
+            return await token_service.revoke_api_token(
                 SimpleNamespace(session_factory=state.session_factory),
                 "token_1",
                 principal,
@@ -613,10 +608,8 @@ class MultiUserPermissionTests(unittest.TestCase):
             updated_at=datetime(2026, 7, 5, tzinfo=UTC),
         )
 
-        with self.assertRaises(HTTPException) as context:
+        with self.assertRaises(NotFoundError):
             _ensure_console_principal_can_access_session(principal, record)
-
-        self.assertEqual(context.exception.status_code, 404)
 
     def test_admin_session_guard_accepts_any_session(self) -> None:
         principal = ConsolePrincipalContext(
@@ -786,14 +779,13 @@ class MultiUserPermissionTests(unittest.TestCase):
         app = SimpleNamespace(
             state=SimpleNamespace(
                 registry=SimpleNamespace(manifest_skills={}),
+                config_store=SimpleNamespace(),
                 settings=None,
             )
         )
 
-        with self.assertRaises(HTTPException) as context:
-            anyio.run(_ensure_skill_state_mutation_allowed, app, "inline_skill", principal)
-
-        self.assertEqual(context.exception.status_code, 403)
+        with self.assertRaises(ForbiddenError):
+            anyio.run(_ensure_skill_state_mutation_allowed, app.state.registry, app.state.config_store, app.state.settings, "inline_skill", principal)
 
     def test_build_agent_specs_uses_internal_names_for_runtime_resources(self) -> None:
         mcp_payload = [
@@ -1214,7 +1206,7 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
                 agent_name="private-agent",
             )
 
-        with self.assertRaises(HTTPException) as context:
+        with self.assertRaises(QuotaExceededError) as context:
             anyio.run(enforce_limits)
 
         self.assertEqual(context.exception.status_code, 429)
@@ -1271,17 +1263,17 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
         )
 
         async def list_member_logs():
-            return await _list_audit_logs(SimpleNamespace(session_factory=state.session_factory), member)
+            return await list_audit_logs(SimpleNamespace(session_factory=state.session_factory), member)
 
         async def list_denied_admin_logs():
-            return await _list_audit_logs(
+            return await list_audit_logs(
                 SimpleNamespace(session_factory=state.session_factory),
                 admin,
                 outcome="denied",
                 target_type="agent",
             )
 
-        with self.assertRaises(HTTPException) as context:
+        with self.assertRaises(ForbiddenError) as context:
             anyio.run(list_member_logs)
         admin_logs = anyio.run(list_denied_admin_logs)
 
@@ -1311,14 +1303,14 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
         )
 
         async def revoke_other_user_token():
-            return await _revoke_api_token(SimpleNamespace(session_factory=state.session_factory), "token_1", admin)
+            return await token_service.revoke_api_token(SimpleNamespace(session_factory=state.session_factory), "token_1", admin)
 
         async def list_other_user_token_runs():
-            return await _list_api_token_runs(SimpleNamespace(session_factory=state.session_factory), "token_1", admin)
+            return await token_service.list_api_token_runs(SimpleNamespace(session_factory=state.session_factory), "token_1", admin)
 
-        with self.assertRaises(HTTPException) as revoke_context:
+        with self.assertRaises(NotFoundError) as revoke_context:
             anyio.run(revoke_other_user_token)
-        with self.assertRaises(HTTPException) as runs_context:
+        with self.assertRaises(NotFoundError) as runs_context:
             anyio.run(list_other_user_token_runs)
 
         self.assertEqual(revoke_context.exception.status_code, 404)

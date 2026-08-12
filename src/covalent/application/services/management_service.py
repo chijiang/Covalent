@@ -14,24 +14,20 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 import yaml
-from fastapi import FastAPI, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from covalent.api._shared import (
-    ConsolePrincipalContext,
-    RESOURCE_METADATA_FIELDS,
-    _dedupe_strings,
-    _new_chat_item_id,
-    _record_audit_log,
-)
+from covalent.application.errors import (ForbiddenError, InvalidInputError, NotFoundError)
+from covalent.application._utils import RESOURCE_METADATA_FIELDS, _dedupe_strings, _new_chat_item_id
+from covalent.application.audit import RequestMetadata, record_audit
+from covalent.application.principal import Principal as ConsolePrincipalContext
 from covalent.application.services.skill_service import (
     _build_skill_management_export_payload,
     _import_skill_management_payload,
 )
 from covalent.application.services.runtime_apply import _apply_runtime_config
-from covalent.api.auth import ApiPrincipal
-from covalent.api.schemas import (
+from covalent.application.principal import ApiPrincipal
+from covalent.application.schemas import (
     ConfigDocumentResponse,
     LocalToolSummaryResponse,
     ManagementExportFormat,
@@ -282,7 +278,7 @@ async def _ensure_api_principal_can_invoke_agent(
             return
         if row.visibility == "public" and row.publication_status == "approved":
             return
-    raise HTTPException(status_code=403, detail=f"Token is not allowed to invoke agent: {agent_name}")
+    raise ForbiddenError(f"Token is not allowed to invoke agent: {agent_name}")
 
 def _resource_display_name(row: object) -> str:
     return str(getattr(row, "display_name", None) or getattr(row, "name"))
@@ -342,7 +338,7 @@ async def _resolve_api_agent_name(
             ))
             row = _pick_agent_row_for_principal(rows, user_id=principal.user_id, workspace_id=principal.workspace_id)
         if row is None:
-            raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
+            raise NotFoundError(f"Unknown agent: {agent_name}")
         return row.name
 
 def _ensure_console_principal_can_access_session(
@@ -353,7 +349,7 @@ def _ensure_console_principal_can_access_session(
         return
     if record.owner_user_id == principal.user_id and record.workspace_id == principal.workspace_id:
         return
-    raise HTTPException(status_code=404, detail=f"Unknown session: {record.id}")
+    raise NotFoundError(f"Unknown session: {record.id}")
 
 async def _resolve_console_agent_name(
     db_manager: DatabaseManager,
@@ -371,7 +367,7 @@ async def _resolve_console_agent_name(
             ))
             row = _pick_agent_row_for_principal(rows, user_id=principal.user_id, workspace_id=principal.workspace_id)
         if row is None:
-            raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
+            raise NotFoundError(f"Unknown agent: {agent_name}")
         return row.name
 
 async def _ensure_console_principal_can_access_agent(
@@ -388,7 +384,7 @@ async def _ensure_console_principal_can_access_agent(
             return
         if _principal_can_access_resource(principal, row):
             return
-    raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
+    raise NotFoundError(f"Unknown agent: {agent_name}")
 
 async def _ensure_console_principal_can_access_mcp_server(
     db_manager: DatabaseManager,
@@ -411,10 +407,10 @@ async def _ensure_console_principal_can_access_mcp_server(
             )
             row = _pick_resource_row_for_principal(rows, principal)
         if row is None:
-            raise HTTPException(status_code=404, detail=f"Unknown MCP server: {server_name}")
+            raise NotFoundError(f"Unknown MCP server: {server_name}")
         if _principal_can_access_resource(principal, row):
             return
-    raise HTTPException(status_code=404, detail=f"Unknown MCP server: {server_name}")
+    raise NotFoundError(f"Unknown MCP server: {server_name}")
 
 def _publication_response(kind: ConfigKind, row: object, name: str) -> PublicationRequestResponse:
     return PublicationRequestResponse(
@@ -454,7 +450,7 @@ async def _find_resource_row(
             rows = list(await session.scalars(select(AgentRow).where(AgentRow.display_name == resource_name)))
             row = _pick_resource_row_for_principal(rows, principal)
         if row is None:
-            raise HTTPException(status_code=404, detail=f"Unknown agent: {resource_name}")
+            raise NotFoundError(f"Unknown agent: {resource_name}")
         return row, _resource_display_name(row)
 
     if kind == "mcp":
@@ -463,7 +459,7 @@ async def _find_resource_row(
             rows = list(await session.scalars(select(McpServerRow).where(McpServerRow.display_name == resource_name)))
             row = _pick_resource_row_for_principal(rows, principal)
         if row is None:
-            raise HTTPException(status_code=404, detail=f"Unknown MCP server: {resource_name}")
+            raise NotFoundError(f"Unknown MCP server: {resource_name}")
         return row, _resource_display_name(row)
 
     if kind == "providers":
@@ -472,14 +468,14 @@ async def _find_resource_row(
             rows = list(await session.scalars(select(ProviderRow).where(ProviderRow.display_name == resource_name)))
             row = _pick_resource_row_for_principal(rows, principal)
         if row is None:
-            raise HTTPException(status_code=404, detail=f"Unknown provider: {resource_name}")
+            raise NotFoundError(f"Unknown provider: {resource_name}")
         return row, _resource_display_name(row)
 
     row = await session.scalar(select(SkillSourceRow).where(SkillSourceRow.name == resource_name))
     if row is None and resource_name.isdigit():
         row = await session.get(SkillSourceRow, int(resource_name))
     if row is None:
-        raise HTTPException(status_code=404, detail=f"Unknown skill source: {resource_name}")
+        raise NotFoundError(f"Unknown skill source: {resource_name}")
     return row, row.name or str(row.id)
 
 def _ensure_console_principal_owns_resource(principal: ConsolePrincipalContext, row: object, resource_name: str) -> None:
@@ -489,14 +485,14 @@ def _ensure_console_principal_owns_resource(principal: ConsolePrincipalContext, 
     workspace_id = getattr(row, "workspace_id", None)
     if owner_user_id == principal.user_id and workspace_id == principal.workspace_id:
         return
-    raise HTTPException(status_code=404, detail=f"Unknown resource: {resource_name}")
+    raise NotFoundError(f"Unknown resource: {resource_name}")
 
 async def _request_resource_publication(
     db_manager: DatabaseManager,
     principal: ConsolePrincipalContext,
     kind: ConfigKind,
     resource_name: str,
-    http_request: Request | None = None,
+    request_metadata: RequestMetadata | None = None,
 ) -> PublicationRequestResponse:
     async with db_manager.session_factory() as session:
         async with session.begin():
@@ -512,13 +508,13 @@ async def _request_resource_publication(
             setattr(row, "publication_reviewed_at", None)
             setattr(row, "publication_reviewed_by_user_id", None)
             response = _publication_response(kind, row, display_name)
-    await _record_audit_log(
+    await record_audit(
         db_manager,
         action="publication.requested",
         target_type=kind,
         target_id=response.name,
         principal=principal,
-        request=http_request,
+        request_metadata=request_metadata,
         metadata={"visibility": response.visibility, "publication_status": response.publication_status},
     )
     return response
@@ -529,10 +525,10 @@ async def _review_resource_publication(
     kind: ConfigKind,
     resource_name: str,
     status: Literal["approved", "rejected"],
-    http_request: Request | None = None,
+    request_metadata: RequestMetadata | None = None,
 ) -> PublicationRequestResponse:
     if not principal.is_admin:
-        raise HTTPException(status_code=403, detail="Only admins can review publication requests")
+        raise ForbiddenError("Only admins can review publication requests")
 
     async with db_manager.session_factory() as session:
         async with session.begin():
@@ -546,35 +542,35 @@ async def _review_resource_publication(
             setattr(row, "publication_reviewed_at", datetime.now(UTC))
             setattr(row, "publication_reviewed_by_user_id", principal.user_id)
             response = _publication_response(kind, row, display_name)
-    await _record_audit_log(
+    await record_audit(
         db_manager,
         action=f"publication.{status}",
         target_type=kind,
         target_id=response.name,
         principal=principal,
-        request=http_request,
+        request_metadata=request_metadata,
         metadata={"visibility": response.visibility, "publication_status": response.publication_status},
     )
     return response
 
 def _normalize_management_kind(kind: str) -> ManagementKind:
     if kind not in {"agents", "mcp", "skills"}:
-        raise HTTPException(status_code=404, detail=f"Unknown management kind: {kind}")
+        raise NotFoundError(f"Unknown management kind: {kind}")
     return kind
 
 def _normalize_management_export_format(value: str) -> ManagementExportFormat:
     normalized = value.strip().lower()
     if normalized not in {"yaml", "json"}:
-        raise HTTPException(status_code=400, detail=f"Unsupported export format: {value}")
+        raise InvalidInputError(f"Unsupported export format: {value}")
     return normalized  # type: ignore[return-value]
 
 async def _build_management_export_payload(
-    app: FastAPI,
+    registry: FrameworkRegistry,
+    settings: AppSettings,
+    config_store: ConfigStore,
     kind: ManagementKind,
     principal: ConsolePrincipalContext,
 ) -> tuple[dict[str, Any], int]:
-    settings: AppSettings = app.state.settings
-    config_store: ConfigStore = app.state.config_store
     exported_at = datetime.now(UTC).isoformat()
 
     if kind in {"agents", "mcp"}:
@@ -590,7 +586,7 @@ async def _build_management_export_payload(
             "items": items,
         }, len(items)
 
-    payload = await _build_skill_management_export_payload(app, principal)
+    payload = await _build_skill_management_export_payload(registry, settings, config_store, principal)
     return payload, len(payload.get("items", []))
 
 def _serialize_management_export_payload(
@@ -602,23 +598,25 @@ def _serialize_management_export_payload(
     return f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
 
 async def _import_management_payload(
-    app: FastAPI,
+    db_manager: DatabaseManager,
+    registry: FrameworkRegistry,
+    config_store: ConfigStore,
+    settings: AppSettings,
+    loader: SkillLoader,
+    execution_backend: ExecutionBackend,
     kind: ManagementKind,
     raw_text: str,
     file_name: str | None,
     principal: ConsolePrincipalContext,
-    request: Request | None = None,
+    request_metadata: RequestMetadata | None = None,
 ) -> ManagementImportResponse:
-    settings: AppSettings = app.state.settings
-    config_store: ConfigStore = app.state.config_store
-    db_manager: DatabaseManager = app.state.db_manager
     parsed = _parse_management_upload(raw_text, file_name)
 
     if kind in {"agents", "mcp"}:
         raw_items = _extract_management_items(kind, parsed)
         validated = _validate_config_payload(kind, raw_items, settings)
         saved = await config_store.save_document(kind, validated, principal=principal.config)
-        await _apply_runtime_config(app, kind, await config_store.get_document(kind))
+        await _apply_runtime_config(registry, config_store, settings, loader, execution_backend, kind, await config_store.get_document(kind))
         label = "agents" if kind == "agents" else "MCP services"
         response = ManagementImportResponse(
             kind=kind,
@@ -626,61 +624,61 @@ async def _import_management_payload(
             applied_items=len(saved),
             summary=f"Imported {len(saved)} {label}.",
         )
-        await _record_audit_log(
+        await record_audit(
             db_manager,
             action="management.imported",
             target_type=kind,
             target_id=file_name,
             principal=principal,
-            request=request,
+            request_metadata=request_metadata,
             metadata={"imported_items": response.imported_items, "applied_items": response.applied_items},
         )
         return response
 
-    response = await _import_skill_management_payload(app, parsed, principal)
-    await _record_audit_log(
+    response = await _import_skill_management_payload(registry, config_store, settings, loader, execution_backend, parsed, principal)
+    await record_audit(
         db_manager,
         action="management.imported",
         target_type=kind,
         target_id=file_name,
         principal=principal,
-        request=request,
+        request_metadata=request_metadata,
         metadata={"imported_items": response.imported_items, "applied_items": response.applied_items},
     )
     return response
 
 def _parse_management_upload(raw_text: str, file_name: str | None) -> Any:
     if not raw_text.strip():
-        raise HTTPException(status_code=400, detail="Imported file is empty")
+        raise InvalidInputError("Imported file is empty")
     try:
         parsed = yaml.safe_load(raw_text)
     except yaml.YAMLError as exc:
         target_name = file_name or "uploaded file"
-        raise HTTPException(status_code=400, detail=f"Could not parse {target_name}: {exc}") from exc
+        raise InvalidInputError(f"Could not parse {target_name}: {exc}") from exc
     if parsed is None:
-        raise HTTPException(status_code=400, detail="Imported file did not contain any configuration data")
+        raise InvalidInputError("Imported file did not contain any configuration data")
     return parsed
 
 def _extract_management_items(kind: ConfigKind, payload: Any) -> list[object]:
     if isinstance(payload, list):
         return payload
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Imported configuration must be a YAML/JSON object or array")
+        raise InvalidInputError("Imported configuration must be a YAML/JSON object or array")
 
     payload_kind = payload.get("kind")
     if isinstance(payload_kind, str) and payload_kind and payload_kind != kind:
-        raise HTTPException(status_code=400, detail=f"Imported file is for '{payload_kind}', not '{kind}'")
+        raise InvalidInputError(f"Imported file is for '{payload_kind}', not '{kind}'")
 
     items = payload.get("items")
     if items is None and isinstance(payload.get("data"), list):
         items = payload.get("data")
     if not isinstance(items, list):
-        raise HTTPException(status_code=400, detail="Imported configuration must include an 'items' array")
+        raise InvalidInputError("Imported configuration must include an 'items' array")
     return items
 
 def _normalize_config_kind(kind: str) -> ConfigKind:
     if kind not in {"agents", "mcp", "skill_sources", "providers"}:
-        raise HTTPException(status_code=404, detail=f"Unknown config kind: {kind}")
+        raise NotFoundError(f"Unknown config kind: {kind}")
     return kind
 
 def _config_document_response(kind: ConfigKind, payload: list[dict[str, object]], settings: AppSettings) -> ConfigDocumentResponse:
@@ -761,7 +759,7 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
         normalized_servers: list[dict[str, object]] = []
         for item in payload:
             if not isinstance(item, dict):
-                raise HTTPException(status_code=400, detail="MCP server entries must be JSON objects")
+                raise InvalidInputError("MCP server entries must be JSON objects")
             normalized = McpServerConfig.model_validate(item).model_dump(mode="json")
             normalized.update({field: item[field] for field in RESOURCE_METADATA_FIELDS if field in item})
             normalized_servers.append(normalized)
@@ -776,12 +774,9 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
             if str(item.get("default_model") or "").strip()
         ]
         if len(default_model_names) > 1:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Only one provider may declare a default_model. "
-                    f"Found: {', '.join(default_model_names)}"
-                ),
+            raise InvalidInputError(
+                "Only one provider may declare a default_model. "
+                f"Found: {', '.join(default_model_names)}"
             )
 
         if default_model_names:
@@ -801,12 +796,9 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
             if bool(item.get("is_default"))
         ]
         if len(legacy_default_names) > 1:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Only one provider may be marked as default. "
-                    f"Found: {', '.join(legacy_default_names)}"
-                ),
+            raise InvalidInputError(
+                "Only one provider may be marked as default. "
+                f"Found: {', '.join(legacy_default_names)}"
             )
 
         return [
@@ -821,10 +813,10 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
         normalized_sources: list[dict[str, object]] = []
         for item in payload:
             if not isinstance(item, dict):
-                raise HTTPException(status_code=400, detail="Skill source entries must be JSON objects")
+                raise InvalidInputError("Skill source entries must be JSON objects")
             normalized = normalize_git_source_payload(item)
             if normalized is None:
-                raise HTTPException(status_code=400, detail="Only git skill sources are currently supported")
+                raise InvalidInputError("Only git skill sources are currently supported")
             normalized.update({field: item[field] for field in RESOURCE_METADATA_FIELDS if field in item})
             normalized_sources.append(PersistedSkillSourceConfig.model_validate(normalized).model_dump(mode="json"))
         return normalized_sources
@@ -833,7 +825,7 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
     normalized: list[dict[str, object]] = []
     for item in payload:
         if not isinstance(item, dict):
-            raise HTTPException(status_code=400, detail="Agent config entries must be JSON objects")
+            raise InvalidInputError("Agent config entries must be JSON objects")
         normalized_item = dict(item)
         mcp_refs = normalized_item.get("mcp_servers", [])
         if isinstance(mcp_refs, list):
@@ -852,16 +844,13 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
         normalized_item = _normalize_agent_payload_item(normalized_item, settings)
         agent = PersistedAgentConfig.model_validate(normalized_item)
         if agent.name in seen_names:
-            raise HTTPException(status_code=400, detail=f"Duplicate agent name: {agent.name}")
+            raise InvalidInputError(f"Duplicate agent name: {agent.name}")
         referenced_servers = {tool.server_name for tool in agent.mcp_tools}
         missing_server_refs = sorted(referenced_servers.difference(agent.mcp_servers))
         if missing_server_refs:
-            raise HTTPException(
-                status_code=400,
-                detail=(
+            raise InvalidInputError(
                     f"Agent '{agent.name}' has MCP tool selections for unselected servers: {', '.join(missing_server_refs)}"
-                ),
-            )
+        )
         seen_names.add(agent.name)
         normalized.append(agent.model_dump(mode="json"))
     return normalized

@@ -14,7 +14,7 @@ branch_labels = None
 depends_on = None
 
 
-# Mirrors agent_framework.api.schemas.USERNAME_PATTERN. Duplicated here so the
+# Mirrors covalent.api.schemas.USERNAME_PATTERN. Duplicated here so the
 # migration stays self-contained (it must not import application code).
 _USERNAME_PATTERN = re.compile(r"^[a-z0-9_-]{3,32}$")
 
