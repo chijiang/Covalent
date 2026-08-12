@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from agent_framework.core.types import ToolResult
-from agent_framework.mcp.spec import McpServerConfig, McpToolReference
+from covalent.core.types import ToolResult
+from covalent.mcp.spec import McpServerConfig, McpToolReference
 
 
 class McpClient(Protocol):

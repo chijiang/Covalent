@@ -14,23 +14,23 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import text
 
-from agent_framework.api._shared import (
+from covalent.api._shared import (
     _SAFE_STORAGE_COMPONENT_RE,
     _coerce_int,
     _new_chat_item_id,
     _safe_storage_component,
 )
-from agent_framework.api.schemas import AgentRunRequest
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.types import GenerationRequest, Message, ResumedToolResult, UserInputRequest
-from agent_framework.infra.memory import ChatActivityItem, ChatTranscriptMessage
-from agent_framework.infra.settings import AppSettings
-from agent_framework.registry.registry import FrameworkRegistry
+from covalent.api.schemas import AgentRunRequest
+from covalent.core.agent import AgentSpec
+from covalent.core.types import GenerationRequest, Message, ResumedToolResult, UserInputRequest
+from covalent.infra.memory import ChatActivityItem, ChatTranscriptMessage
+from covalent.infra.settings import AppSettings
+from covalent.registry.registry import FrameworkRegistry
 
 logger = logging.getLogger(__name__)
 
 def _attachment_session_dir(workspace_root: Path, session_id: str) -> Path:
-    return workspace_root / ".agent_framework" / "attachments" / _safe_storage_component(session_id, "session")
+    return workspace_root / ".covalent" / "attachments" / _safe_storage_component(session_id, "session")
 
 def _chat_upload_visible_root(settings: AppSettings, session_id: str) -> Path:
     if settings.session_workspace_enabled:
@@ -41,10 +41,10 @@ def _chat_upload_session_dir(settings: AppSettings, session_id: str) -> Path:
     visible_root = _chat_upload_visible_root(settings, session_id)
     if settings.session_workspace_enabled:
         return visible_root / "uploads"
-    return visible_root / ".agent_framework" / "uploads" / _safe_storage_component(session_id, "session")
+    return visible_root / ".covalent" / "uploads" / _safe_storage_component(session_id, "session")
 
 def _download_session_dir(workspace_root: Path, session_id: str) -> Path:
-    return workspace_root / ".agent_framework" / "downloads" / _safe_storage_component(session_id, "session")
+    return workspace_root / ".covalent" / "downloads" / _safe_storage_component(session_id, "session")
 
 def _safe_uploaded_filename(raw_name: str, default_stem: str) -> str:
     candidate = Path(raw_name).name.strip()

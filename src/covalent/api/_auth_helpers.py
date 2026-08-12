@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from agent_framework.api._shared import (
+from covalent.api._shared import (
     ConsolePrincipalContext,
     _agent_run_log_response,
     _api_token_summary_response,
@@ -29,7 +29,7 @@ from agent_framework.api._shared import (
     _safe_storage_component,
     _usage_int,
 )
-from agent_framework.api.schemas import (
+from covalent.api.schemas import (
     AgentRunLogResponse,
     ApiTokenSummaryResponse,
     ApiTokenUsageByTokenResponse,
@@ -37,7 +37,7 @@ from agent_framework.api.schemas import (
     ApiTokenUsageResponse,
     AuditLogResponse,
 )
-from agent_framework.infra.db import (
+from covalent.infra.db import (
     AgentRunLogRow,
     ApiTokenRow,
     AuditLogRow,
@@ -46,9 +46,9 @@ from agent_framework.infra.db import (
     WorkspaceMemberRow,
     WorkspaceRow,
 )
-from agent_framework.infra.settings import AppSettings
+from covalent.infra.settings import AppSettings
 
-from agent_framework.application.services.user_service import _derive_unique_username
+from covalent.application.services.user_service import _derive_unique_username
 
 logger = logging.getLogger(__name__)
 

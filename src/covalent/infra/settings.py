@@ -113,7 +113,7 @@ class AppSettings(BaseSettings):
     execution_backend_shell_tool_max_bytes: int = 51200
     skills_root_dir: str = "skills"
     skills_directories: str | None = None
-    skills_cache_dir: str = "~/.agent_framework/skill_cache"
+    skills_cache_dir: str = "~/.covalent/skill_cache"
 
     def resolve_path(self, path: str | None) -> Path | None:
         return Path(path).expanduser() if path else None
@@ -128,7 +128,7 @@ class AppSettings(BaseSettings):
         """Get the root directory for session-scoped workspaces."""
         if self.session_workspace_root_dir:
             return Path(self.session_workspace_root_dir).expanduser().resolve()
-        return self.workspace_root() / ".agent_framework" / "session-workspaces"
+        return self.workspace_root() / ".covalent" / "session-workspaces"
 
     def session_workspace_dir(self, session_id: str) -> Path:
         """Get the workspace directory for a specific session."""

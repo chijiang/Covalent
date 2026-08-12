@@ -8,14 +8,14 @@ import re
 from time import perf_counter
 from typing import Any
 
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.types import GenerationRequest, GenerationResponse, Message, PromptContent, ResumedToolResult, RunContext, ToolCall, ToolResult, TokenUsage, UserInputRequest
-from agent_framework.infra.memory import SessionStore
-from agent_framework.model.base import ModelProviderError
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.runtime.base import AgentRuntime
-from agent_framework.runtime.context_window import get_context_window
-from agent_framework.skills.bundle import SkillBundle
+from covalent.core.agent import AgentSpec
+from covalent.core.types import GenerationRequest, GenerationResponse, Message, PromptContent, ResumedToolResult, RunContext, ToolCall, ToolResult, TokenUsage, UserInputRequest
+from covalent.infra.memory import SessionStore
+from covalent.model.base import ModelProviderError
+from covalent.registry.registry import FrameworkRegistry
+from covalent.runtime.base import AgentRuntime
+from covalent.runtime.context_window import get_context_window
+from covalent.skills.bundle import SkillBundle
 
 DELEGATE_TOOL_PREFIX = "agent__"
 DELEGATE_EVENT_PREFIX = "delegate_"

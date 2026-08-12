@@ -6,7 +6,7 @@ imports. This module must stay dependency-free within the ``api`` package
 (no imports of sibling helper modules).
 
 Imports into ``app.py`` from here must not create cycles: ``_shared`` only
-imports from stdlib, ``agent_framework.infra``, and ``agent_framework.core``.
+imports from stdlib, ``covalent.infra``, and ``covalent.core``.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ from uuid import uuid4
 import anyio
 from fastapi import Request
 
-from agent_framework.api.auth import ApiPrincipal
-from agent_framework.api.schemas import (
+from covalent.api.auth import ApiPrincipal
+from covalent.api.schemas import (
     AgentRunLogResponse,
     AgentSummaryResponse,
     ApiTokenSummaryResponse,
@@ -39,9 +39,9 @@ from agent_framework.api.schemas import (
     ChatSessionSummaryResponse,
     ProviderSummaryResponse,
 )
-from agent_framework.core.agent import AgentSpec
-from agent_framework.infra.config_store import ConfigPrincipal
-from agent_framework.infra.db import (
+from covalent.core.agent import AgentSpec
+from covalent.infra.config_store import ConfigPrincipal
+from covalent.infra.db import (
     AgentRunLogRow,
     ApiTokenRow,
     AuditLogRow,
@@ -49,8 +49,8 @@ from agent_framework.infra.db import (
     UserRow,
     WorkspaceRow,
 )
-from agent_framework.infra.memory import ChatSessionRecord, ChatSessionSummary, SessionStore
-from agent_framework.runtime.backend import ExecutionBackend
+from covalent.infra.memory import ChatSessionRecord, ChatSessionSummary, SessionStore
+from covalent.runtime.backend import ExecutionBackend
 
 logger = logging.getLogger(__name__)
 

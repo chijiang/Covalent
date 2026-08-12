@@ -15,17 +15,17 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 
-from agent_framework.api._shared import to_agent_summary
-from agent_framework.application.services.management_service import _normalize_agent_payload_item
-from agent_framework.api.schemas import AgentRunRequest
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.types import RunContext, ToolCall
-from agent_framework.infra.settings import AppSettings
-from agent_framework.model.base import ProviderConfig
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.runtime.backend import BackendUnavailable
-from agent_framework.skills.process import SkillProcessManager
-from agent_framework.skills.spec import ManifestSkillSpec, SkillRuntime
+from covalent.api._shared import to_agent_summary
+from covalent.application.services.management_service import _normalize_agent_payload_item
+from covalent.api.schemas import AgentRunRequest
+from covalent.core.agent import AgentSpec
+from covalent.core.types import RunContext, ToolCall
+from covalent.infra.settings import AppSettings
+from covalent.model.base import ProviderConfig
+from covalent.registry.registry import FrameworkRegistry
+from covalent.runtime.backend import BackendUnavailable
+from covalent.skills.process import SkillProcessManager
+from covalent.skills.spec import ManifestSkillSpec, SkillRuntime
 
 from tests.helpers import make_test_agent, make_test_registry, make_test_runtime, text_response, ScriptedModelAdapter
 
@@ -40,7 +40,7 @@ class _FailingBackend:
         return command
 
     def workspace(self, session_id):
-        from agent_framework.runtime.backend import HostPathWorkspace
+        from covalent.runtime.backend import HostPathWorkspace
         from pathlib import Path
         return HostPathWorkspace(host_path=Path("/tmp"))
 
@@ -170,7 +170,7 @@ class SkillErrorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_acquire_non_executable_skill_raises(self) -> None:
         """Acquiring a non-executable skill → SkillProcessError."""
-        from agent_framework.skills.exceptions import SkillProcessError
+        from covalent.skills.exceptions import SkillProcessError
         spec = ManifestSkillSpec(name="no-runtime", description="no runtime", source_dir="/tmp")
         spm = SkillProcessManager()
         with self.assertRaises(SkillProcessError):

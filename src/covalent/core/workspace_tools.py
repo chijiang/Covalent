@@ -14,7 +14,7 @@ from typing import Any, TYPE_CHECKING
 from urllib.parse import quote
 
 if TYPE_CHECKING:
-    from agent_framework.infra.settings import AppSettings
+    from covalent.infra.settings import AppSettings
 
 _DEFAULT_MAX_BYTES = 24_000
 _DEFAULT_SEARCH_MAX_MATCHES = 200
@@ -1000,7 +1000,7 @@ def _resolve_publishable_source_path(root: Path, raw_path: str) -> Path:
 
 
 def _download_session_dir(root: Path, session_id: str) -> Path:
-    return root.resolve(strict=False) / ".agent_framework" / "downloads" / _safe_storage_component(session_id, "session")
+    return root.resolve(strict=False) / ".covalent" / "downloads" / _safe_storage_component(session_id, "session")
 
 
 def _safe_storage_component(value: str, fallback: str) -> str:

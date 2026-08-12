@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from agent_framework.model.base import ModelProviderError
-from agent_framework.model.openai_compatible import OpenAICompatibleProvider
+from covalent.model.base import ModelProviderError
+from covalent.model.openai_compatible import OpenAICompatibleProvider
 
 
 class OpenAICompatibleProviderParseArgumentsTests(unittest.TestCase):

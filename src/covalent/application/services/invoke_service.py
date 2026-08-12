@@ -15,15 +15,15 @@ from fastapi import HTTPException, Request
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
-from agent_framework.api._shared import (
+from covalent.api._shared import (
     _coerce_int,
     _coerce_positive_int,
     _new_chat_item_id,
     _payload_text,
     _record_audit_log,
 )
-from agent_framework.api.auth import ApiPrincipal
-from agent_framework.infra.db import AgentRunLogRow, AuditLogRow, ChatSessionRow, DatabaseManager
+from covalent.api.auth import ApiPrincipal
+from covalent.infra.db import AgentRunLogRow, AuditLogRow, ChatSessionRow, DatabaseManager
 
 class _ApiTokenRunLimiter:
     """Per-token in-flight run cap. A bounded semaphore is created lazily per

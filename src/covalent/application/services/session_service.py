@@ -14,12 +14,12 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import text
 
-from agent_framework.api._shared import _coerce_int, _new_chat_item_id
-from agent_framework.api.schemas import AgentRunRequest
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.types import GenerationRequest, Message, ResumedToolResult, UserInputRequest
-from agent_framework.infra.memory import ChatActivityItem, ChatTranscriptMessage
-from agent_framework.registry.registry import FrameworkRegistry
+from covalent.api._shared import _coerce_int, _new_chat_item_id
+from covalent.api.schemas import AgentRunRequest
+from covalent.core.agent import AgentSpec
+from covalent.core.types import GenerationRequest, Message, ResumedToolResult, UserInputRequest
+from covalent.infra.memory import ChatActivityItem, ChatTranscriptMessage
+from covalent.registry.registry import FrameworkRegistry
 
 SSE_EVENT_INPUT_REQUIRED = "input_required"
 SSE_EVENT_INPUT_RESOLVED = "input_resolved"

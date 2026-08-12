@@ -42,7 +42,7 @@ def main() -> None:
 
     host = getattr(args, "host", "0.0.0.0")
     port = getattr(args, "port", 5170)
-    uvicorn.run("agent_framework.api.app:create_app", factory=True, host=host, port=port, reload=False)
+    uvicorn.run("covalent.api.app:create_app", factory=True, host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":

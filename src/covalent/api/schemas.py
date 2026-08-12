@@ -6,8 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from agent_framework.core.types import Capability, PromptContent
-from agent_framework.mcp.spec import McpServerConfig
+from covalent.core.types import Capability, PromptContent
+from covalent.mcp.spec import McpServerConfig
 
 
 USERNAME_PATTERN = re.compile(r"^[a-z0-9_-]{3,32}$")

@@ -13,7 +13,7 @@
 3. `activity`
    给 UI trace、HITL pending state、delegate trace 使用的事件流水。
 
-这三份数据分别持久化在 `chat_sessions` 表的三个 JSON 字段中，定义见 `src/agent_framework/infra/db.py:179`。
+这三份数据分别持久化在 `chat_sessions` 表的三个 JSON 字段中，定义见 `src/covalent/infra/db.py:179`。
 
 最重要的结论是：
 
@@ -24,7 +24,7 @@
 
 ## 1. 当前接口的主调用链
 
-主入口在 `src/agent_framework/api/app.py:512`：
+主入口在 `src/covalent/api/app.py:512`：
 
 - 路由：`POST /agents/{agent_name}/stream`
 - 运行时：`ReactAgentRuntime.stream_events(...)`
@@ -46,19 +46,19 @@
 
 ### 2.1 `memory_messages`：模型真实上下文
 
-定义在 `src/agent_framework/infra/memory.py:42-45` 的 `ChatSessionRecord.memory_messages`，底层落库到 `memory_messages_json`。
+定义在 `src/covalent/infra/memory.py:42-45` 的 `ChatSessionRecord.memory_messages`，底层落库到 `memory_messages_json`。
 
 加载逻辑：
 
-- `ReactAgentRuntime._load_session_messages(...)` 从 `session_store.load_messages(session_id)` 取数，见 `src/agent_framework/runtime/react.py:593-599`
+- `ReactAgentRuntime._load_session_messages(...)` 从 `session_store.load_messages(session_id)` 取数，见 `src/covalent/runtime/react.py:593-599`
 - 之后会做两件事：
-  - 截取最近窗口：`_recent_message_window(..., session_history_limit)`，见 `src/agent_framework/runtime/react.py:787-795`
-  - 清理非法 tool message 序列：`_sanitize_tool_message_sequence(...)`，见 `src/agent_framework/runtime/react.py:765-785`
+  - 截取最近窗口：`_recent_message_window(..., session_history_limit)`，见 `src/covalent/runtime/react.py:787-795`
+  - 清理非法 tool message 序列：`_sanitize_tool_message_sequence(...)`，见 `src/covalent/runtime/react.py:765-785`
 
 持久化逻辑：
 
-- `ReactAgentRuntime._persist_session_messages(...)` 会再次做窗口截断和 tool message 清理，然后写入 store，见 `src/agent_framework/runtime/react.py:601-611`
-- 默认 `session_history_limit` 为 `40`，配置见 `src/agent_framework/infra/settings.py:39`
+- `ReactAgentRuntime._persist_session_messages(...)` 会再次做窗口截断和 tool message 清理，然后写入 store，见 `src/covalent/runtime/react.py:601-611`
+- 默认 `session_history_limit` 为 `40`，配置见 `src/covalent/infra/settings.py:39`
 
 结论：
 
@@ -68,7 +68,7 @@
 
 ### 2.2 `transcript_messages`：前端展示消息
 
-定义在 `src/agent_framework/infra/memory.py:18-23` 的 `ChatTranscriptMessage`，底层落库到 `transcript_messages_json`。
+定义在 `src/covalent/infra/memory.py:18-23` 的 `ChatTranscriptMessage`，底层落库到 `transcript_messages_json`。
 
 这份数据的特点：
 
@@ -78,13 +78,13 @@
 - 不包含 `tool` 结果
 - 不包含 `tool_call_id`
 
-用户消息是通过 `_build_user_transcript_message(...)` 构建的，见 `src/agent_framework/api/app.py:1224-1230`。
+用户消息是通过 `_build_user_transcript_message(...)` 构建的，见 `src/covalent/api/app.py:1224-1230`。
 
 assistant transcript 的更新方式：
 
-- 流式增量文本：`_upsert_assistant_transcript(...)`，见 `src/agent_framework/api/app.py:1247-1252`
-- 最终文本覆盖：`_replace_assistant_transcript(...)`，见 `src/agent_framework/api/app.py:1254-1259`
-- 下载类附件会追加到 assistant transcript：`_append_assistant_attachments(...)`，见 `src/agent_framework/api/app.py:1261-1272`
+- 流式增量文本：`_upsert_assistant_transcript(...)`，见 `src/covalent/api/app.py:1247-1252`
+- 最终文本覆盖：`_replace_assistant_transcript(...)`，见 `src/covalent/api/app.py:1254-1259`
+- 下载类附件会追加到 assistant transcript：`_append_assistant_attachments(...)`，见 `src/covalent/api/app.py:1261-1272`
 
 结论：
 
@@ -93,9 +93,9 @@ assistant transcript 的更新方式：
 
 ### 2.3 `activity`：trace 与 HITL 状态
 
-定义在 `src/agent_framework/infra/memory.py:25-29` 的 `ChatActivityItem`，底层落库到 `activity_json`。
+定义在 `src/covalent/infra/memory.py:25-29` 的 `ChatActivityItem`，底层落库到 `activity_json`。
 
-哪些事件会写入 `activity`，定义在 `TRACE_ACTIVITY_EVENTS`，见 `src/agent_framework/api/app.py:125-144`，包括：
+哪些事件会写入 `activity`，定义在 `TRACE_ACTIVITY_EVENTS`，见 `src/covalent/api/app.py:125-144`，包括：
 
 - `tool_calls`
 - `tool_results`
@@ -118,13 +118,13 @@ assistant transcript 的更新方式：
 
 `stream_agent(...)` 在开始时做两次不同的数据读取：
 
-1. `session_store.get_session(session_id)`，见 `src/agent_framework/api/app.py:523`
+1. `session_store.get_session(session_id)`，见 `src/covalent/api/app.py:523`
    作用：
    - 读取 `transcript_messages`
    - 读取 `activity`
    - 检查是否存在未解决的 pending question
 
-2. `runtime._load_session_messages(...)`，见 `src/agent_framework/runtime/react.py:969`
+2. `runtime._load_session_messages(...)`，见 `src/covalent/runtime/react.py:969`
    作用：
    - 读取 `memory_messages`
    - 作为本轮模型调用的真实历史上下文
@@ -136,11 +136,11 @@ assistant transcript 的更新方式：
 前端的加载机制分两段：
 
 1. 首屏只拿 session summary
-   - `GET /sessions`，后端见 `src/agent_framework/api/app.py:351-354`
+   - `GET /sessions`，后端见 `src/covalent/api/app.py:351-354`
    - 前端见 `frontend/components/chat-workspace.tsx:1213-1225`
 
 2. 用户点开某个会话时再 hydrate 全量聊天
-   - `GET /sessions/{session_id}`，后端见 `src/agent_framework/api/app.py:356-362`
+   - `GET /sessions/{session_id}`，后端见 `src/covalent/api/app.py:356-362`
    - 前端见 `frontend/components/chat-workspace.tsx:1276-1288`
 
 前端收到 full session 后：
@@ -169,7 +169,7 @@ assistant transcript 的更新方式：
 3. `metadata.memory_user_input`
    给后续 memory 使用的归一化文本，见 `frontend/components/chat-workspace.tsx:1797-1824`
 
-runtime 在写入 `memory_messages` 时使用 `_persisted_user_input(...)`，优先取 `memory_user_input`，见 `src/agent_framework/runtime/react.py:1204-1230`。
+runtime 在写入 `memory_messages` 时使用 `_persisted_user_input(...)`，优先取 `memory_user_input`，见 `src/covalent/runtime/react.py:1204-1230`。
 
 结论：
 
@@ -189,19 +189,19 @@ runtime 在写入 `memory_messages` 时使用 `_persisted_user_input(...)`，优
 
 ### 5.1 触发暂停
 
-HITL 通过内建工具 `ask_user` 触发，注册见 `src/agent_framework/api/app.py:1036-1097`，handler 见 `src/agent_framework/api/app.py:1419-1449`。
+HITL 通过内建工具 `ask_user` 触发，注册见 `src/covalent/api/app.py:1036-1097`，handler 见 `src/covalent/api/app.py:1419-1449`。
 
 `ask_user` 返回的是 `UserInputRequest`，不是普通字符串结果。
 
 在工具执行层：
 
-- 本地工具若返回 `UserInputRequest`，`FrameworkRegistry.execute_tool_call(...)` 会把它包装成 `ToolResult(input_request=...)`，见 `src/agent_framework/registry/registry.py:180-196`
-- runtime 收集所有 tool result 后，如果发现有 `input_request`，就认为本轮必须暂停，见 `src/agent_framework/runtime/react.py:1157-1176`
+- 本地工具若返回 `UserInputRequest`，`FrameworkRegistry.execute_tool_call(...)` 会把它包装成 `ToolResult(input_request=...)`，见 `src/covalent/registry/registry.py:180-196`
+- runtime 收集所有 tool result 后，如果发现有 `input_request`，就认为本轮必须暂停，见 `src/covalent/runtime/react.py:1157-1176`
 
 暂停时 runtime 的行为：
 
 1. 不把这条“尚未完成”的 tool result 写入 `memory_messages`
-2. 先持久化当前已有的 `messages`，见 `src/agent_framework/runtime/react.py:1162-1164`
+2. 先持久化当前已有的 `messages`，见 `src/covalent/runtime/react.py:1162-1164`
 3. 发出 `input_required` 事件
 4. 直接 `return`
 
@@ -211,8 +211,8 @@ HITL 通过内建工具 `ask_user` 触发，注册见 `src/agent_framework/api/a
 
 在 `stream_agent(...)` 开头，后端会从已有 `activity` 里提取未解决的 pending question：
 
-- 提取逻辑：`_extract_pending_user_input(...)`，见 `src/agent_framework/api/app.py:1452-1468`
-- 若存在 pending，但请求里没有合法的 resume 信息，就返回 `409`，见 `src/agent_framework/api/app.py:523-533`
+- 提取逻辑：`_extract_pending_user_input(...)`，见 `src/covalent/api/app.py:1452-1468`
+- 若存在 pending，但请求里没有合法的 resume 信息，就返回 `409`，见 `src/covalent/api/app.py:523-533`
 
 也就是说：
 
@@ -221,23 +221,23 @@ HITL 通过内建工具 `ask_user` 触发，注册见 `src/agent_framework/api/a
 
 ### 5.3 恢复时不是追加 `user` 消息，而是补一条 `tool` 消息
 
-恢复逻辑在 `_build_resume_tool_result(...)`，见 `src/agent_framework/api/app.py:1471-1494`。
+恢复逻辑在 `_build_resume_tool_result(...)`，见 `src/covalent/api/app.py:1471-1494`。
 
 路由会从请求中读取：
 
 - `metadata.resume_question_id`
 - `metadata.question_response`
 
-验证通过后构造 `ResumedToolResult`，再塞到 `RunContext.metadata["resume_tool_result"]`，见 `src/agent_framework/api/app.py:541-544`。
+验证通过后构造 `ResumedToolResult`，再塞到 `RunContext.metadata["resume_tool_result"]`，见 `src/covalent/api/app.py:541-544`。
 
-runtime 在下一轮开始时会调用 `_resume_tool_message(...)`，见 `src/agent_framework/runtime/react.py:1261-1280`，把上面的 resume 信息变成：
+runtime 在下一轮开始时会调用 `_resume_tool_message(...)`，见 `src/covalent/runtime/react.py:1261-1280`，把上面的 resume 信息变成：
 
 - `role="tool"`
 - `name=<原 tool_name>`
 - `tool_call_id=<原 tool_call_id>`
 - `content={"request_id","summary","answers"}`
 
-然后把这条 `tool` 消息接到已有 `memory_messages` 后面，见 `src/agent_framework/runtime/react.py:971-977`。
+然后把这条 `tool` 消息接到已有 `memory_messages` 后面，见 `src/covalent/runtime/react.py:971-977`。
 
 结论：
 
@@ -249,7 +249,7 @@ runtime 在下一轮开始时会调用 `_resume_tool_message(...)`，见 `src/ag
 
 恢复请求进入 `stream_agent(...)` 时，路由仍会向 transcript 追加一条用户可见消息：
 
-- 文本来自 `_request_display_input(...)`，见 `src/agent_framework/api/app.py:1497-1522`
+- 文本来自 `_request_display_input(...)`，见 `src/covalent/api/app.py:1497-1522`
 
 但 runtime 不会向 `memory_messages` 追加 `user` 消息，而是追加 `tool` 消息。
 
@@ -281,7 +281,7 @@ delegate agent 即使内部触发 `input_required`，父 runtime 最终也会把
 - delegate trace 会保留 `delegate_input_required`
 - 但真正控制暂停/恢复的是顶层 `ToolResult.input_request`
 
-实现见 `src/agent_framework/runtime/react.py:401-438`。
+实现见 `src/covalent/runtime/react.py:401-438`。
 
 结论：
 
@@ -297,7 +297,7 @@ delegate agent 即使内部触发 `input_required`，父 runtime 最终也会把
 - `messages`
 - `activity`
 
-定义见 `src/agent_framework/api/schemas.py:111-113`。
+定义见 `src/covalent/api/schemas.py:111-113`。
 
 也就是说：
 
@@ -308,7 +308,7 @@ delegate agent 即使内部触发 `input_required`，父 runtime 最终也会把
 
 ### 6.2 runtime 本身已经支持“无 session memory”
 
-`ReactAgentRuntime._load_session_messages(...)` 中，如果没有 `session_store`、`context` 或 `context.session_id`，会直接返回空列表，见 `src/agent_framework/runtime/react.py:593-595`。
+`ReactAgentRuntime._load_session_messages(...)` 中，如果没有 `session_store`、`context` 或 `context.session_id`，会直接返回空列表，见 `src/covalent/runtime/react.py:593-595`。
 
 因此从实现上说：
 
@@ -319,8 +319,8 @@ delegate agent 即使内部触发 `input_required`，父 runtime 最终也会把
 
 `_get_session_workspace_root(...)` 明确要求：
 
-- 如果启用了 session workspace 且没有 `session_id`，就报错，见 `src/agent_framework/core/workspace_tools.py:19-26`
-- `publish_downloadable_file` 也显式要求有效 `session_id`，见 `src/agent_framework/core/workspace_tools.py:310-339`
+- 如果启用了 session workspace 且没有 `session_id`，就报错，见 `src/covalent/core/workspace_tools.py:19-26`
+- `publish_downloadable_file` 也显式要求有效 `session_id`，见 `src/covalent/core/workspace_tools.py:310-339`
 
 结论：
 
@@ -418,7 +418,7 @@ delegate agent 即使内部触发 `input_required`，父 runtime 最终也会把
    - `context_summary_char_budget=6000`
    - `context_message_char_limit=4000`
 
-实现见 `src/agent_framework/runtime/react.py:48-67` 与 `src/agent_framework/runtime/react.py:859-959`。
+实现见 `src/covalent/runtime/react.py:48-67` 与 `src/covalent/runtime/react.py:859-959`。
 
 新接口要明确：
 

@@ -20,39 +20,39 @@ import shutil
 import tempfile
 import zipfile
 
-from agent_framework.api._auth_helpers import _resolve_console_principal
-from agent_framework.api._shared import _rmtree_async
-from agent_framework.api._shared import _safe_extract_zip
-from agent_framework.api.schemas import SkillInstallRequest
-from agent_framework.api.schemas import SkillInstallResponse
-from agent_framework.api.schemas import SkillPreviewFileResponse
-from agent_framework.api.schemas import SkillPreviewResponse
-from agent_framework.api.schemas import SkillSummaryResponse
-from agent_framework.application.services.runtime_apply import _apply_runtime_config
-from agent_framework.application.services.skill_service import _build_skill_export_zip
-from agent_framework.application.services.skill_service import _can_access_manifest_skill
-from agent_framework.application.services.skill_service import _collect_skill_preview_files
-from agent_framework.application.services.skill_service import _detect_uploaded_skill_directory
-from agent_framework.application.services.skill_service import _ensure_skill_access
-from agent_framework.application.services.skill_service import _ensure_skill_state_mutation_allowed
-from agent_framework.application.services.skill_service import _find_matching_git_skill
-from agent_framework.application.services.skill_service import _infer_skill_install_source_type
-from agent_framework.application.services.skill_service import _inline_skill_summary_response
-from agent_framework.application.services.skill_service import _manifest_skill_summary_response
-from agent_framework.application.services.skill_service import _matches_skill_source
-from agent_framework.application.services.skill_service import _reconcile_skill_process_manager
-from agent_framework.application.services.skill_service import _resolve_skill_preview_paths
-from agent_framework.application.services.skill_service import _set_skill_enabled
-from agent_framework.application.services.skill_service import _skill_category
-from agent_framework.application.services.skill_service import _sync_registry_skill_states
-from agent_framework.application.services.skill_service import _visible_skill_source_payload_for_spec
-from agent_framework.infra.config_store import ConfigStore
-from agent_framework.infra.config_store import PersistedSkillSourceConfig
-from agent_framework.infra.db import DatabaseManager
-from agent_framework.infra.settings import AppSettings
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.skills.loader import SkillLoader
-from agent_framework.skills.loader import normalize_git_source_payload
+from covalent.api._auth_helpers import _resolve_console_principal
+from covalent.api._shared import _rmtree_async
+from covalent.api._shared import _safe_extract_zip
+from covalent.api.schemas import SkillInstallRequest
+from covalent.api.schemas import SkillInstallResponse
+from covalent.api.schemas import SkillPreviewFileResponse
+from covalent.api.schemas import SkillPreviewResponse
+from covalent.api.schemas import SkillSummaryResponse
+from covalent.application.services.runtime_apply import _apply_runtime_config
+from covalent.application.services.skill_service import _build_skill_export_zip
+from covalent.application.services.skill_service import _can_access_manifest_skill
+from covalent.application.services.skill_service import _collect_skill_preview_files
+from covalent.application.services.skill_service import _detect_uploaded_skill_directory
+from covalent.application.services.skill_service import _ensure_skill_access
+from covalent.application.services.skill_service import _ensure_skill_state_mutation_allowed
+from covalent.application.services.skill_service import _find_matching_git_skill
+from covalent.application.services.skill_service import _infer_skill_install_source_type
+from covalent.application.services.skill_service import _inline_skill_summary_response
+from covalent.application.services.skill_service import _manifest_skill_summary_response
+from covalent.application.services.skill_service import _matches_skill_source
+from covalent.application.services.skill_service import _reconcile_skill_process_manager
+from covalent.application.services.skill_service import _resolve_skill_preview_paths
+from covalent.application.services.skill_service import _set_skill_enabled
+from covalent.application.services.skill_service import _skill_category
+from covalent.application.services.skill_service import _sync_registry_skill_states
+from covalent.application.services.skill_service import _visible_skill_source_payload_for_spec
+from covalent.infra.config_store import ConfigStore
+from covalent.infra.config_store import PersistedSkillSourceConfig
+from covalent.infra.db import DatabaseManager
+from covalent.infra.settings import AppSettings
+from covalent.registry.registry import FrameworkRegistry
+from covalent.skills.loader import SkillLoader
+from covalent.skills.loader import normalize_git_source_payload
 
 router = APIRouter()
 
@@ -140,7 +140,7 @@ async def install_skill(request: Request, install_request: SkillInstallRequest) 
         if source_dir is None or not source_dir.is_dir():
             raise HTTPException(status_code=400, detail=f"Source path does not exist or is not a directory: {install_request.source}")
 
-        from agent_framework.skills.exceptions import SkillLoadError
+        from covalent.skills.exceptions import SkillLoadError
 
         try:
             spec = loader.load_skill_dir(source_dir)

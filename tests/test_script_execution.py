@@ -13,9 +13,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_framework.runtime.filesystem_backend import FileSystemBackend
-from agent_framework.skills.meta_tools import _read_skill_instructions, _run_skill_script
-from agent_framework.skills.spec import ManifestSkillSpec, ScriptDeclaration, SkillSpec
+from covalent.runtime.filesystem_backend import FileSystemBackend
+from covalent.skills.meta_tools import _read_skill_instructions, _run_skill_script
+from covalent.skills.spec import ManifestSkillSpec, ScriptDeclaration, SkillSpec
 
 
 class _DummySettings:

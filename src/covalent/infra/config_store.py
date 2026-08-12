@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agent_framework.core.types import Capability
-from agent_framework.infra.db import (
+from covalent.core.types import Capability
+from covalent.infra.db import (
     AgentCapabilityRow,
     AgentDelegateRow,
     AgentMcpServerRow,
@@ -25,8 +25,8 @@ from agent_framework.infra.db import (
     SkillStateRow,
     SkillSourceRow,
 )
-from agent_framework.mcp.spec import McpServerConfig, McpToolReference
-from agent_framework.model.base import ProviderConfig
+from covalent.mcp.spec import McpServerConfig, McpToolReference
+from covalent.model.base import ProviderConfig
 
 ConfigKind = Literal["agents", "mcp", "skill_sources", "providers"]
 ResourceVisibility = Literal["private", "public"]

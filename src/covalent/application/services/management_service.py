@@ -18,20 +18,20 @@ from fastapi import FastAPI, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent_framework.api._shared import (
+from covalent.api._shared import (
     ConsolePrincipalContext,
     RESOURCE_METADATA_FIELDS,
     _dedupe_strings,
     _new_chat_item_id,
     _record_audit_log,
 )
-from agent_framework.application.services.skill_service import (
+from covalent.application.services.skill_service import (
     _build_skill_management_export_payload,
     _import_skill_management_payload,
 )
-from agent_framework.application.services.runtime_apply import _apply_runtime_config
-from agent_framework.api.auth import ApiPrincipal
-from agent_framework.api.schemas import (
+from covalent.application.services.runtime_apply import _apply_runtime_config
+from covalent.api.auth import ApiPrincipal
+from covalent.api.schemas import (
     ConfigDocumentResponse,
     LocalToolSummaryResponse,
     ManagementExportFormat,
@@ -39,22 +39,22 @@ from agent_framework.api.schemas import (
     ManagementKind,
     PublicationRequestResponse,
 )
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
-from agent_framework.core.types import Capability, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
-from agent_framework.core.workspace_tools import register_workspace_tools
-from agent_framework.infra.config_store import ConfigKind, ConfigStore, PersistedAgentConfig, PersistedSkillSourceConfig
-from agent_framework.infra.db import AgentRow, DatabaseManager, McpServerRow, ProviderRow, SkillSourceRow
-from agent_framework.infra.memory import ChatSessionRecord
-from agent_framework.infra.settings import AppSettings
-from agent_framework.mcp.client import McpSdkClient
-from agent_framework.mcp.spec import McpServerConfig, McpToolReference
-from agent_framework.model.base import ProviderConfig
-from agent_framework.model.factory import default_provider_config
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.runtime.backend import ExecutionBackend
-from agent_framework.skills.loader import SkillLoader, normalize_git_source_payload
-from agent_framework.skills.meta_tools import register_skill_meta_tools
+from covalent.core.agent import AgentSpec
+from covalent.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
+from covalent.core.types import Capability, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
+from covalent.core.workspace_tools import register_workspace_tools
+from covalent.infra.config_store import ConfigKind, ConfigStore, PersistedAgentConfig, PersistedSkillSourceConfig
+from covalent.infra.db import AgentRow, DatabaseManager, McpServerRow, ProviderRow, SkillSourceRow
+from covalent.infra.memory import ChatSessionRecord
+from covalent.infra.settings import AppSettings
+from covalent.mcp.client import McpSdkClient
+from covalent.mcp.spec import McpServerConfig, McpToolReference
+from covalent.model.base import ProviderConfig
+from covalent.model.factory import default_provider_config
+from covalent.registry.registry import FrameworkRegistry
+from covalent.runtime.backend import ExecutionBackend
+from covalent.skills.loader import SkillLoader, normalize_git_source_payload
+from covalent.skills.meta_tools import register_skill_meta_tools
 
 logger = logging.getLogger(__name__)
 
@@ -768,7 +768,7 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
         return normalized_servers
 
     if kind == "providers":
-        from agent_framework.infra.config_store import PersistedProviderConfig
+        from covalent.infra.config_store import PersistedProviderConfig
         normalized_providers = [PersistedProviderConfig.model_validate(item).model_dump(mode="json") for item in payload]
         default_model_names = [
             str(item.get("name") or "")
@@ -1006,7 +1006,7 @@ async def _resolve_default_provider(
             )
             providers_payload = []
 
-    from agent_framework.infra.config_store import PersistedProviderConfig
+    from covalent.infra.config_store import PersistedProviderConfig
 
     for item in providers_payload or []:
         default_model = str(item.get("default_model") or "").strip()

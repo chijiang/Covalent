@@ -8,15 +8,15 @@ from typing import Any
 
 import yaml
 
-from agent_framework.infra.settings import AppSettings
-from agent_framework.skills.exceptions import SkillLoadError
-from agent_framework.skills.introspection import (
+from covalent.infra.settings import AppSettings
+from covalent.skills.exceptions import SkillLoadError
+from covalent.skills.introspection import (
     infer_bundle_resources,
     infer_bundle_scripts,
     infer_runtime_entry_point,
     infer_tools_from_entry_point,
 )
-from agent_framework.skills.spec import ManifestSkillSpec, SkillRuntime
+from covalent.skills.spec import ManifestSkillSpec, SkillRuntime
 
 _IGNORED_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".tox", "dist", "build"}
 

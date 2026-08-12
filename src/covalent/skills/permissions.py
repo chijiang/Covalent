@@ -4,7 +4,7 @@ import fnmatch
 import logging
 import os
 
-from agent_framework.skills.spec import ManifestSkillSpec
+from covalent.skills.spec import ManifestSkillSpec
 
 logger = logging.getLogger(__name__)
 

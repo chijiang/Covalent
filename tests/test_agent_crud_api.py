@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
-from agent_framework.api.app import create_app
-from agent_framework.infra.settings import AppSettings
-from agent_framework.registry.registry import FrameworkRegistry
+from covalent.api.app import create_app
+from covalent.infra.settings import AppSettings
+from covalent.registry.registry import FrameworkRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -127,14 +127,14 @@ def _build_app(*, config_store=None, settings=None):
     app.state.session_store = SimpleNamespace()
 
     # Seed the initial agent so /agents/{name} works.
-    from agent_framework.application.services.management_service import _resolve_default_provider, _build_agent_specs
+    from covalent.application.services.management_service import _resolve_default_provider, _build_agent_specs
     return app, TestClient(app)
 
 
 async def _seed_registry(app) -> None:
     """Run build_agent_specs after creating the app (must be async)."""
-    from agent_framework.application.services.management_service import _resolve_default_provider, _build_agent_specs
-    from agent_framework.mcp.spec import McpServerConfig
+    from covalent.application.services.management_service import _resolve_default_provider, _build_agent_specs
+    from covalent.mcp.spec import McpServerConfig
     settings = app.state.settings
     config_store = app.state.config_store
     provider = await _resolve_default_provider(settings, config_store, [])
@@ -144,8 +144,8 @@ async def _seed_registry(app) -> None:
 
 
 def _admin_cookie(settings):
-    from agent_framework.api._auth_helpers import _make_console_session_token
-    from agent_framework.api._shared import ConsolePrincipalContext
+    from covalent.api._auth_helpers import _make_console_session_token
+    from covalent.api._shared import ConsolePrincipalContext
     p = ConsolePrincipalContext(user_id="admin", email="admin@t", display_name="A", role="admin",
                                 workspace_id="w", workspace_name="W", workspace_slug="w", workspace_role="admin")
     return f"{settings.console_session_cookie_name}={_make_console_session_token(settings, p)}"
@@ -159,8 +159,8 @@ class AgentCrudTests(unittest.IsolatedAsyncioTestCase):
             settings=self.settings,
         )
         # Direct-register so GET /agents/{name} works.
-        from agent_framework.core.agent import AgentSpec
-        from agent_framework.model.base import ProviderConfig
+        from covalent.core.agent import AgentSpec
+        from covalent.model.base import ProviderConfig
         self.app.state.registry.register_agent(AgentSpec(
             name="default", description="Default agent",
             system_prompt="You are a helpful assistant.",

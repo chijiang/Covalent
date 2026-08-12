@@ -8,22 +8,22 @@ from fastapi import HTTPException
 from fastapi import Request
 from fastapi import Response
 
-from agent_framework.api._auth_helpers import _clear_console_session_cookie
-from agent_framework.api._auth_helpers import _resolve_console_principal
-from agent_framework.api._auth_helpers import _set_console_session_cookie
-from agent_framework.api._shared import _record_audit_log
-from agent_framework.api.schemas import ConsoleAccountUpdateRequest
-from agent_framework.api.schemas import ConsoleLoginRequest
-from agent_framework.api.schemas import ConsolePasswordUpdateRequest
-from agent_framework.api.schemas import ConsoleRegisterRequest
-from agent_framework.api.schemas import ConsoleUserResponse
-from agent_framework.application.services.user_service import _authenticate_console_password
-from agent_framework.application.services.user_service import _console_user_response
-from agent_framework.application.services.user_service import _register_console_user
-from agent_framework.application.services.user_service import _update_current_account
-from agent_framework.application.services.user_service import _update_current_password
-from agent_framework.infra.db import DatabaseManager
-from agent_framework.infra.settings import AppSettings
+from covalent.api._auth_helpers import _clear_console_session_cookie
+from covalent.api._auth_helpers import _resolve_console_principal
+from covalent.api._auth_helpers import _set_console_session_cookie
+from covalent.api._shared import _record_audit_log
+from covalent.api.schemas import ConsoleAccountUpdateRequest
+from covalent.api.schemas import ConsoleLoginRequest
+from covalent.api.schemas import ConsolePasswordUpdateRequest
+from covalent.api.schemas import ConsoleRegisterRequest
+from covalent.api.schemas import ConsoleUserResponse
+from covalent.application.services.user_service import _authenticate_console_password
+from covalent.application.services.user_service import _console_user_response
+from covalent.application.services.user_service import _register_console_user
+from covalent.application.services.user_service import _update_current_account
+from covalent.application.services.user_service import _update_current_password
+from covalent.infra.db import DatabaseManager
+from covalent.infra.settings import AppSettings
 
 router = APIRouter()
 

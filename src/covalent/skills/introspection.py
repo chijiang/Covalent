@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from agent_framework.skills.spec import ScriptDeclaration, ToolDeclaration
+from covalent.skills.spec import ScriptDeclaration, ToolDeclaration
 
 
 def infer_runtime_entry_point(skill_dir: Path) -> tuple[str, str] | None:

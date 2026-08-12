@@ -11,29 +11,29 @@ import jwt
 
 from datetime import UTC, datetime
 
-from agent_framework.api._shared import (
+from covalent.api._shared import (
     ConsolePrincipalContext,
     _agent_run_log_response,
     _audit_request_metadata,
 )
-from agent_framework.api._auth_helpers import (
+from covalent.api._auth_helpers import (
     _build_api_token_usage_response,
     _list_audit_logs,
     _list_api_token_runs,
     _resolve_console_identity,
 )
-from agent_framework.application.services.token_service import (
+from covalent.application.services.token_service import (
     _normalize_token_policy,
     _normalize_token_scopes,
     _revoke_api_token,
     _update_api_token,
 )
-from agent_framework.application.services.invoke_service import (
+from covalent.application.services.invoke_service import (
     _enforce_api_token_policy_limits,
     _public_stream_events,
     _record_public_agent_run,
 )
-from agent_framework.application.services.management_service import (
+from covalent.application.services.management_service import (
     _build_agent_specs,
     _ensure_console_principal_can_access_session,
     _parse_mcp_servers,
@@ -41,11 +41,11 @@ from agent_framework.application.services.management_service import (
     _pick_resource_row_for_principal,
     _validate_config_payload,
 )
-from agent_framework.application.services.skill_service import _ensure_skill_state_mutation_allowed
-from agent_framework.api.app import (
+from covalent.application.services.skill_service import _ensure_skill_state_mutation_allowed
+from covalent.api.app import (
     create_app,
 )
-from agent_framework.api.auth import (
+from covalent.api.auth import (
     ApiPrincipal,
     generate_api_token,
     hash_api_token,
@@ -54,10 +54,10 @@ from agent_framework.api.auth import (
     require_scope,
     require_trace_level_allowed,
 )
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.types import GenerationResponse, TokenUsage
-from agent_framework.infra.db import AgentRow, AgentRunLogRow, ApiTokenRow, AuditLogRow, McpServerRow, UserRow, WorkspaceRow
-from agent_framework.infra.config_store import (
+from covalent.core.agent import AgentSpec
+from covalent.core.types import GenerationResponse, TokenUsage
+from covalent.infra.db import AgentRow, AgentRunLogRow, ApiTokenRow, AuditLogRow, McpServerRow, UserRow, WorkspaceRow
+from covalent.infra.config_store import (
     ConfigPrincipal,
     PersistedAgentConfig,
     _display_resource_name,
@@ -65,12 +65,12 @@ from agent_framework.infra.config_store import (
     _resource_name_map,
     _scoped_resource_name,
 )
-from agent_framework.infra.memory import ChatSessionRecord
-from agent_framework.infra.settings import AppSettings
-from agent_framework.infra.config_store import _is_editable_by_principal
-from agent_framework.model.base import ProviderConfig
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.api.schemas import (
+from covalent.infra.memory import ChatSessionRecord
+from covalent.infra.settings import AppSettings
+from covalent.infra.config_store import _is_editable_by_principal
+from covalent.model.base import ProviderConfig
+from covalent.registry.registry import FrameworkRegistry
+from covalent.api.schemas import (
     ConsoleAccountUpdateRequest,
     ConsoleLoginRequest,
     ConsoleRegisterRequest,
@@ -863,8 +863,8 @@ def _build_guard_app(settings):
 
 
 def _session_cookie(settings: AppSettings, *, user_id: str = "user_1", email: str = "u1@example.com") -> str:
-    from agent_framework.api._auth_helpers import _make_console_session_token
-    from agent_framework.api._shared import ConsolePrincipalContext
+    from covalent.api._auth_helpers import _make_console_session_token
+    from covalent.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id=user_id,

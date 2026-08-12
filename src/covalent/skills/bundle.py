@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from agent_framework.skills.spec import ManifestSkillSpec, ScriptDeclaration
+from covalent.skills.spec import ManifestSkillSpec, ScriptDeclaration
 
 _TEXT_READ_LIMIT = 24_000
 

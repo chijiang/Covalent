@@ -5,9 +5,9 @@ import os
 import sys
 import unittest
 
-from agent_framework.infra.settings import AppSettings
-from agent_framework.runtime.backend import make_backend
-from agent_framework.runtime.filesystem_backend import FileSystemBackend
+from covalent.infra.settings import AppSettings
+from covalent.runtime.backend import make_backend
+from covalent.runtime.filesystem_backend import FileSystemBackend
 
 
 class FileSystemBackendTests(unittest.TestCase):

@@ -7,15 +7,15 @@ from fastapi import APIRouter
 from fastapi import HTTPException
 from fastapi import Request
 
-from agent_framework.api._auth_helpers import _resolve_console_principal
-from agent_framework.api.schemas import McpInspectRequest
-from agent_framework.api.schemas import McpInspectResponse
-from agent_framework.api.schemas import McpToolCallRequest
-from agent_framework.api.schemas import McpToolCallResponse
-from agent_framework.api.schemas import McpToolSummaryResponse
-from agent_framework.application.services.management_service import _ensure_console_principal_can_access_mcp_server
-from agent_framework.infra.db import DatabaseManager
-from agent_framework.mcp.client import McpSdkClient
+from covalent.api._auth_helpers import _resolve_console_principal
+from covalent.api.schemas import McpInspectRequest
+from covalent.api.schemas import McpInspectResponse
+from covalent.api.schemas import McpToolCallRequest
+from covalent.api.schemas import McpToolCallResponse
+from covalent.api.schemas import McpToolSummaryResponse
+from covalent.application.services.management_service import _ensure_console_principal_can_access_mcp_server
+from covalent.infra.db import DatabaseManager
+from covalent.mcp.client import McpSdkClient
 
 router = APIRouter()
 

@@ -9,22 +9,22 @@ import anyio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from agent_framework.api._auth_helpers import ConsoleAuthGuardMiddleware
-from agent_framework.api._shared import _sandbox_reaper_loop
-from agent_framework.application.services.invoke_service import _ApiTokenRunLimiter
-from agent_framework.application.services.management_service import build_registry
-from agent_framework.application.services.skill_service import (
+from covalent.api._auth_helpers import ConsoleAuthGuardMiddleware
+from covalent.api._shared import _sandbox_reaper_loop
+from covalent.application.services.invoke_service import _ApiTokenRunLimiter
+from covalent.application.services.management_service import build_registry
+from covalent.application.services.skill_service import (
     _reconcile_skill_process_manager,
     _sync_registry_skill_states,
 )
-from agent_framework.application.services.user_service import _seed_initial_admin_user
-from agent_framework.infra.config_store import ConfigStore
-from agent_framework.infra.db import DatabaseManager
-from agent_framework.infra.memory import PersistentSessionStore
-from agent_framework.infra.migrations import run_database_migrations
-from agent_framework.infra.settings import AppSettings
-from agent_framework.runtime.backend import make_backend
-from agent_framework.runtime.react import ReactAgentRuntime
+from covalent.application.services.user_service import _seed_initial_admin_user
+from covalent.infra.config_store import ConfigStore
+from covalent.infra.db import DatabaseManager
+from covalent.infra.memory import PersistentSessionStore
+from covalent.infra.migrations import run_database_migrations
+from covalent.infra.settings import AppSettings
+from covalent.runtime.backend import make_backend
+from covalent.runtime.react import ReactAgentRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    from agent_framework.api.routes import agents, auth, config, mcp, ops, providers, public, sessions, skills, tokens, users
+    from covalent.api.routes import agents, auth, config, mcp, ops, providers, public, sessions, skills, tokens, users
     app.include_router(ops.router)
     app.include_router(auth.router)
     app.include_router(users.router)

@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_framework.core.types import RunContext
+from covalent.core.types import RunContext
 
 
 ToolHandler = Callable[[dict[str, Any], RunContext | None], Any | Awaitable[Any]]

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from agent_framework.infra.settings import AppSettings
-from agent_framework.model.base import ModelAdapter, ProviderConfig
-from agent_framework.model.openai_compatible import OpenAICompatibleProvider
+from covalent.infra.settings import AppSettings
+from covalent.model.base import ModelAdapter, ProviderConfig
+from covalent.model.openai_compatible import OpenAICompatibleProvider
 
 
 def build_provider(config: ProviderConfig) -> ModelAdapter:

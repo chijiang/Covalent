@@ -14,9 +14,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_framework.skills.exceptions import SkillProcessError, SkillStartupError
-from agent_framework.skills.process import SkillProcessManager
-from agent_framework.skills.spec import (
+from covalent.skills.exceptions import SkillProcessError, SkillStartupError
+from covalent.skills.process import SkillProcessManager
+from covalent.skills.spec import (
     HealthCheckConfig,
     ManifestSkillSpec,
     ProcessConfig,

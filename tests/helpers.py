@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.types import (
+from covalent.core.agent import AgentSpec
+from covalent.core.types import (
     Capability,
     GenerationRequest,
     GenerationResponse,
@@ -20,10 +20,10 @@ from agent_framework.core.types import (
     TokenUsage,
     ToolCall,
 )
-from agent_framework.infra.memory import InMemorySessionStore
-from agent_framework.model.base import ModelAdapter, ProviderConfig
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.runtime.react import ReactAgentRuntime
+from covalent.infra.memory import InMemorySessionStore
+from covalent.model.base import ModelAdapter, ProviderConfig
+from covalent.registry.registry import FrameworkRegistry
+from covalent.runtime.react import ReactAgentRuntime
 
 
 # ---------------------------------------------------------------------------

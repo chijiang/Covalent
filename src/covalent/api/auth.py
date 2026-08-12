@@ -11,8 +11,8 @@ from fastapi import HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agent_framework.infra.db import ApiTokenRow, UserRow
-from agent_framework.infra.settings import AppSettings
+from covalent.infra.db import ApiTokenRow, UserRow
+from covalent.infra.settings import AppSettings
 
 
 TOKEN_PREFIX = "cvt_"

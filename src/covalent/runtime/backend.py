@@ -3,7 +3,7 @@
 A backend decides *where* a session's skill code and scripts run.
 
 - ``spawn_stream`` — long-lived bidirectional stdio for JSON-RPC skill runners
-  (used by :class:`agent_framework.skills.process.SkillProcessManager`).
+  (used by :class:`covalent.skills.process.SkillProcessManager`).
 - ``exec`` — one-shot command for ad-hoc scripts.
 - ``ensure``/``stop``/``is_alive`` — per-session environment lifecycle
   (no-ops on FileSystem; container create/teardown on Docker).
@@ -13,7 +13,7 @@ A backend decides *where* a session's skill code and scripts run.
 to a per-session environment. FileSystem ignores it; Docker routes it to the
 session's container. ``spawn_stream`` returns an ``asyncio.subprocess.Process``-
 compatible object: FileSystem returns a real subprocess; Docker returns a
-:class:`~agent_framework.runtime.docker_process.DockerExecProcess` that quacks
+:class:`~covalent.runtime.docker_process.DockerExecProcess` that quacks
 like one (validated by ``script/spike-docker-exec-rpc.py``).
 """
 
@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from agent_framework.infra.settings import AppSettings
+    from covalent.infra.settings import AppSettings
 
 
 @dataclass
@@ -71,8 +71,8 @@ class HostPathWorkspace:
 class ExecutionBackend(Protocol):
     """Where a session's skill code and scripts run.
 
-    Implementations: :class:`~agent_framework.runtime.filesystem_backend.FileSystemBackend`
-    (default), :class:`~agent_framework.runtime.docker_backend.DockerBackend`,
+    Implementations: :class:`~covalent.runtime.filesystem_backend.FileSystemBackend`
+    (default), :class:`~covalent.runtime.docker_backend.DockerBackend`,
     KubernetesBackend (Phase 3).
     """
 
@@ -168,7 +168,7 @@ def make_backend(
     into the session container; ignored by FileSystem. Fails fast for backends not
     yet implemented so a misconfiguration surfaces at startup.
     """
-    from agent_framework.runtime.filesystem_backend import FileSystemBackend
+    from covalent.runtime.filesystem_backend import FileSystemBackend
 
     kind = settings.execution_backend_kind
     if kind == "filesystem":
@@ -176,7 +176,7 @@ def make_backend(
     if kind == "docker":
         if skill_source_dirs_provider is None:
             raise ValueError("Docker backend requires skill_source_dirs_provider")
-        from agent_framework.runtime.docker_backend import DockerBackend
+        from covalent.runtime.docker_backend import DockerBackend
 
         return DockerBackend(settings, skill_source_dirs_provider)
     if kind == "kubernetes":

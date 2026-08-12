@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from agent_framework.infra.db import ChatMessageRow, DatabaseManager
+from covalent.infra.db import ChatMessageRow, DatabaseManager
 
 
 def rows_from_transcript(session_id: str, transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:

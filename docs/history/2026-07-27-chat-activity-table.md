@@ -22,8 +22,8 @@
 ## File Structure
 
 - **Create** `alembic/versions/20260727_000023_create_chat_activity.py` — DDL: `chat_activity` table + FK + unique + index (idempotent).
-- **Modify** `src/agent_framework/infra/db.py` — add `ChatActivityRow`; (Task 5) remove `activity_json` from `ChatSessionRow`.
-- **Modify** `src/agent_framework/infra/memory.py` — `PersistentSessionStore`: add `_load_activity`; `save_session` writes activity via `pg_insert(...).on_conflict_do_nothing(id)`; `_record_from_row` loads activity from the table.
+- **Modify** `src/covalent/infra/db.py` — add `ChatActivityRow`; (Task 5) remove `activity_json` from `ChatSessionRow`.
+- **Modify** `src/covalent/infra/memory.py` — `PersistentSessionStore`: add `_load_activity`; `save_session` writes activity via `pg_insert(...).on_conflict_do_nothing(id)`; `_record_from_row` loads activity from the table.
 - **Modify** `tests/test_persistent_session_store.py` — add round-trip, idempotent-append, and cascade tests.
 - **Create** `alembic/versions/20260727_000024_drop_chat_sessions_activity.py` — copy `activity` → `chat_activity`, then drop the column (atomic, idempotent).
 
@@ -93,7 +93,7 @@ def downgrade() -> None:
 ```bash
 AGENT_FRAMEWORK_DATABASE_URL='postgresql+asyncpg://postgres:postgres@localhost:5432/covalent_test' \
 .venv/bin/python -c "
-from agent_framework.infra.migrations import run_database_migrations
+from covalent.infra.migrations import run_database_migrations
 run_database_migrations('postgresql://postgres:postgres@localhost:5432/covalent_test')
 print('migrations applied to head')
 "
@@ -125,7 +125,7 @@ git add alembic/versions/20260727_000023_create_chat_activity.py
 ## Task 2: Add the `ChatActivityRow` ORM model
 
 **Files:**
-- Modify: `src/agent_framework/infra/db.py` (add the class after `ChatMessageRow`, which ends ~line 354)
+- Modify: `src/covalent/infra/db.py` (add the class after `ChatMessageRow`, which ends ~line 354)
 
 **Interfaces:**
 - Produces: `ChatActivityRow` mapping `chat_activity`. Fields consumed by Task 3: `.id` (`str`), `.session_id` (`str`), `.title` (`str`), `.payload` (`Any`), `.position` (`int`).
@@ -133,7 +133,7 @@ git add alembic/versions/20260727_000023_create_chat_activity.py
 
 - [ ] **Step 1: Add the model class**
 
-In `src/agent_framework/infra/db.py`, immediately after the `ChatMessageRow` class (after its `__table_args__`, ~line 354) and before the next top-level definition, add:
+In `src/covalent/infra/db.py`, immediately after the `ChatMessageRow` class (after its `__table_args__`, ~line 354) and before the next top-level definition, add:
 
 ```python
 class ChatActivityRow(Base):
@@ -161,7 +161,7 @@ All imports (`String`, `ForeignKey`, `JSONB`, `Integer`, `UniqueConstraint`, `An
 ```bash
 .venv/bin/python -c "
 import sys; sys.path.insert(0, 'src')
-from agent_framework.infra.db import ChatActivityRow
+from covalent.infra.db import ChatActivityRow
 t = ChatActivityRow.__table__
 print('table:', t.name)
 print('cols:', [(c.name, c.nullable) for c in t.columns])
@@ -185,7 +185,7 @@ Expected: ORM cols `[('id',False),('session_id',False),('title',False),('payload
 - [ ] **Step 3: Stage**
 
 ```bash
-git add src/agent_framework/infra/db.py
+git add src/covalent/infra/db.py
 ```
 
 ---
@@ -193,7 +193,7 @@ git add src/agent_framework/infra/db.py
 ## Task 3: Rewrite `PersistentSessionStore` activity handling + round-trip test (TDD)
 
 **Files:**
-- Modify: `src/agent_framework/infra/memory.py` (only `PersistentSessionStore` + helpers)
+- Modify: `src/covalent/infra/memory.py` (only `PersistentSessionStore` + helpers)
 - Modify: `tests/test_persistent_session_store.py` (append a test method)
 
 **Interfaces:**
@@ -208,7 +208,7 @@ Append to `PersistentSessionStoreTestCase` in `tests/test_persistent_session_sto
     async def test_activity_round_trips_in_order(self) -> None:
         from datetime import UTC, datetime
 
-        from agent_framework.infra.memory import ChatActivityItem, ChatSessionRecord
+        from covalent.infra.memory import ChatActivityItem, ChatSessionRecord
 
         store = self._store()
         now = datetime.now(UTC)
@@ -245,7 +245,7 @@ Note: this MAY pass before the rewrite (the old `activity_json` path round-trips
 
 - [ ] **Step 3: Implement the store changes**
 
-3a. Add the `pg_insert` import in `src/agent_framework/infra/memory.py` (after the existing `from sqlalchemy import delete, desc, func, select` on line 8):
+3a. Add the `pg_insert` import in `src/covalent/infra/memory.py` (after the existing `from sqlalchemy import delete, desc, func, select` on line 8):
 
 ```python
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -254,7 +254,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 3b. Add `ChatActivityRow` to the db import (line 12):
 
 ```python
-from agent_framework.infra.db import ChatActivityRow, ChatMessageRow, ChatSessionRow, run_session_operation
+from covalent.infra.db import ChatActivityRow, ChatMessageRow, ChatSessionRow, run_session_operation
 ```
 
 3c. Add the `_load_activity` helper next to `_load_messages` (after `_load_messages`, ~line 278):
@@ -354,7 +354,7 @@ import asyncio
 import tests.test_persistent_session_store as m
 from sqlalchemy import text
 from datetime import UTC, datetime
-from agent_framework.infra.memory import ChatActivityItem, ChatSessionRecord
+from covalent.infra.memory import ChatActivityItem, ChatSessionRecord
 async def probe():
     cls = m.PersistentSessionStoreTestCase
     cls.setUpClass()
@@ -376,7 +376,7 @@ Expected: `chat_activity rows for act-probe: 1`.
 - [ ] **Step 6: Stage**
 
 ```bash
-git add src/agent_framework/infra/memory.py tests/test_persistent_session_store.py
+git add src/covalent/infra/memory.py tests/test_persistent_session_store.py
 ```
 
 ---
@@ -395,7 +395,7 @@ git add src/agent_framework/infra/memory.py tests/test_persistent_session_store.
     async def test_activity_append_is_idempotent(self) -> None:
         from datetime import UTC, datetime
 
-        from agent_framework.infra.memory import ChatActivityItem, ChatSessionRecord
+        from covalent.infra.memory import ChatActivityItem, ChatSessionRecord
 
         store = self._store()
         now = datetime.now(UTC)
@@ -432,7 +432,7 @@ git add src/agent_framework/infra/memory.py tests/test_persistent_session_store.
     async def test_delete_session_removes_activity_via_cascade(self) -> None:
         from datetime import UTC, datetime
 
-        from agent_framework.infra.memory import ChatActivityItem, ChatSessionRecord
+        from covalent.infra.memory import ChatActivityItem, ChatSessionRecord
 
         store = self._store()
         now = datetime.now(UTC)
@@ -476,7 +476,7 @@ git add tests/test_persistent_session_store.py
 
 **Files:**
 - Create: `alembic/versions/20260727_000024_drop_chat_sessions_activity.py`
-- Modify: `src/agent_framework/infra/db.py` — remove `activity_json` from `ChatSessionRow` (line 334).
+- Modify: `src/covalent/infra/db.py` — remove `activity_json` from `ChatSessionRow` (line 334).
 
 **Interfaces:**
 - Produces: revision `20260727_000024`, `down_revision = "20260727_000023"`. `chat_activity` is the sole source of truth; `activity` column and its ORM mapping are gone.
@@ -549,7 +549,7 @@ def downgrade() -> None:
 
 - [ ] **Step 2: Remove the ORM attribute**
 
-In `src/agent_framework/infra/db.py`, delete the `activity_json` attribute from `ChatSessionRow` (line 334):
+In `src/covalent/infra/db.py`, delete the `activity_json` attribute from `ChatSessionRow` (line 334):
 
 ```python
     activity_json: Mapped[list[dict[str, Any]]] = mapped_column("activity", JSONB, nullable=False, default=list)
@@ -560,7 +560,7 @@ In `src/agent_framework/infra/db.py`, delete the `activity_json` attribute from 
 - [ ] **Step 3: Confirm no runtime references remain**
 
 ```bash
-grep -n "activity_json" src/agent_framework/infra/memory.py src/agent_framework/infra/db.py
+grep -n "activity_json" src/covalent/infra/memory.py src/covalent/infra/db.py
 ```
 Expected: no output. (If any line appears, remove it.)
 
@@ -629,7 +629,7 @@ Expected: all tests pass on the schema where `activity` no longer exists (proves
 - [ ] **Step 6: Stage**
 
 ```bash
-git add alembic/versions/20260727_000024_drop_chat_sessions_activity.py src/agent_framework/infra/db.py
+git add alembic/versions/20260727_000024_drop_chat_sessions_activity.py src/covalent/infra/db.py
 ```
 
 ---

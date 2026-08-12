@@ -4,9 +4,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agent_framework.core.types import Capability
-from agent_framework.mcp.spec import McpServerConfig, McpToolReference
-from agent_framework.model.base import ProviderConfig
+from covalent.core.types import Capability
+from covalent.mcp.spec import McpServerConfig, McpToolReference
+from covalent.model.base import ProviderConfig
 
 
 class AgentSpec(BaseModel):

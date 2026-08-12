@@ -63,7 +63,7 @@ class CallableSkillRunner:
         self.handlers = self._discover_handlers()
 
     def _load_module(self, entry_point: Path):
-        spec = importlib.util.spec_from_file_location("agent_framework_skill_module", entry_point)
+        spec = importlib.util.spec_from_file_location("covalent_skill_module", entry_point)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"Unable to load skill module from {entry_point}")
         module = importlib.util.module_from_spec(spec)

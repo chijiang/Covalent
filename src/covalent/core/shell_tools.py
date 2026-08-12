@@ -15,11 +15,11 @@ import asyncio
 import json
 from typing import TYPE_CHECKING, Any
 
-from agent_framework.core.workspace_tools import _get_session_workspace_root
-from agent_framework.runtime.backend import BackendUnavailable
+from covalent.core.workspace_tools import _get_session_workspace_root
+from covalent.runtime.backend import BackendUnavailable
 
 if TYPE_CHECKING:
-    from agent_framework.runtime.backend import ExecutionBackend
+    from covalent.runtime.backend import ExecutionBackend
 
 RUN_SHELL_TOOL = "run_shell"
 

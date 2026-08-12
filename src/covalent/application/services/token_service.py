@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
-from agent_framework.api._shared import (
+from covalent.api._shared import (
     ConsolePrincipalContext,
     _api_token_summary_response,
     _coerce_positive_int,
@@ -20,15 +20,15 @@ from agent_framework.api._shared import (
     _new_chat_item_id,
     _record_audit_log,
 )
-from agent_framework.api.auth import generate_api_token, hash_api_token
-from agent_framework.api.schemas import (
+from covalent.api.auth import generate_api_token, hash_api_token
+from covalent.api.schemas import (
     ApiTokenCreateRequest,
     ApiTokenCreateResponse,
     ApiTokenSummaryResponse,
     ApiTokenUpdateRequest,
 )
-from agent_framework.infra.db import ApiTokenRow, DatabaseManager, UserRow, WorkspaceRow
-from agent_framework.infra.settings import AppSettings
+from covalent.infra.db import ApiTokenRow, DatabaseManager, UserRow, WorkspaceRow
+from covalent.infra.settings import AppSettings
 
 def _normalize_token_scopes(scopes: list[str]) -> list[str]:
     normalized = _dedupe_strings([scope.strip() for scope in scopes if isinstance(scope, str)])

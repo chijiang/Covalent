@@ -3,8 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.types import GenerationResponse, PromptContent, RunContext
+from covalent.core.agent import AgentSpec
+from covalent.core.types import GenerationResponse, PromptContent, RunContext
 
 
 class AgentRuntime(ABC):

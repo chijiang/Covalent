@@ -4,7 +4,7 @@
     This backend provides **NO OS-level isolation**. Skill and agent code runs
     as ordinary subprocesses of the backend process, with the full filesystem
     and network access of that process. The in-skill ``PermissionGuard`` (see
-    :mod:`agent_framework.skills.runners.python_runner`) only monkeypatches
+    :mod:`covalent.skills.runners.python_runner`) only monkeypatches
     ``open`` and is trivially bypassed via ``os``/``pathlib``/``io``/
     ``subprocess``/``ctypes`` — it is a tripwire for benign bugs, not a
     security boundary.
@@ -19,7 +19,7 @@ original ``SkillProcessManager._spawn`` subprocess call, so behavior is identica
 to the pre-backend code path. ``session_id`` and the lifecycle methods
 (``ensure``/``stop``/``is_alive``) are no-ops: the host has no per-session
 environment to set up. The Docker backend
-(:mod:`agent_framework.runtime.docker_backend`) overrides these to manage a
+(:mod:`covalent.runtime.docker_backend`) overrides these to manage a
 per-session container.
 """
 
@@ -29,10 +29,10 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_framework.runtime.backend import ExecResult, ExecutionBackend, HostPathWorkspace
+from covalent.runtime.backend import ExecResult, ExecutionBackend, HostPathWorkspace
 
 if TYPE_CHECKING:
-    from agent_framework.infra.settings import AppSettings
+    from covalent.infra.settings import AppSettings
 
 
 class FileSystemBackend(ExecutionBackend):

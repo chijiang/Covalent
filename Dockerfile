@@ -26,4 +26,4 @@ ENV PORT=5170
 ENV PYTHONUNBUFFERED=1
 
 # Run the application
-CMD ["uv", "run", "uvicorn", "agent_framework.api.app:create_app", "--host", "0.0.0.0", "--port", "5170", "--factory"]
+CMD ["uv", "run", "uvicorn", "covalent.api.app:create_app", "--host", "0.0.0.0", "--port", "5170", "--factory"]

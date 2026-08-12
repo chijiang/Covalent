@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 
 from pydantic import BaseModel, Field
 
-from agent_framework.core.types import Capability, GenerationRequest, GenerationResponse
+from covalent.core.types import Capability, GenerationRequest, GenerationResponse
 
 
 class ProviderConfig(BaseModel):

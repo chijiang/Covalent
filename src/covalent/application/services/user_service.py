@@ -15,9 +15,9 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent_framework.api._shared import ConsolePrincipalContext, _new_chat_item_id, _safe_storage_component
-from agent_framework.api.auth import hash_password, verify_password
-from agent_framework.api.schemas import (
+from covalent.api._shared import ConsolePrincipalContext, _new_chat_item_id, _safe_storage_component
+from covalent.api.auth import hash_password, verify_password
+from covalent.api.schemas import (
     ConsoleAccountUpdateRequest,
     ConsoleLoginRequest,
     ConsolePasswordUpdateRequest,
@@ -27,8 +27,8 @@ from agent_framework.api.schemas import (
     ConsoleUserUpdateRequest,
     USERNAME_PATTERN,
 )
-from agent_framework.infra.db import DatabaseManager, UserRow, WorkspaceMemberRow, WorkspaceRow
-from agent_framework.infra.settings import AppSettings
+from covalent.infra.db import DatabaseManager, UserRow, WorkspaceMemberRow, WorkspaceRow
+from covalent.infra.settings import AppSettings
 
 async def _derive_unique_username(session: AsyncSession, email: str) -> str:
     """Derive a valid, unique username from an email for auto-provisioned users.

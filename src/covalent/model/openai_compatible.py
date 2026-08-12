@@ -8,11 +8,11 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from agent_framework.core.types import Capability, GenerationRequest, GenerationResponse, Message, ToolCall
-from agent_framework.infra.settings import AppSettings
-from agent_framework.model.base import ModelAdapter, ModelProviderError, ProviderConfig
-from agent_framework.model.utils import derive_openai_base_url, reasoning_level_kwargs
-from agent_framework.runtime.context_window import get_context_window
+from covalent.core.types import Capability, GenerationRequest, GenerationResponse, Message, ToolCall
+from covalent.infra.settings import AppSettings
+from covalent.model.base import ModelAdapter, ModelProviderError, ProviderConfig
+from covalent.model.utils import derive_openai_base_url, reasoning_level_kwargs
+from covalent.runtime.context_window import get_context_window
 
 
 
@@ -72,7 +72,7 @@ class OpenAICompatibleProvider(ModelAdapter):
         usage_data = self._model_dump(getattr(response, "usage", None)) or {}
         usage = None
         if usage_data.get("total_tokens"):
-            from agent_framework.core.types import TokenUsage
+            from covalent.core.types import TokenUsage
             usage = TokenUsage(
                 prompt_tokens=int(usage_data.get("prompt_tokens", 0)),
                 completion_tokens=int(usage_data.get("completion_tokens", 0)),

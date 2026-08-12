@@ -6,24 +6,24 @@ import logging
 import re
 from typing import Any
 
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.shell_tools import RUN_SHELL_TOOL
-from agent_framework.core.tooling import ToolDefinition, ToolHandler
-from agent_framework.core.types import RunContext, ToolCall, ToolResult, UserInputRequest
-from agent_framework.mcp.adapter import McpClient
-from agent_framework.mcp.spec import McpServerConfig
-from agent_framework.model.base import ModelAdapter, ProviderConfig
-from agent_framework.model.factory import build_provider
-from agent_framework.runtime.backend import BackendUnavailable
-from agent_framework.skills.exceptions import SkillProcessError, SkillStartupError
-from agent_framework.skills.meta_tools import (
+from covalent.core.agent import AgentSpec
+from covalent.core.shell_tools import RUN_SHELL_TOOL
+from covalent.core.tooling import ToolDefinition, ToolHandler
+from covalent.core.types import RunContext, ToolCall, ToolResult, UserInputRequest
+from covalent.mcp.adapter import McpClient
+from covalent.mcp.spec import McpServerConfig
+from covalent.model.base import ModelAdapter, ProviderConfig
+from covalent.model.factory import build_provider
+from covalent.runtime.backend import BackendUnavailable
+from covalent.skills.exceptions import SkillProcessError, SkillStartupError
+from covalent.skills.meta_tools import (
     LIST_SKILL_FILES_TOOL,
     READ_SKILL_INSTRUCTIONS_TOOL,
     READ_SKILL_RESOURCE_TOOL,
     RUN_SKILL_SCRIPT_TOOL,
 )
-from agent_framework.skills.process import SkillProcessManager
-from agent_framework.skills.spec import ManifestSkillSpec, SkillSpec
+from covalent.skills.process import SkillProcessManager
+from covalent.skills.spec import ManifestSkillSpec, SkillSpec
 
 logger = logging.getLogger(__name__)
 

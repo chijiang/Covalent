@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_framework.core.workspace_tools import (
+from covalent.core.workspace_tools import (
     _copy_workspace_entry,
     _edit_workspace_file,
     _move_workspace_entry,
@@ -288,7 +288,7 @@ class WorkspaceToolTests(unittest.TestCase):
         self.assertEqual(result["name"], "story.html")
         self.assertEqual(result["summary"], "Story HTML")
         self.assertEqual(result["download_url"], "/api/backend/downloads/sess-1/story.html")
-        self.assertTrue((self.root / ".agent_framework" / "downloads" / "sess-1" / "story.html").is_file())
+        self.assertTrue((self.root / ".covalent" / "downloads" / "sess-1" / "story.html").is_file())
 
     def test_publish_downloadable_file_rejects_old_path_parameter(self) -> None:
         session_context = SimpleNamespace(session_id="sess-1")

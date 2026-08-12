@@ -12,28 +12,28 @@ from pydantic import ValidationError
 from sqlalchemy import text
 import json
 
-from agent_framework.api._auth_helpers import _resolve_console_principal
-from agent_framework.api.schemas import ConfigDocumentResponse
-from agent_framework.api.schemas import ConfigDocumentUpdateRequest
-from agent_framework.api.schemas import ManagementExportResponse
-from agent_framework.api.schemas import ManagementImportResponse
-from agent_framework.api.schemas import PublicationRequestResponse
-from agent_framework.api.schemas import PublicationReviewRequest
-from agent_framework.application.services.management_service import _build_management_export_payload
-from agent_framework.application.services.management_service import _config_document_response
-from agent_framework.application.services.management_service import _extract_agent_renames
-from agent_framework.application.services.management_service import _import_management_payload
-from agent_framework.application.services.management_service import _normalize_config_kind
-from agent_framework.application.services.management_service import _normalize_management_export_format
-from agent_framework.application.services.management_service import _normalize_management_kind
-from agent_framework.application.services.management_service import _request_resource_publication
-from agent_framework.application.services.management_service import _review_resource_publication
-from agent_framework.application.services.management_service import _serialize_management_export_payload
-from agent_framework.application.services.management_service import _validate_config_payload
-from agent_framework.application.services.runtime_apply import _apply_runtime_config
-from agent_framework.infra.config_store import ConfigStore
-from agent_framework.infra.db import DatabaseManager
-from agent_framework.infra.settings import AppSettings
+from covalent.api._auth_helpers import _resolve_console_principal
+from covalent.api.schemas import ConfigDocumentResponse
+from covalent.api.schemas import ConfigDocumentUpdateRequest
+from covalent.api.schemas import ManagementExportResponse
+from covalent.api.schemas import ManagementImportResponse
+from covalent.api.schemas import PublicationRequestResponse
+from covalent.api.schemas import PublicationReviewRequest
+from covalent.application.services.management_service import _build_management_export_payload
+from covalent.application.services.management_service import _config_document_response
+from covalent.application.services.management_service import _extract_agent_renames
+from covalent.application.services.management_service import _import_management_payload
+from covalent.application.services.management_service import _normalize_config_kind
+from covalent.application.services.management_service import _normalize_management_export_format
+from covalent.application.services.management_service import _normalize_management_kind
+from covalent.application.services.management_service import _request_resource_publication
+from covalent.application.services.management_service import _review_resource_publication
+from covalent.application.services.management_service import _serialize_management_export_payload
+from covalent.application.services.management_service import _validate_config_payload
+from covalent.application.services.runtime_apply import _apply_runtime_config
+from covalent.infra.config_store import ConfigStore
+from covalent.infra.db import DatabaseManager
+from covalent.infra.settings import AppSettings
 
 router = APIRouter()
 

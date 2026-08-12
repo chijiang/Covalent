@@ -9,15 +9,15 @@ import sys
 import time
 from typing import TYPE_CHECKING, Any
 
-from agent_framework.runtime.backend import ExecutionBackend
-from agent_framework.runtime.filesystem_backend import FileSystemBackend
-from agent_framework.skills.exceptions import SkillProcessError, SkillStartupError
-from agent_framework.skills.permissions import PermissionChecker
-from agent_framework.skills.protocol import JsonRpcResponse
-from agent_framework.skills.spec import ManifestSkillSpec
+from covalent.runtime.backend import ExecutionBackend
+from covalent.runtime.filesystem_backend import FileSystemBackend
+from covalent.skills.exceptions import SkillProcessError, SkillStartupError
+from covalent.skills.permissions import PermissionChecker
+from covalent.skills.protocol import JsonRpcResponse
+from covalent.skills.spec import ManifestSkillSpec
 
 if TYPE_CHECKING:
-    from agent_framework.core.types import RunContext
+    from covalent.core.types import RunContext
 
 logger = logging.getLogger(__name__)
 

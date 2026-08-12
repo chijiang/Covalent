@@ -14,7 +14,7 @@
 - **Postgres only.** Columns use `postgresql.JSONB`; do not switch to generic `JSON` and do not introduce SQLite for tests.
 - **Async test style.** New tests extend `unittest.IsolatedAsyncioTestCase` with `async def test_*` methods. Do not add `pytest`/`pytest-asyncio` or a `conftest.py` — the repo uses `unittest` exclusively.
 - **Migration naming/chain.** Date-prefixed revision ids chaining from the current head `20260721_000020`. Every migration is idempotent (guard on existing table/column via `sa.inspect(bind)`), matching `alembic/versions/20260430_000006_create_chat_sessions.py` and `20260708_000014_add_audit_logs.py`.
-- **No SQLAlchemy relationships.** The codebase uses explicit `select`/`delete`/`insert` only (see `src/agent_framework/infra/memory.py`, `src/agent_framework/infra/config_store.py`). Do not add `relationship()`/`back_populates`.
+- **No SQLAlchemy relationships.** The codebase uses explicit `select`/`delete`/`insert` only (see `src/covalent/infra/memory.py`, `src/covalent/infra/config_store.py`). Do not add `relationship()`/`back_populates`.
 - **Out of scope.** Do not touch `memory_messages`, `activity`, `app.py`, the streaming logic, `ChatTranscriptMessage`/`ChatSessionRecord`/`ChatSessionSummary` Pydantic models, or `InMemorySessionStore`.
 
 ---
@@ -22,9 +22,9 @@
 ## File Structure
 
 - **Create** `alembic/versions/20260724_000021_create_chat_messages.py` — DDL: `chat_messages` table + FK + unique + index (idempotent).
-- **Modify** `src/agent_framework/infra/db.py` — add `ChatMessageRow` model; (Task 7) remove `transcript_messages_json` from `ChatSessionRow`.
+- **Modify** `src/covalent/infra/db.py` — add `ChatMessageRow` model; (Task 7) remove `transcript_messages_json` from `ChatSessionRow`.
 - **Create** `tests/test_persistent_session_store.py` — opt-in Postgres integration tests (`@unittest.skipUnless(TEST_DATABASE_URL)`).
-- **Modify** `src/agent_framework/infra/memory.py` — rewrite `PersistentSessionStore` methods to use `chat_messages`; only this class changes.
+- **Modify** `src/covalent/infra/memory.py` — rewrite `PersistentSessionStore` methods to use `chat_messages`; only this class changes.
 - **Create** `scripts/backfill_chat_messages.py` — manual fallback: copies `transcript_messages` JSONB → `chat_messages` rows (idempotent). Not required for the cutover, since migration #2 copies atomically.
 - **Create** `alembic/versions/20260724_000022_drop_chat_sessions_transcript_messages.py` — DDL: drop the old column (idempotent).
 
@@ -102,7 +102,7 @@ Run (substitute your dev DB; the `+asyncpg` form is for the app, the plain form 
 ```bash
 DATABASE_URL="postgresql://user:pass@localhost:5432/covalent"
 .venv/bin/python -c "
-from agent_framework.infra.migrations import run_database_migrations
+from covalent.infra.migrations import run_database_migrations
 run_database_migrations('$DATABASE_URL')
 "
 .venv/bin/python -c "
@@ -136,7 +136,7 @@ Stage only; **do not commit** — the user commits.
 ## Task 2: Add the `ChatMessageRow` ORM model
 
 **Files:**
-- Modify: `src/agent_framework/infra/db.py` (add the class after `ChatSessionRow`, which ends at line 341)
+- Modify: `src/covalent/infra/db.py` (add the class after `ChatSessionRow`, which ends at line 341)
 
 **Interfaces:**
 - Produces: `ChatMessageRow` (maps `chat_messages`). Field names consumed by Task 4: `ChatMessageRow.id` (`str`), `.session_id` (`str`), `.role` (`str`), `.content` (`str`), `.attachments` (`list[dict]`), `.position` (`int`).
@@ -144,7 +144,7 @@ Stage only; **do not commit** — the user commits.
 
 - [ ] **Step 1: Add the model class**
 
-In `src/agent_framework/infra/db.py`, immediately after the `ChatSessionRow` class (after its `created_at` line, ~line 341) and before `run_session_operation`, add:
+In `src/covalent/infra/db.py`, immediately after the `ChatSessionRow` class (after its `created_at` line, ~line 341) and before `run_session_operation`, add:
 
 ```python
 class ChatMessageRow(Base):
@@ -173,7 +173,7 @@ All imports (`String`, `ForeignKey`, `Text`, `JSONB`, `Integer`, `UniqueConstrai
 
 ```bash
 .venv/bin/python -c "
-from agent_framework.infra.db import ChatMessageRow
+from covalent.infra.db import ChatMessageRow
 t = ChatMessageRow.__table__
 print('table:', t.name)
 print('cols:', [c.name for c in t.columns])
@@ -186,7 +186,7 @@ Expected: `table: chat_messages`, `cols: ['id', 'session_id', 'role', 'content',
 - [ ] **Step 3: Checkpoint (hand off to user to commit)**
 
 ```bash
-git add src/agent_framework/infra/db.py
+git add src/covalent/infra/db.py
 ```
 
 Stage only; **do not commit**.
@@ -213,8 +213,8 @@ import unittest
 
 from sqlalchemy import text
 
-from agent_framework.infra.db import DatabaseManager
-from agent_framework.infra.migrations import run_database_migrations
+from covalent.infra.db import DatabaseManager
+from covalent.infra.migrations import run_database_migrations
 
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "set TEST_DATABASE_URL to run")
@@ -240,7 +240,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
             await session.commit()
 
     def _store(self):
-        from agent_framework.infra.memory import PersistentSessionStore
+        from covalent.infra.memory import PersistentSessionStore
 
         return PersistentSessionStore(self.db.session_factory)
 
@@ -282,7 +282,7 @@ Stage only; **do not commit**.
 ## Task 4: Rewrite `PersistentSessionStore` to use `chat_messages` (TDD core)
 
 **Files:**
-- Modify: `src/agent_framework/infra/memory.py` (only `PersistentSessionStore` and its helpers)
+- Modify: `src/covalent/infra/memory.py` (only `PersistentSessionStore` and its helpers)
 - Test: `tests/test_persistent_session_store.py` (append cases)
 
 **Interfaces:**
@@ -297,7 +297,7 @@ Append to `tests/test_persistent_session_store.py` (after the smoke test, still 
     async def test_save_then_get_round_trips_messages_in_order(self) -> None:
         from datetime import UTC, datetime
 
-        from agent_framework.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
 
         store = self._store()
         now = datetime.now(UTC)
@@ -337,7 +337,7 @@ Expected: FAIL — `save_session` still writes the JSONB column and `get_session
 
 - [ ] **Step 3: Rewrite the store**
 
-In `src/agent_framework/infra/memory.py`:
+In `src/covalent/infra/memory.py`:
 
 3a. Update imports (line 8 and line 12):
 
@@ -346,7 +346,7 @@ from sqlalchemy import delete, desc, func, select
 ```
 
 ```python
-from agent_framework.infra.db import ChatMessageRow, ChatSessionRow, run_session_operation
+from covalent.infra.db import ChatMessageRow, ChatSessionRow, run_session_operation
 ```
 
 3b. Replace `_summary_from_row` (currently lines 239–253) so `message_count` is supplied by the caller instead of read from the JSONB column:
@@ -537,7 +537,7 @@ Expected: PASS.
 - [ ] **Step 5: Checkpoint (hand off to user to commit)**
 
 ```bash
-git add src/agent_framework/infra/memory.py tests/test_persistent_session_store.py
+git add src/covalent/infra/memory.py tests/test_persistent_session_store.py
 ```
 
 Stage only; **do not commit**.
@@ -560,7 +560,7 @@ Append these methods to `PersistentSessionStoreTestCase`:
     async def test_resave_replaces_messages_without_duplicates(self) -> None:
         from datetime import UTC, datetime
 
-        from agent_framework.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
 
         store = self._store()
         now = datetime.now(UTC)
@@ -599,7 +599,7 @@ Append these methods to `PersistentSessionStoreTestCase`:
     async def test_delete_session_removes_messages_via_cascade(self) -> None:
         from datetime import UTC, datetime
 
-        from agent_framework.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
 
         store = self._store()
         now = datetime.now(UTC)
@@ -628,7 +628,7 @@ Append these methods to `PersistentSessionStoreTestCase`:
     async def test_list_sessions_reports_message_count(self) -> None:
         from datetime import UTC, datetime
 
-        from agent_framework.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
 
         store = self._store()
         now = datetime.now(UTC)
@@ -770,7 +770,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from agent_framework.infra.db import ChatMessageRow, DatabaseManager
+from covalent.infra.db import ChatMessageRow, DatabaseManager
 
 
 def rows_from_transcript(session_id: str, transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -868,7 +868,7 @@ Stage only; **do not commit**.
 
 **Files:**
 - Create: `alembic/versions/20260724_000022_drop_chat_sessions_transcript_messages.py`
-- Modify: `src/agent_framework/infra/db.py` — remove the `transcript_messages_json` attribute from `ChatSessionRow` (lines 334–339).
+- Modify: `src/covalent/infra/db.py` — remove the `transcript_messages_json` attribute from `ChatSessionRow` (lines 334–339).
 
 **Interfaces:**
 - Consumes: Task 4 store (no longer references `transcript_messages_json`). Task 6 backfill already run against any DB you care about.
@@ -921,7 +921,7 @@ def downgrade() -> None:
 
 - [ ] **Step 2: Remove the ORM attribute**
 
-In `src/agent_framework/infra/db.py`, delete the `transcript_messages_json` attribute from `ChatSessionRow` (lines 334–339):
+In `src/covalent/infra/db.py`, delete the `transcript_messages_json` attribute from `ChatSessionRow` (lines 334–339):
 
 ```python
     transcript_messages_json: Mapped[list[dict[str, Any]]] = mapped_column(
@@ -937,7 +937,7 @@ In `src/agent_framework/infra/db.py`, delete the `transcript_messages_json` attr
 - [ ] **Step 3: Confirm the store no longer references the attribute**
 
 ```bash
-grep -n "transcript_messages" src/agent_framework/infra/memory.py src/agent_framework/infra/db.py
+grep -n "transcript_messages" src/covalent/infra/memory.py src/covalent/infra/db.py
 ```
 
 Expected: **no output** (no references remain in these two files). If any line appears, remove it before continuing.
@@ -949,7 +949,7 @@ Apply the migration, then run tests:
 ```bash
 TEST_DATABASE_URL="postgresql+asyncpg://user:pass@localhost:5432/covalent_test" \
 .venv/bin/python -c "
-from agent_framework.infra.migrations import run_database_migrations
+from covalent.infra.migrations import run_database_migrations
 import os
 run_database_migrations(os.environ['TEST_DATABASE_URL'].replace('+asyncpg',''))
 "
@@ -970,7 +970,7 @@ Expected: no new failures vs. the pre-change baseline. (Pre-existing failures un
 - [ ] **Step 6: Checkpoint (hand off to user to commit)**
 
 ```bash
-git add alembic/versions/20260724_000022_drop_chat_sessions_transcript_messages.py src/agent_framework/infra/db.py
+git add alembic/versions/20260724_000022_drop_chat_sessions_transcript_messages.py src/covalent/infra/db.py
 ```
 
 Stage only; **do not commit**.

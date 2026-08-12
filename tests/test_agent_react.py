@@ -10,14 +10,14 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from agent_framework.core.types import GenerationRequest, GenerationResponse, Message, RunContext, TokenUsage, ToolCall
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.skills.meta_tools import (
+from covalent.core.types import GenerationRequest, GenerationResponse, Message, RunContext, TokenUsage, ToolCall
+from covalent.registry.registry import FrameworkRegistry
+from covalent.skills.meta_tools import (
     READ_SKILL_INSTRUCTIONS_TOOL,
     READ_SKILL_RESOURCE_TOOL,
     register_skill_meta_tools,
 )
-from agent_framework.skills.spec import ManifestSkillSpec
+from covalent.skills.spec import ManifestSkillSpec
 
 from tests.helpers import (
     ScriptedModelAdapter,
@@ -90,7 +90,7 @@ class ReactLoopTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_react_multiple_tool_calls_in_one_turn(self) -> None:
         """Model calls two tools in one response → both executed → model answers."""
-        from agent_framework.core.types import GenerationResponse, Message, TokenUsage, ToolCall
+        from covalent.core.types import GenerationResponse, Message, TokenUsage, ToolCall
         import json
 
         raw_calls = [

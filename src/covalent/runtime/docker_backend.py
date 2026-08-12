@@ -36,11 +36,11 @@ from typing import TYPE_CHECKING
 
 import docker
 
-from agent_framework.runtime.backend import BackendUnavailable, ExecResult, ExecutionBackend, HostPathWorkspace
-from agent_framework.runtime.docker_process import DockerExecProcess
+from covalent.runtime.backend import BackendUnavailable, ExecResult, ExecutionBackend, HostPathWorkspace
+from covalent.runtime.docker_process import DockerExecProcess
 
 if TYPE_CHECKING:
-    from agent_framework.infra.settings import AppSettings
+    from covalent.infra.settings import AppSettings
 
 logger = logging.getLogger(__name__)
 

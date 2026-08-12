@@ -13,9 +13,9 @@ from unittest.mock import MagicMock
 
 from starlette.testclient import TestClient
 
-from agent_framework.api.app import create_app
-from agent_framework.infra.settings import AppSettings
-from agent_framework.registry.registry import FrameworkRegistry
+from covalent.api.app import create_app
+from covalent.infra.settings import AppSettings
+from covalent.registry.registry import FrameworkRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +105,8 @@ class _FakeDbSession:
 
 def _admin_cookie(settings: AppSettings) -> str:
     """Build a console session cookie for an admin identity."""
-    from agent_framework.api._auth_helpers import _make_console_session_token
-    from agent_framework.api._shared import ConsolePrincipalContext
+    from covalent.api._auth_helpers import _make_console_session_token
+    from covalent.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id="admin-1",
@@ -125,8 +125,8 @@ def _admin_cookie(settings: AppSettings) -> str:
 
 def _member_cookie(settings: AppSettings) -> str:
     """Build a console session cookie for a non-admin identity."""
-    from agent_framework.api._auth_helpers import _make_console_session_token
-    from agent_framework.api._shared import ConsolePrincipalContext
+    from covalent.api._auth_helpers import _make_console_session_token
+    from covalent.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id="member-1",

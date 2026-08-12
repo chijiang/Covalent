@@ -9,10 +9,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from agent_framework.infra.settings import AppSettings
-from agent_framework.runtime.backend import HostPathWorkspace
-from agent_framework.runtime.docker_backend import DockerBackend
-from agent_framework.runtime.filesystem_backend import FileSystemBackend
+from covalent.infra.settings import AppSettings
+from covalent.runtime.backend import HostPathWorkspace
+from covalent.runtime.docker_backend import DockerBackend
+from covalent.runtime.filesystem_backend import FileSystemBackend
 
 
 class WorkspaceAccessTests(unittest.TestCase):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from agent_framework.registry.registry import FrameworkRegistry
+from covalent.registry.registry import FrameworkRegistry
 
 # Standard pydantic Optional[T] emission: anyOf with a null member.
 _OPT_OBJECT = {"anyOf": [{"type": "object", "additionalProperties": True}, {"type": "null"}], "default": None}

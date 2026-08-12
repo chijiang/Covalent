@@ -9,13 +9,13 @@ from fastapi import Request
 from sqlalchemy import text
 from typing import Any
 
-from agent_framework.api._auth_helpers import _list_audit_logs
-from agent_framework.api._auth_helpers import _resolve_console_principal
-from agent_framework.api._shared import _augment_sandbox_snapshot
-from agent_framework.api.schemas import AuditLogResponse
-from agent_framework.infra.db import DatabaseManager
-from agent_framework.infra.memory import SessionStore
-from agent_framework.registry.registry import FrameworkRegistry
+from covalent.api._auth_helpers import _list_audit_logs
+from covalent.api._auth_helpers import _resolve_console_principal
+from covalent.api._shared import _augment_sandbox_snapshot
+from covalent.api.schemas import AuditLogResponse
+from covalent.infra.db import DatabaseManager
+from covalent.infra.memory import SessionStore
+from covalent.registry.registry import FrameworkRegistry
 
 router = APIRouter()
 

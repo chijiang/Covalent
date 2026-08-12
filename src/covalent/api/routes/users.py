@@ -6,13 +6,13 @@ from fastapi import APIRouter
 
 from fastapi import Request
 
-from agent_framework.api._auth_helpers import _resolve_console_principal
-from agent_framework.api._shared import _record_audit_log
-from agent_framework.api.schemas import ConsoleUserSummaryResponse
-from agent_framework.api.schemas import ConsoleUserUpdateRequest
-from agent_framework.application.services.user_service import _list_console_users
-from agent_framework.application.services.user_service import _update_console_user
-from agent_framework.infra.db import DatabaseManager
+from covalent.api._auth_helpers import _resolve_console_principal
+from covalent.api._shared import _record_audit_log
+from covalent.api.schemas import ConsoleUserSummaryResponse
+from covalent.api.schemas import ConsoleUserUpdateRequest
+from covalent.application.services.user_service import _list_console_users
+from covalent.application.services.user_service import _update_console_user
+from covalent.infra.db import DatabaseManager
 
 router = APIRouter()
 

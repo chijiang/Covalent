@@ -17,21 +17,21 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
-from agent_framework.api._shared import ConsolePrincipalContext, RESOURCE_METADATA_FIELDS
-from agent_framework.api.schemas import (
+from covalent.api._shared import ConsolePrincipalContext, RESOURCE_METADATA_FIELDS
+from covalent.api.schemas import (
     ManagementImportResponse,
     SkillManagementItemResponse,
     SkillManagementSourceResponse,
     SkillPreviewFileResponse,
     SkillSummaryResponse,
 )
-from agent_framework.infra.config_store import ConfigStore, PersistedSkillSourceConfig
-from agent_framework.infra.settings import AppSettings
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.runtime.backend import ExecutionBackend
-from agent_framework.skills.loader import SkillLoader
-from agent_framework.skills.process import SkillProcessManager
-from agent_framework.skills.spec import ManifestSkillSpec
+from covalent.infra.config_store import ConfigStore, PersistedSkillSourceConfig
+from covalent.infra.settings import AppSettings
+from covalent.registry.registry import FrameworkRegistry
+from covalent.runtime.backend import ExecutionBackend
+from covalent.skills.loader import SkillLoader
+from covalent.skills.process import SkillProcessManager
+from covalent.skills.spec import ManifestSkillSpec
 
 logger = logging.getLogger(__name__)
 

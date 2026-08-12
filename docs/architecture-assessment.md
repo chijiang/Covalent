@@ -72,7 +72,7 @@ core/ 里 `types.py`/`agent.py` 是领域模型，但 `workspace_tools.py`/`shel
 > 决策（2026-08-12）：采纳 Hexagonal 的**端口/适配器思想**，但**保持现有包名**（`model/`、`runtime/`、`mcp/`、`core/` 不重命名），**不为 Redis/CLI 建空目录**。唯一新增的是 `application/` 用例层。理由：现有代码已是 ports/adapters 的雏形（`model/base.py`=LLM 端口、`runtime/backend.py`=沙箱端口、`model/openai_compatible.py`+`runtime/docker_backend.py`+`mcp/`=适配器），缺的只是用例层；大重命名成本高、收益低。
 
 ```
-src/agent_framework/
+src/covalent/
   api/            薄 controller（路由 → 调 service → 映射响应），不再内联业务
   application/    （新增）用例层
     use_cases/      具体用例：invoke_agent、create_api_token、apply_config…
@@ -125,4 +125,5 @@ src/agent_framework/
   - `_auth_helpers` 从 1198 → 656 → 当前 ~440 行（只剩认证跨切面）；`_session_helpers` → 93 行（只剩路径工具）。
 - [x] 2026-08-12：**endpoints 拆分完成**——create_app 闭包的 51 路由拆到 `api/routes/` 11 个 APIRouter 文件（agents/auth/config/mcp/ops/providers/public/sessions/skills/tokens/users）。`app.state` → `request.app.state`（脚本批量，处理了 `getattr(app.state,...)` 与裸 `app` 传参两种形态）；SSE 常量移 `api/sse_events.py` 避免循环 import；缺 `request` 参数的路由补参；`public_invoke_agent` 保留 `response_model=None`。**app.py 从 1744 → 162 行**（只剩 lifespan + create_app 装配）。
   - 每步跑 176 测试验证，最终 176 passed 零回归。
+- [x] 2026-08-12：**包前缀改名 `agent_framework` → `covalent`**。`git mv src/agent_framework src/covalent` + 替换全部 .py import + pyproject packages + main.py/Dockerfile 的 uvicorn 入口 + Dockerfile.sandbox COPY 路径 + docs 路径。**关键：避免 `src/mcp/` 变顶层包与第三方 MCP SDK 冲突**（`mcp/client.py` 依赖 `from mcp import ClientSession`）。env 前缀 `AGENT_FRAMEWORK_*` 保留（运行时配置，保持部署兼容）。测试 176 passed 零回归。
 - [ ] 可选后续：helper 模块（_auth_helpers/_session_helpers）里剩余函数可进一步归位；路由按需再细分。

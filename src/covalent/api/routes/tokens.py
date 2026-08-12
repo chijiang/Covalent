@@ -6,21 +6,21 @@ from fastapi import APIRouter
 
 from fastapi import Request
 
-from agent_framework.api._auth_helpers import _get_api_token_usage
-from agent_framework.api._auth_helpers import _list_api_token_runs
-from agent_framework.api._auth_helpers import _list_api_token_summaries
-from agent_framework.api._auth_helpers import _resolve_console_principal
-from agent_framework.api.schemas import AgentRunLogResponse
-from agent_framework.api.schemas import ApiTokenCreateRequest
-from agent_framework.api.schemas import ApiTokenCreateResponse
-from agent_framework.api.schemas import ApiTokenSummaryResponse
-from agent_framework.api.schemas import ApiTokenUpdateRequest
-from agent_framework.api.schemas import ApiTokenUsageResponse
-from agent_framework.application.services.token_service import _create_api_token
-from agent_framework.application.services.token_service import _revoke_api_token
-from agent_framework.application.services.token_service import _update_api_token
-from agent_framework.infra.db import DatabaseManager
-from agent_framework.infra.settings import AppSettings
+from covalent.api._auth_helpers import _get_api_token_usage
+from covalent.api._auth_helpers import _list_api_token_runs
+from covalent.api._auth_helpers import _list_api_token_summaries
+from covalent.api._auth_helpers import _resolve_console_principal
+from covalent.api.schemas import AgentRunLogResponse
+from covalent.api.schemas import ApiTokenCreateRequest
+from covalent.api.schemas import ApiTokenCreateResponse
+from covalent.api.schemas import ApiTokenSummaryResponse
+from covalent.api.schemas import ApiTokenUpdateRequest
+from covalent.api.schemas import ApiTokenUsageResponse
+from covalent.application.services.token_service import _create_api_token
+from covalent.application.services.token_service import _revoke_api_token
+from covalent.application.services.token_service import _update_api_token
+from covalent.infra.db import DatabaseManager
+from covalent.infra.settings import AppSettings
 
 router = APIRouter()
 

@@ -10,12 +10,12 @@ import json
 import types
 import unittest
 
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool, shell_tool_available
-from agent_framework.infra.settings import AppSettings
-from agent_framework.model.base import ProviderConfig
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.runtime.backend import BackendUnavailable
+from covalent.core.agent import AgentSpec
+from covalent.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool, shell_tool_available
+from covalent.infra.settings import AppSettings
+from covalent.model.base import ProviderConfig
+from covalent.registry.registry import FrameworkRegistry
+from covalent.runtime.backend import BackendUnavailable
 
 
 def _agent(name: str = "a", local_tools: list[str] | None = None) -> AgentSpec:

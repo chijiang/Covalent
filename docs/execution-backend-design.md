@@ -118,7 +118,7 @@ A backend owns three responsibilities for a session: (1) a place for code to
 run, (2) a way to reach the workspace files, and (3) a lifecycle.
 
 ```python
-# src/agent_framework/runtime/backend.py (proposed)
+# src/covalent/runtime/backend.py (proposed)
 
 from typing import Protocol
 

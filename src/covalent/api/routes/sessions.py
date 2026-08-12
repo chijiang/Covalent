@@ -18,27 +18,27 @@ import asyncio
 import json
 import mimetypes
 
-from agent_framework.api._auth_helpers import _resolve_console_principal
-from agent_framework.api._session_helpers import _attachment_session_dir
-from agent_framework.api._session_helpers import _chat_upload_session_dir
-from agent_framework.api._session_helpers import _chat_upload_visible_root
-from agent_framework.api._session_helpers import _download_session_dir
-from agent_framework.api._session_helpers import _next_available_upload_path
-from agent_framework.api._session_helpers import _safe_uploaded_filename
-from agent_framework.api._shared import _coerce_int
-from agent_framework.api._shared import _rmtree_async
-from agent_framework.api._shared import to_chat_session_response
-from agent_framework.api._shared import to_chat_session_summary_response
-from agent_framework.api.schemas import AttachmentUploadItemResponse
-from agent_framework.api.schemas import AttachmentUploadResponse
-from agent_framework.api.schemas import ChatSessionResponse
-from agent_framework.api.schemas import ChatSessionSummaryResponse
-from agent_framework.api.schemas import ChatSessionUpdateRequest
-from agent_framework.application.services.management_service import _ensure_console_principal_can_access_session
-from agent_framework.core.attachment_processing import process_attachment_bytes
-from agent_framework.infra.db import DatabaseManager
-from agent_framework.infra.memory import SessionStore
-from agent_framework.infra.settings import AppSettings
+from covalent.api._auth_helpers import _resolve_console_principal
+from covalent.api._session_helpers import _attachment_session_dir
+from covalent.api._session_helpers import _chat_upload_session_dir
+from covalent.api._session_helpers import _chat_upload_visible_root
+from covalent.api._session_helpers import _download_session_dir
+from covalent.api._session_helpers import _next_available_upload_path
+from covalent.api._session_helpers import _safe_uploaded_filename
+from covalent.api._shared import _coerce_int
+from covalent.api._shared import _rmtree_async
+from covalent.api._shared import to_chat_session_response
+from covalent.api._shared import to_chat_session_summary_response
+from covalent.api.schemas import AttachmentUploadItemResponse
+from covalent.api.schemas import AttachmentUploadResponse
+from covalent.api.schemas import ChatSessionResponse
+from covalent.api.schemas import ChatSessionSummaryResponse
+from covalent.api.schemas import ChatSessionUpdateRequest
+from covalent.application.services.management_service import _ensure_console_principal_can_access_session
+from covalent.core.attachment_processing import process_attachment_bytes
+from covalent.infra.db import DatabaseManager
+from covalent.infra.memory import SessionStore
+from covalent.infra.settings import AppSettings
 
 router = APIRouter()
 

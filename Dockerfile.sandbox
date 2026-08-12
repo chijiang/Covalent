@@ -14,8 +14,8 @@
 FROM python:3.12-alpine
 
 # Framework runners baked into the image. DockerBackend rewrites the host runner
-# path (src/agent_framework/skills/runners/<name>) to /runners/<name>.
-COPY src/agent_framework/skills/runners/ /runners/
+# path (src/covalent/skills/runners/<name>) to /runners/<name>.
+COPY src/covalent/skills/runners/ /runners/
 
 # Keep the container alive; the backend execs skill runners into it.
 CMD ["tail", "-f", "/dev/null"]

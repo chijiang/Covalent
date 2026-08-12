@@ -6,13 +6,13 @@ import os
 import sys
 from typing import Any
 
-from agent_framework.core.types import RunContext
-from agent_framework.core.workspace_tools import _get_session_workspace_root
-from agent_framework.runtime.backend import ExecutionBackend, BackendUnavailable
-from agent_framework.runtime.filesystem_backend import FileSystemBackend
-from agent_framework.skills.bundle import SkillBundle, SkillBundleError
-from agent_framework.skills.permissions import PermissionChecker
-from agent_framework.skills.spec import ManifestSkillSpec, ScriptDeclaration
+from covalent.core.types import RunContext
+from covalent.core.workspace_tools import _get_session_workspace_root
+from covalent.runtime.backend import ExecutionBackend, BackendUnavailable
+from covalent.runtime.filesystem_backend import FileSystemBackend
+from covalent.skills.bundle import SkillBundle, SkillBundleError
+from covalent.skills.permissions import PermissionChecker
+from covalent.skills.spec import ManifestSkillSpec, ScriptDeclaration
 
 LIST_SKILL_FILES_TOOL = "list_skill_files"
 READ_SKILL_INSTRUCTIONS_TOOL = "read_skill_instructions"

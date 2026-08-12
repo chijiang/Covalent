@@ -9,8 +9,8 @@ from sqlalchemy import delete, desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agent_framework.core.types import Message
-from agent_framework.infra.db import ChatActivityRow, ChatMessageRow, ChatSessionRow, run_session_operation
+from covalent.core.types import Message
+from covalent.infra.db import ChatActivityRow, ChatMessageRow, ChatSessionRow, run_session_operation
 
 
 SessionTitleSource = Literal["auto", "manual"]

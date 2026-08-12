@@ -7,10 +7,10 @@ from fastapi import APIRouter
 from fastapi import HTTPException
 from fastapi import Request
 
-from agent_framework.api._auth_helpers import _resolve_console_principal
-from agent_framework.infra.config_store import ConfigStore
-from agent_framework.infra.db import DatabaseManager
-from agent_framework.infra.settings import AppSettings
+from covalent.api._auth_helpers import _resolve_console_principal
+from covalent.infra.config_store import ConfigStore
+from covalent.infra.db import DatabaseManager
+from covalent.infra.settings import AppSettings
 
 router = APIRouter()
 
