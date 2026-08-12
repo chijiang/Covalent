@@ -301,7 +301,10 @@
   - 抽取中修正：`PUBLIC_PATHS` 是 `AnnAssign`（带类型注解）而非 `Assign`，第一遍生成漏掉，第二遍补插；测试文件内联 `from agent_framework.api.app import ...` 需改指 `_shared`/`_auth_helpers`，且**函数内局部 import 保留缩进**（脚本两次替换叠加产生 8 空格/顶格错误，逐个修正）。
   - 清理 app.py 顶部 22 行未用 import（`hashlib`/`hmac`/`re`/`secrets`/`jwt`/`PyJWTError`/`JSONResponse`/`BaseHTTPMiddleware`/schemas/auth/db 中随函数移走的 15 个名字）。
   - 测试 176 passed 零回归。
-  - ⏳ 剩余：`_session_helpers.py`、`_public_invoke_helpers.py`、`_config_helpers.py`+`_skill_helpers.py`（二者有循环依赖，用户已定用**第三模块 `_runtime_apply.py`** 拆 `_apply_runtime_config`）。全部完成预计 app.py → ~2500 行。
+  - ✅ 第三步 (2026-08-12)：抽出 **`api/_session_helpers.py`（321 行，23 个函数 + 2 常量）**——会话目录/附件路径（`_attachment_session_dir`/`_chat_upload_*`/`_download_session_dir`/`_safe_uploaded_filename`）、transcript 消息构建与替换（`_build_user_transcript_message`/`_upsert/_replace_assistant_transcript`/`_append_assistant_attachments`）、下载附件元数据（`_published_download_attachments_from_tool_results`）、会话标题（`_fallback_session_title`/`_normalize_generated_title`/`_generate_session_title`）、pending input（`_extract_pending_user_input`/`_build_resume_tool_result`）。**app.py 4112 → 3864**。
+  - 注意：`SSE_EVENT_INPUT_REQUIRED`/`SSE_EVENT_INPUT_RESOLVED` 常量在 `_session_helpers` 内重复定义（字符串字面量），app.py 自己的保留——避免循环 import。
+  - 清理 app.py 顶部 6 个随移走而失效的 import（`GenerationRequest`/`Message`/`ResumedToolResult`/`ChatTranscriptMessage`/`_SAFE_STORAGE_COMPONENT_RE`/`_safe_storage_component`）。测试无需适配（测试不直接引用 session 函数）。测试 176 passed 零回归。
+  - ⏳ 剩余：`_public_invoke_helpers.py`、`_config_helpers.py`+`_skill_helpers.py`（二者有循环依赖，用户已定用**第三模块 `_runtime_apply.py`** 拆 `_apply_runtime_config`）。全部完成预计 app.py → ~2500 行。
 - [ ] **X3**：`app.py:1243` 调 `runtime._encode_sse`（私有）；`:465` 读 `spm._pools`（私有）——暴露公开方法。
 - [ ] **X4**：`app.py:912-942` 每请求 `from openai import AsyncOpenAI` 且不 close → httpx 连接池泄漏。缓存/lazy-init。
 - [ ] **X5**：`react.py:1033` 上下文压缩早退条件几乎恒真，可能在真实超限时误判"无需压缩"——信任 `last_prompt_tokens`。

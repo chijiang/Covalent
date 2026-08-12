@@ -82,7 +82,7 @@ from agent_framework.core.attachment_processing import process_attachment_bytes
 from agent_framework.core.agent import AgentSpec
 from agent_framework.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
 from agent_framework.core.workspace_tools import register_workspace_tools
-from agent_framework.core.types import Capability, GenerationRequest, Message, ResumedToolResult, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
+from agent_framework.core.types import Capability, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
 from agent_framework.infra.config_store import ConfigKind, ConfigStore, PersistedAgentConfig, PersistedSkillSourceConfig
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -102,7 +102,6 @@ from agent_framework.infra.migrations import run_database_migrations
 from agent_framework.infra.memory import (
     ChatActivityItem,
     ChatSessionRecord,
-    ChatTranscriptMessage,
     PersistentSessionStore,
     SessionStore,
 )
@@ -120,7 +119,6 @@ from agent_framework.skills.process import SkillProcessManager
 from agent_framework.skills.spec import ManifestSkillSpec
 
 from agent_framework.api._shared import (
-    _SAFE_STORAGE_COMPONENT_RE,
     _augment_sandbox_snapshot,
     _coerce_int,
     _coerce_positive_int,
@@ -131,7 +129,6 @@ from agent_framework.api._shared import (
     _record_sandbox_session,
     _rmtree_async,
     _safe_extract_zip,
-    _safe_storage_component,
     _sandbox_reaper_loop,
     ConsolePrincipalContext,
     to_agent_summary,
@@ -159,6 +156,25 @@ from agent_framework.api._auth_helpers import (
     _update_console_user,
     _update_current_account,
     _update_current_password,
+)
+
+from agent_framework.api._session_helpers import (
+    _append_assistant_attachments,
+    _attachment_session_dir,
+    _build_resume_tool_result,
+    _build_session_preview,
+    _build_user_transcript_message,
+    _chat_upload_session_dir,
+    _chat_upload_visible_root,
+    _download_session_dir,
+    _extract_pending_user_input,
+    _generate_session_title,
+    _next_available_upload_path,
+    _payload_output_text,
+    _published_download_attachments_from_tool_results,
+    _replace_assistant_transcript,
+    _safe_uploaded_filename,
+    _upsert_assistant_transcript,
 )
 
 logger = logging.getLogger(__name__)
@@ -2674,242 +2690,46 @@ async def _record_denied_public_agent_invoke(
 
 
 
-def _attachment_session_dir(workspace_root: Path, session_id: str) -> Path:
-    return workspace_root / ".agent_framework" / "attachments" / _safe_storage_component(session_id, "session")
-
-
-def _chat_upload_visible_root(settings: AppSettings, session_id: str) -> Path:
-    if settings.session_workspace_enabled:
-        return settings.session_workspace_dir(session_id)
-    return settings.workspace_root()
-
-
-def _chat_upload_session_dir(settings: AppSettings, session_id: str) -> Path:
-    visible_root = _chat_upload_visible_root(settings, session_id)
-    if settings.session_workspace_enabled:
-        return visible_root / "uploads"
-    return visible_root / ".agent_framework" / "uploads" / _safe_storage_component(session_id, "session")
-
-
-def _download_session_dir(workspace_root: Path, session_id: str) -> Path:
-    return workspace_root / ".agent_framework" / "downloads" / _safe_storage_component(session_id, "session")
-
-
-def _safe_uploaded_filename(raw_name: str, default_stem: str) -> str:
-    candidate = Path(raw_name).name.strip()
-    if not candidate:
-        candidate = default_stem
-    parsed = Path(candidate)
-    safe_stem = _safe_storage_component(parsed.stem, default_stem)
-    safe_suffix = _SAFE_STORAGE_COMPONENT_RE.sub("", parsed.suffix)
-    if safe_suffix and not safe_suffix.startswith("."):
-        safe_suffix = f".{safe_suffix}"
-    return f"{safe_stem}{safe_suffix}"
-
-
-def _next_available_upload_path(directory: Path, file_name: str) -> Path:
-    candidate = directory / file_name
-    if not candidate.exists():
-        return candidate
-    stem = candidate.stem
-    suffix = candidate.suffix
-    counter = 2
-    while True:
-        next_candidate = directory / f"{stem}-{counter}{suffix}"
-        if not next_candidate.exists():
-            return next_candidate
-        counter += 1
-
-
-def _build_user_transcript_message(request: AgentRunRequest) -> ChatTranscriptMessage:
-    metadata = request.metadata or {}
-    content = _request_display_input(request).strip() or "Message sent."
-    attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
-    normalized_attachments = [item for item in attachments if isinstance(item, dict)]
-    message_id = str(metadata.get("user_message_id") or _new_chat_item_id("user"))
-    return ChatTranscriptMessage(id=message_id, role="user", content=content, attachments=normalized_attachments)
 
 
 
 
-def _payload_output_text(payload: Any) -> str:
-    if isinstance(payload, dict):
-        value = payload.get("output_text")
-        return "" if value is None else str(value)
-    return ""
 
 
-def _upsert_assistant_transcript(messages: list[ChatTranscriptMessage], message_id: str, text: str) -> None:
-    if messages and messages[-1].id == message_id and messages[-1].role == "assistant":
-        messages[-1].content += text
-        return
-    messages.append(ChatTranscriptMessage(id=message_id, role="assistant", content=text))
 
 
-def _replace_assistant_transcript(messages: list[ChatTranscriptMessage], message_id: str, text: str) -> None:
-    if messages and messages[-1].id == message_id and messages[-1].role == "assistant":
-        messages[-1].content = text
-        return
-    messages.append(ChatTranscriptMessage(id=message_id, role="assistant", content=text))
 
 
-def _append_assistant_attachments(
-    messages: list[ChatTranscriptMessage],
-    message_id: str,
-    attachments: list[dict[str, Any]],
-) -> None:
-    if not attachments:
-        return
-    if messages and messages[-1].id == message_id and messages[-1].role == "assistant":
-        messages[-1].attachments = _merge_attachment_metadata(messages[-1].attachments, attachments)
-        return
-    messages.append(ChatTranscriptMessage(id=message_id, role="assistant", content="", attachments=attachments))
 
 
-def _merge_attachment_metadata(
-    existing: list[dict[str, Any]],
-    incoming: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in [*existing, *incoming]:
-        if not isinstance(item, dict):
-            continue
-        key = _attachment_metadata_key(item)
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(item)
-    return merged
 
 
-def _attachment_metadata_key(item: dict[str, Any]) -> str:
-    for field in ("id", "download_url", "workspace_path", "name"):
-        value = item.get(field)
-        if isinstance(value, str) and value.strip():
-            return value
-    return json.dumps(item, sort_keys=True, ensure_ascii=False)
 
 
-def _published_download_attachments_from_tool_results(payload: Any) -> list[dict[str, Any]]:
-    if not isinstance(payload, dict):
-        return []
-    raw_results = payload.get("results")
-    if not isinstance(raw_results, list):
-        return []
-
-    attachments: list[dict[str, Any]] = []
-    for raw_result in raw_results:
-        if not isinstance(raw_result, dict):
-            continue
-        if raw_result.get("name") != "publish_downloadable_file" or bool(raw_result.get("is_error")):
-            continue
-        content = _tool_content_json_object(raw_result.get("content"))
-        if content is None:
-            continue
-        download_url = content.get("download_url")
-        name = content.get("name")
-        if not isinstance(download_url, str) or not download_url.strip() or not isinstance(name, str) or not name.strip():
-            continue
-        content_type = str(content.get("content_type") or "application/octet-stream")
-        attachments.append(
-            {
-                "id": content.get("id") or f"download-{name}",
-                "name": name,
-                "size": _coerce_int(content.get("size")),
-                "type": content_type,
-                "content_type": content_type,
-                "last_modified": 0,
-                "workspace_path": content.get("workspace_path"),
-                "download_url": download_url,
-                "uploaded_at": content.get("published_at"),
-                "summary": content.get("summary") or "Generated by the agent and ready to download.",
-                "kind": _attachment_kind_for_content_type(content_type),
-            }
-        )
-    return attachments
 
 
-def _tool_content_json_object(raw: Any) -> dict[str, Any] | None:
-    if isinstance(raw, dict):
-        return raw
-    if not isinstance(raw, str):
-        return None
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
 
 
-def _attachment_kind_for_content_type(content_type: str) -> str:
-    normalized = content_type.strip().lower()
-    if normalized == "application/pdf":
-        return "pdf"
-    if normalized.startswith("image/"):
-        return "image"
-    if normalized.startswith("text/"):
-        return "text"
-    return "binary"
 
 
-def _build_session_preview(messages: list[ChatTranscriptMessage]) -> str:
-    for message in reversed(messages):
-        if message.content.strip():
-            preview = " ".join(message.content.strip().split())
-            return preview[:200]
-    return ""
 
 
-def _fallback_session_title(messages: list[ChatTranscriptMessage]) -> str:
-    seed = next((message.content for message in messages if message.role == "user" and message.content.strip()), "")
-    normalized = " ".join(seed.replace("\n", " ").split()).strip(" -:,.\t")
-    if not normalized:
-        return "New conversation"
-    if len(normalized) <= 48:
-        return normalized
-    clipped = normalized[:48].rstrip(" ,.:;-")
-    return f"{clipped}..."
 
 
-def _normalize_generated_title(value: str) -> str:
-    cleaned = value.strip().strip('"').strip("'")
-    cleaned = cleaned.replace("\n", " ")
-    cleaned = " ".join(cleaned.split())
-    if not cleaned:
-        return ""
-    if len(cleaned) > 60:
-        cleaned = cleaned[:60].rstrip(" ,.:;-")
-    return cleaned
 
 
-async def _generate_session_title(
-    registry: FrameworkRegistry,
-    agent: AgentSpec,
-    messages: list[ChatTranscriptMessage],
-) -> str:
-    fallback = _fallback_session_title(messages)
-    first_user_message = next((message.content for message in messages if message.role == "user" and message.content.strip()), "")
-    if not first_user_message:
-        return fallback
-    try:
-        adapter = registry.get_model_provider(agent.provider)
-        response = await adapter.generate(
-            GenerationRequest(
-                model=agent.provider.model,
-                system_prompt=(
-                    "Generate a concise conversation title. "
-                    "Return plain text only, no quotes, no punctuation wrapper, 3 to 8 words."
-                ),
-                messages=[Message(role="user", content=first_user_message)],
-                temperature=0.0,
-                max_tokens=24,
-            )
-        )
-    except Exception:
-        logger.debug("Session title generation failed; using fallback", exc_info=True)
-        return fallback
-    return _normalize_generated_title(response.output_text) or fallback
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _ask_user_handler(args: dict[str, Any], _ctx: RunContext | None) -> UserInputRequest:
@@ -2945,78 +2765,10 @@ def _ask_user_handler(args: dict[str, Any], _ctx: RunContext | None) -> UserInpu
     )
 
 
-def _extract_pending_user_input(activity: list[ChatActivityItem]) -> UserInputRequest | None:
-    resolved_ids: set[str] = set()
-    for item in reversed(activity):
-        if item.title == SSE_EVENT_INPUT_RESOLVED and isinstance(item.payload, dict):
-            resolved_id = str(item.payload.get("id", "")).strip()
-            if resolved_id:
-                resolved_ids.add(resolved_id)
-            continue
-        if item.title != SSE_EVENT_INPUT_REQUIRED:
-            continue
-        try:
-            request = UserInputRequest.model_validate(item.payload)
-        except Exception:
-            logger.warning("Skipping malformed input_required activity payload: %s", item.payload, exc_info=True)
-            continue
-        if request.id not in resolved_ids:
-            return request
-    return None
 
 
-def _build_resume_tool_result(
-    request: AgentRunRequest,
-    pending_input: UserInputRequest | None,
-) -> ResumedToolResult | None:
-    metadata = request.metadata or {}
-    resume_question_id = str(metadata.get("resume_question_id") or "").strip()
-    if not resume_question_id:
-        return None
-    if pending_input is None:
-        raise HTTPException(status_code=409, detail="This session does not have a pending question to answer")
-    if pending_input.id != resume_question_id:
-        raise HTTPException(status_code=409, detail="The pending question no longer matches the submitted answer")
-
-    raw_answers = metadata.get("question_response")
-    answers = raw_answers if isinstance(raw_answers, dict) else {"response": request.input}
-    normalized_answers = {str(key): value for key, value in answers.items()}
-    summary = _request_display_input(request).strip() or "Message sent."
-    return ResumedToolResult(
-        tool_call_id=pending_input.tool_call_id,
-        tool_name=pending_input.tool_name,
-        request_id=pending_input.id,
-        answers=normalized_answers,
-        summary=summary,
-    )
 
 
-def _request_display_input(request: AgentRunRequest) -> str:
-    metadata = request.metadata or {}
-    raw_display = metadata.get("display_input")
-    if isinstance(raw_display, str):
-        normalized = raw_display.strip()
-        if normalized:
-            return normalized
-    if isinstance(request.input, str):
-        return request.input
-    text_parts: list[str] = []
-    image_count = 0
-    for item in request.input:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") == "text" and isinstance(item.get("text"), str):
-            text = item["text"].strip()
-            if text:
-                text_parts.append(text)
-        elif item.get("type") == "image_url":
-            image_count += 1
-    if text_parts:
-        return "\n\n".join(text_parts)
-    if image_count:
-        suffix = "s" if image_count != 1 else ""
-        return f"Shared {image_count} image attachment{suffix}."
-    return "Message sent."
 
 
 async def _apply_runtime_config(app: FastAPI, kind: ConfigKind, payload: list[dict[str, object]]) -> None:
