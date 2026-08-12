@@ -11,28 +11,32 @@ import jwt
 
 from datetime import UTC, datetime
 
-from agent_framework.api.app import (
+from agent_framework.api._shared import (
     ConsolePrincipalContext,
     _agent_run_log_response,
     _audit_request_metadata,
+)
+from agent_framework.api._auth_helpers import (
     _build_api_token_usage_response,
+    _list_audit_logs,
+    _list_api_token_runs,
+    _normalize_token_policy,
+    _normalize_token_scopes,
+    _revoke_api_token,
+    _resolve_console_identity,
+    _update_api_token,
+)
+from agent_framework.api.app import (
     _build_agent_specs,
     create_app,
     _enforce_api_token_policy_limits,
     _ensure_console_principal_can_access_session,
     _ensure_skill_state_mutation_allowed,
-    _list_audit_logs,
-    _list_api_token_runs,
-    _normalize_token_policy,
-    _normalize_token_scopes,
     _pick_agent_row_for_principal,
     _pick_resource_row_for_principal,
     _parse_mcp_servers,
     _public_stream_events,
     _record_public_agent_run,
-    _revoke_api_token,
-    _resolve_console_identity,
-    _update_api_token,
     _validate_config_payload,
 )
 from agent_framework.api.auth import (
@@ -853,7 +857,8 @@ def _build_guard_app(settings):
 
 
 def _session_cookie(settings: AppSettings, *, user_id: str = "user_1", email: str = "u1@example.com") -> str:
-    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+    from agent_framework.api._auth_helpers import _make_console_session_token
+    from agent_framework.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id=user_id,

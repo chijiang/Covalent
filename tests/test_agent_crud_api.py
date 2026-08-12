@@ -144,7 +144,8 @@ async def _seed_registry(app) -> None:
 
 
 def _admin_cookie(settings):
-    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+    from agent_framework.api._auth_helpers import _make_console_session_token
+    from agent_framework.api._shared import ConsolePrincipalContext
     p = ConsolePrincipalContext(user_id="admin", email="admin@t", display_name="A", role="admin",
                                 workspace_id="w", workspace_name="W", workspace_slug="w", workspace_role="admin")
     return f"{settings.console_session_cookie_name}={_make_console_session_token(settings, p)}"

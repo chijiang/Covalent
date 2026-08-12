@@ -297,7 +297,11 @@
   - ✅ 第一步 (2026-08-11)：抽出**叶子层 `api/_shared.py`（432 行，22 个成员）**——`_new_chat_item_id`/`_coerce_int`/`_coerce_positive_int`/`_dedupe_strings`/`_safe_storage_component`(+`_SAFE_STORAGE_COMPONENT_RE`)/`_safe_extract_zip`/`_rmtree_async`/`_payload_text`/`_audit_request_metadata`/`_record_audit_log`/`_record_sandbox_session`/`_augment_sandbox_snapshot`/`_usage_int`/`to_agent_summary`/`to_chat_session_summary_response`/`to_chat_session_response`/`_api_token_summary_response`/`_agent_run_log_response`/`_audit_log_response`/`ConsolePrincipalContext`/`_sandbox_reaper_loop`。**app.py 5503 → 5212**。
   - 方法：AST 定位 + 脚本提取源码段（保留缩进注释）+ 从后往前删行；用 basedpyright 诊断捕获缺 import（`zipfile`/`anyio`/`functools`/`re`/`dataclass`）与孤立装饰器（`@dataclass(frozen=True)` 残留在删除范围外，会错误装饰 `_console_user_response`——已删）。
   - 测试 176 passed 零回归。
-  - ⏳ 剩余：`_auth_helpers.py`、`_session_helpers.py`、`_public_invoke_helpers.py`、`_config_helpers.py`+`_skill_helpers.py`（二者有循环依赖，用户已定用**第三模块 `_runtime_apply.py`** 拆 `_apply_runtime_config`）。全部完成预计 app.py → ~2500 行。
+  - ✅ 第二步 (2026-08-12)：抽出 **`api/_auth_helpers.py`（1198 行，33 个成员）**——`PUBLIC_PATHS`/`ConsoleAuthGuardMiddleware`/token-scope-policy 规范化/会话 cookie 设置与清除/principal 解析（`_resolve_console_principal`/`_resolve_console_identity`/`_verify_trusted_header_signature`/三种 `_console_identity_from_*`）/用户注册登录与账号管理/seed admin/console users CRUD/api-token CRUD 与 usage/audit logs/`_derive_unique_username`。**app.py 5212 → 4112**。
+  - 抽取中修正：`PUBLIC_PATHS` 是 `AnnAssign`（带类型注解）而非 `Assign`，第一遍生成漏掉，第二遍补插；测试文件内联 `from agent_framework.api.app import ...` 需改指 `_shared`/`_auth_helpers`，且**函数内局部 import 保留缩进**（脚本两次替换叠加产生 8 空格/顶格错误，逐个修正）。
+  - 清理 app.py 顶部 22 行未用 import（`hashlib`/`hmac`/`re`/`secrets`/`jwt`/`PyJWTError`/`JSONResponse`/`BaseHTTPMiddleware`/schemas/auth/db 中随函数移走的 15 个名字）。
+  - 测试 176 passed 零回归。
+  - ⏳ 剩余：`_session_helpers.py`、`_public_invoke_helpers.py`、`_config_helpers.py`+`_skill_helpers.py`（二者有循环依赖，用户已定用**第三模块 `_runtime_apply.py`** 拆 `_apply_runtime_config`）。全部完成预计 app.py → ~2500 行。
 - [ ] **X3**：`app.py:1243` 调 `runtime._encode_sse`（私有）；`:465` 读 `spm._pools`（私有）——暴露公开方法。
 - [ ] **X4**：`app.py:912-942` 每请求 `from openai import AsyncOpenAI` 且不 close → httpx 连接池泄漏。缓存/lazy-init。
 - [ ] **X5**：`react.py:1033` 上下文压缩早退条件几乎恒真，可能在真实超限时误判"无需压缩"——信任 `last_prompt_tokens`。

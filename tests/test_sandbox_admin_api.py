@@ -105,7 +105,8 @@ class _FakeDbSession:
 
 def _admin_cookie(settings: AppSettings) -> str:
     """Build a console session cookie for an admin identity."""
-    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+    from agent_framework.api._auth_helpers import _make_console_session_token
+    from agent_framework.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id="admin-1",
@@ -124,7 +125,8 @@ def _admin_cookie(settings: AppSettings) -> str:
 
 def _member_cookie(settings: AppSettings) -> str:
     """Build a console session cookie for a non-admin identity."""
-    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+    from agent_framework.api._auth_helpers import _make_console_session_token
+    from agent_framework.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id="member-1",

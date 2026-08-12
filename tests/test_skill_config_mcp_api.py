@@ -100,7 +100,8 @@ class _DummySessionStore:
 
 
 def _admin_cookie(settings):
-    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+    from agent_framework.api._auth_helpers import _make_console_session_token
+    from agent_framework.api._shared import ConsolePrincipalContext
     p = ConsolePrincipalContext(
         user_id="admin", email="admin@t", display_name="A", role="admin",
         workspace_id="ws-1", workspace_name="Workspace 1", workspace_slug="ws-1", workspace_role="admin",
