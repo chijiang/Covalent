@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from agent_framework.api._skill_helpers import _reload_git_skills
+from agent_framework.application.services.skill_service import _reload_git_skills
 from agent_framework.infra.config_store import ConfigKind, ConfigStore
 from agent_framework.infra.settings import AppSettings
 from agent_framework.mcp.client import McpSdkClient
 from agent_framework.registry.registry import FrameworkRegistry
 
 async def _apply_runtime_config(app: FastAPI, kind: ConfigKind, payload: list[dict[str, object]]) -> None:
-    from ._config_helpers import _resolve_default_provider, _build_agent_specs, _parse_mcp_servers
+    from .management_service import _resolve_default_provider, _build_agent_specs, _parse_mcp_servers
     registry: FrameworkRegistry = app.state.registry
     config_store: ConfigStore = app.state.config_store
     settings: AppSettings = app.state.settings

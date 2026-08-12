@@ -25,11 +25,11 @@ from agent_framework.api._shared import (
     _new_chat_item_id,
     _record_audit_log,
 )
-from agent_framework.api._skill_helpers import (
+from agent_framework.application.services.skill_service import (
     _build_skill_management_export_payload,
     _import_skill_management_payload,
 )
-from agent_framework.api._runtime_apply import _apply_runtime_config
+from agent_framework.application.services.runtime_apply import _apply_runtime_config
 from agent_framework.api.auth import ApiPrincipal
 from agent_framework.api.schemas import (
     ConfigDocumentResponse,

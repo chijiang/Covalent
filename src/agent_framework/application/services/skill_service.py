@@ -362,7 +362,7 @@ def _derive_skill_sources_from_skill_items(items: list[SkillManagementItemRespon
 def _extract_skill_management_payload(
     payload: Any,
 ) -> tuple[list[SkillManagementItemResponse], list[dict[str, object]]]:
-    from ._config_helpers import _validate_config_payload
+    from .management_service import _validate_config_payload
     if isinstance(payload, list):
         if all(_looks_like_skill_source_entry(item) for item in payload):
             return [], _validate_config_payload("skill_sources", payload)
@@ -407,7 +407,7 @@ async def _import_skill_management_payload(
     payload: Any,
     principal: ConsolePrincipalContext,
 ) -> ManagementImportResponse:
-    from ._runtime_apply import _apply_runtime_config
+    from .runtime_apply import _apply_runtime_config
     registry: FrameworkRegistry = app.state.registry
     config_store: ConfigStore = app.state.config_store
 

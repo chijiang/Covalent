@@ -119,7 +119,10 @@ src/agent_framework/
 ## 8. 决策记录
 
 - [x] 2026-08-12：**部分采纳 Hexagonal**——只加 `application/` 层，保持现有包名（model/runtime/mcp），不建 Redis/CLI 空目录。
-- [x] 2026-08-12：**application 层样板落地**——建 `application/services/`，搬 token 用例（`_create/_update/_revoke_api_token` + `_normalize_token_*`）到 `application/services/token_service.py`。`_auth_helpers` 从 1198 → 1044 行。api 层改为调用 service。测试 176 passed 零回归。
-  - **样板风格**：service 保持函数式（参数注入 `db_manager`/`settings`/`principal`），不建 class；依赖 `_shared` 跨切面 + `auth`/`schemas`/`infra`；暂抛 `fastapi.HTTPException`（最小改动，后续可换领域异常）。api 层仅编排调用。
-  - ⏳ 剩余用例待搬：user（register/principal/seed admin）、session（title/transcript）、config（apply/management）、invoke（public_invoke 编排）、skill 管理。
-- [ ] 是否把 51 个路由从 `create_app` 闭包拆到 `api/routes/`？（与 service 层解耦后可做，独立决策）
+- [x] 2026-08-12：**application 层落地**——建 `application/services/` 7 个 service：
+  - `token_service.py`（185）`user_service.py`（422）`session_service.py`（272）——手工按用例拆分
+  - `invoke_service.py`（382）`management_service.py`（1065）`skill_service.py`（545）`runtime_apply.py`（61）——整体从 api helper 移入（保 cohesion，避免强行拆分）
+  - `_auth_helpers` 从 1198 → 656 → 当前 ~440 行（只剩认证跨切面）；`_session_helpers` → 93 行（只剩路径工具）。
+- [x] 2026-08-12：**endpoints 拆分完成**——create_app 闭包的 51 路由拆到 `api/routes/` 11 个 APIRouter 文件（agents/auth/config/mcp/ops/providers/public/sessions/skills/tokens/users）。`app.state` → `request.app.state`（脚本批量，处理了 `getattr(app.state,...)` 与裸 `app` 传参两种形态）；SSE 常量移 `api/sse_events.py` 避免循环 import；缺 `request` 参数的路由补参；`public_invoke_agent` 保留 `response_model=None`。**app.py 从 1744 → 162 行**（只剩 lifespan + create_app 装配）。
+  - 每步跑 176 测试验证，最终 176 passed 零回归。
+- [ ] 可选后续：helper 模块（_auth_helpers/_session_helpers）里剩余函数可进一步归位；路由按需再细分。

@@ -293,7 +293,7 @@
 
 ### 其他结构
 - [ ] **X1**：`chat-workspace.tsx` 2958 行混 6 个关注点，trace 树构建（~700 行）与 React 无关 → 挪到 `lib/`。
-- [x] **X2**：`app.py` 5283 行 → **拆分完成**（方案 A：抽 helper，路由暂留）。
+- [x] **X2**：`app.py` 5283 行 → **完全重构完成**（helpers 全分离 + application 层 + endpoints 分组）。最终 **app.py 162 行**（原 5503，-5341 行）。
   - ✅ 第一步 (2026-08-11)：抽出**叶子层 `api/_shared.py`（432 行，22 个成员）**——`_new_chat_item_id`/`_coerce_int`/`_coerce_positive_int`/`_dedupe_strings`/`_safe_storage_component`(+`_SAFE_STORAGE_COMPONENT_RE`)/`_safe_extract_zip`/`_rmtree_async`/`_payload_text`/`_audit_request_metadata`/`_record_audit_log`/`_record_sandbox_session`/`_augment_sandbox_snapshot`/`_usage_int`/`to_agent_summary`/`to_chat_session_summary_response`/`to_chat_session_response`/`_api_token_summary_response`/`_agent_run_log_response`/`_audit_log_response`/`ConsolePrincipalContext`/`_sandbox_reaper_loop`。**app.py 5503 → 5212**。
   - 方法：AST 定位 + 脚本提取源码段（保留缩进注释）+ 从后往前删行；用 basedpyright 诊断捕获缺 import（`zipfile`/`anyio`/`functools`/`re`/`dataclass`）与孤立装饰器（`@dataclass(frozen=True)` 残留在删除范围外，会错误装饰 `_console_user_response`——已删）。
   - 测试 176 passed 零回归。
@@ -310,6 +310,10 @@
   - 常量迁移：`RESOURCE_METADATA_FIELDS` 移 `_shared`（config/skill 共用）；`LEGACY_REASONING_SKILL_NAME`/`WORKSPACE_AGENT_TOOLS`/`BUILTIN_AGENT_TOOLS`/`DEFAULT_AGENT_LOCAL_TOOLS` 随 config；`_SKILL_PREVIEW_*` 随 skill。
   - 补缺 import（`zipfile`/`json`/`yaml`/`RESOURCE_METADATA_FIELDS`）；`PersistedProviderConfig` 保持函数内 lazy。测试适配：`test_public_invoke_api`/`test_agent_crud_api`/`test_production_readiness` 的 config/skill 函数 import 改指新模块。清理 app.py 约 40 行失效 import。测试 176 passed 零回归。
   - **app.py 最终 2067 行（原 5503，-3436 行）。**
+  - ✅ **第六步 (2026-08-12)：application 层 + endpoints 分组完成。**（详见 `docs/architecture-assessment.md`）
+    - 新增 `application/services/`：`token_service`(185)/`user_service`(422)/`session_service`(272) 按用例拆分；`invoke_service`(382)/`management_service`(1065)/`skill_service`(545)/`runtime_apply`(61) 从 api helper 整体移入。
+    - 51 路由从 create_app 闭包拆到 `api/routes/` 11 个 APIRouter（agents/auth/config/mcp/ops/providers/public/sessions/skills/tokens/users）。`app.state`→`request.app.state`（脚本处理 `getattr(app.state,...)` 和裸 `app` 传参两种形态）；SSE 常量移 `api/sse_events.py` 防循环；缺 request 补参；`public_invoke_agent` 保留 `response_model=None`。
+    - **app.py 1744 → 162 行**（只剩 lifespan + create_app 装配）。测试 176 passed 零回归。
 - [ ] **X3**：`app.py:1243` 调 `runtime._encode_sse`（私有）；`:465` 读 `spm._pools`（私有）——暴露公开方法。
 - [ ] **X4**：`app.py:912-942` 每请求 `from openai import AsyncOpenAI` 且不 close → httpx 连接池泄漏。缓存/lazy-init。
 - [ ] **X5**：`react.py:1033` 上下文压缩早退条件几乎恒真，可能在真实超限时误判"无需压缩"——信任 `last_prompt_tokens`。
