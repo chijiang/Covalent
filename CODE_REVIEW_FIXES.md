@@ -205,10 +205,15 @@
   - 小图/正常 PDF 行为完全不变。
 
 ### M4 — 每轮迭代可能触发 LLM summarize 且静默吞错
-- [ ] **状态**：未修复
-- **位置**：`src/covalent/runtime/react.py:954-1016`
+- [x] **状态**：已修复 (2026-08-13)
+- **位置**：`src/covalent/runtime/context_window_manager.py`（`_compact_generation_messages` / `_llm_summarize_messages`，从 `react.py:954-1016` 提取而来）
 - **问题**：每轮都可能额外一次 model 调用；`except Exception` 静默回退本地摘要，掩盖 provider 错误。
 - **修复**：缓存/限频并 log 失败。
+- **落地**：
+  - **log 失败**：`_llm_summarize_messages` 的 `except Exception` 改为 `logger.warning(..., exc_info=True)` 再回退本地启发式摘要（仍回退以不中断 agent 运行，但 provider/鉴权故障不再被静默）。
+  - **限频（debounce）**：Tier 2 LLM summarization 在调用前检测 `older_messages` 是否已含本run产出的摘要系统消息（按 header 标记识别）；已含则本run不再发起新的 LLM summary 调用，改用幂等的本地启发式——避免连续迭代各发一次 LLM 调用。首次跨阈值仍正常调 LLM（首次调用不会被误杀）。
+  - 测试：`tests/test_context_compaction.py` 覆盖——首次跨阈值调 LLM、已含摘要时 0 次 LLM 调用、X5 悲观估算、小对话不压缩。回归用 revert 验证：撤销 debounce 后 `call_count` 测试失败。
+  - 全量 223 passed。
 
 ### M5 — `_kill_exec` 未走 to_thread
 - [x] **状态**：已处理 (2026-08-11，降级为可观测 + 文档权衡)
@@ -218,10 +223,11 @@
 - **落地**（不强改 async，避免协议扩散）：`_kill_exec` 由 `DockerExecProcess.terminate/kill`（sync `Process` 协议）调用，`SkillProcessManager._terminate`（async）调 sync 方法。改 async 需要破坏 `Process` 协议签名、扩散到所有调用点，性价比低。改为：两处 `except: pass` → `logger.debug(..., exc_info=True)`（kill 失败可观测）；docstring 写清"只在异常 terminate 路径触发，daemon 慢时短暂阻塞可接受"的权衡。这是有意识的折中。
 
 ### M6 — delegate context session_id=None
-- [ ] **状态**：未修复
-- **位置**：`src/covalent/runtime/react.py:636-652`（`_build_delegate_context`）
+- [x] **状态**：已修复 (2026-08-13)
+- **位置**：`src/covalent/runtime/react.py`（`_build_delegate_context`）
 - **问题**：子 agent 的 trace/最终答复不入会话存储，历史回放缺失。
 - **修复**：继承父 session_id（或派生委托链范围的 id）。
+- **落地**：`_build_delegate_context` 改为继承父 `context.session_id` 与 `memory_mode` 元数据；`delegation_chain`/`delegated_by` 观测元数据保留。子 agent 的 run 现在写入同一会话，历史回放可见。父无 session_id 时子也为 None（不伪造）。测试 `tests/test_agent_react.py::DelegateSessionPersistenceTests` 覆盖继承与无父会话两种场景，revert 验证：撤销后继承测试失败。
 
 ### M7 — 多处裸 `except Exception` 静默吞错
 - [x] **状态**：已修复 (2026-08-11)
@@ -316,7 +322,8 @@
     - **app.py 1744 → 162 行**（只剩 lifespan + create_app 装配）。测试 176 passed 零回归。
 - [ ] **X3**：`app.py:1243` 调 `runtime._encode_sse`（私有）；`:465` 读 `spm._pools`（私有）——暴露公开方法。
 - [ ] **X4**：`app.py:912-942` 每请求 `from openai import AsyncOpenAI` 且不 close → httpx 连接池泄漏。缓存/lazy-init。
-- [ ] **X5**：`react.py:1033` 上下文压缩早退条件几乎恒真，可能在真实超限时误判"无需压缩"——信任 `last_prompt_tokens`。
+- [x] **X5**：`react.py:1033` 上下文压缩早退条件几乎恒真，可能在真实超限时误判"无需压缩"——信任 `last_prompt_tokens`。
+  - **落地 (2026-08-13)**：`context_window_manager.py` 的 `_compact_generation_messages` 早退与 Tier-1 再检两处，`estimated_tokens` 从"优先用 `last_prompt_tokens`"改为 **`max(last_prompt_tokens or 0, char_estimate)`**——悲观取大。`last_prompt_tokens` 反映上一轮（更短）对话，单用它会低估当前真实 token 数导致漏压缩；取 max 保证当前已超限时一定压缩。测试 `tests/test_context_compaction.py::test_x5_stale_last_prompt_tokens_does_not_skip_compaction` 用陈旧小 `last_prompt_tokens=10` + 超大对话验证压缩仍触发；revert 验证撤销后测试失败。
 - [ ] **X6**：`LEGACY_REASONING_SKILL_NAME` + `reasoning_skill_*` settings（`app.py:143` / `settings.py:62-64`）——迁移窗口过了就删。
 
 ---
@@ -333,7 +340,8 @@
 4. **重构窗口**：L1–L6（后端 visibility helper）、L7 + 前端 `useAsyncResource`——能削上千行重复。
 
 > 前八批累计已修复：**S1–S6 + H1–H11 + M2、M3、M5、M7、M9、M10、M11 + D1、D2 + L1、L3、L6、L7 + G1、G2、G4 + X2**（共 34 项，含全部 6 个 SEVERE 和全部 11 个 HIGH）。
-> **SEVERE 与 HIGH 已全部处理完毕，app.py 已从 5503 行拆到 2067 行（helpers 全部分离到 6 个模块）。** 剩余仅 M1/M4/M6/M8（语义敏感，需确认产品意图）与少量结构性清理（L2/L4/L5、G3/G5、X1/X3-X6）。
+> 第九批 (2026-08-13)：**X5（压缩早退悲观估算）、M4（LLM 摘要限频+log 失败）、M6（delegate 继承 session_id）**。测试 223 passed。
+> **SEVERE 与 HIGH 已全部处理完毕，app.py 已从 5503 行拆到 162 行（application 层 + endpoints 分组）。** 剩余仅 M1/M8（语义敏感，需确认产品意图）与少量结构性清理（L2/L4/L5、G3/G5、X1/X3/X4/X6）。
 
 ---
 

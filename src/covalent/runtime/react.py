@@ -620,14 +620,23 @@ class ReactAgentRuntime(AgentRuntime):
     ) -> RunContext:
         delegation_chain = list((context.metadata if context else {}).get("delegation_chain", []))
         delegation_chain.append(parent_agent.name)
+        # Inherit the parent's session_id + memory_mode so the delegate's trace and
+        # final answer are persisted into the same conversation (otherwise the
+        # sub-agent's history is lost on replay). The delegation_chain metadata
+        # keeps the parent/child relationship for observability.
+        metadata: dict[str, Any] = {
+            "delegation_chain": delegation_chain,
+            "delegated_by": parent_agent.name,
+        }
+        if context is not None:
+            parent_memory_mode = context.metadata.get("memory_mode")
+            if parent_memory_mode is not None:
+                metadata["memory_mode"] = parent_memory_mode
         return RunContext(
             agent_name=delegate_agent.name,
-            session_id=None,
-            metadata={
-                "delegation_chain": delegation_chain,
-                "delegated_by": parent_agent.name,
-            },
-            execution_backend=getattr(context, "execution_backend", None),
+            session_id=context.session_id if context is not None else None,
+            metadata=metadata,
+            execution_backend=getattr(context, "execution_backend", None) if context is not None else None,
         )
 
     async def _load_session_messages(self, agent: AgentSpec, context: RunContext | None) -> list[Message]:

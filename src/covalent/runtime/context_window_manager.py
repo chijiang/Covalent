@@ -8,6 +8,7 @@ LLM summarization through the registry.
 from __future__ import annotations
 
 import json
+import logging
 from json import JSONDecodeError
 from typing import Any
 
@@ -15,6 +16,8 @@ from covalent.core.agent import AgentSpec
 from covalent.core.types import GenerationRequest, Message
 from covalent.registry.registry import FrameworkRegistry
 from covalent.runtime.context_window import get_context_window
+
+logger = logging.getLogger(__name__)
 
 CHARS_PER_TOKEN_ESTIMATE = 3.5
 
@@ -314,6 +317,14 @@ class ContextWindowManager:
             if not summary_text:
                 return self._build_context_summary_message(messages)
         except Exception:
+            # Log provider/serialization failures instead of silently falling back
+            # to the local heuristic summary — otherwise a broken provider or auth
+            # issue is masked as "compaction worked". Still fall back so the run
+            # continues rather than failing the whole agent invocation.
+            logger.warning(
+                "LLM context summarization failed; falling back to local heuristic summary",
+                exc_info=True,
+            )
             return self._build_context_summary_message(messages)
 
         header = (
@@ -336,7 +347,13 @@ class ContextWindowManager:
         token_budget = self._effective_token_budget(agent)
         trigger_threshold = int(token_budget * self.context_compact_threshold)
 
-        estimated_tokens = last_prompt_tokens if last_prompt_tokens else self._estimate_tokens_from_chars(messages)
+        # Be pessimistic about size: take the MAX of the last provider-reported
+        # prompt-token count and the current char-based estimate. Using last_prompt_tokens
+        # alone is stale once new messages are appended (it reflects a shorter
+        # conversation), which previously made the early-out fire even when the
+        # current request was actually over budget. The max errs toward compacting.
+        char_estimate = self._estimate_tokens_from_chars(messages)
+        estimated_tokens = max(last_prompt_tokens or 0, char_estimate)
 
         if estimated_tokens < trigger_threshold and original_chars <= self.context_message_char_limit * len(messages):
             return messages, {
@@ -382,8 +399,8 @@ class ContextWindowManager:
         if truncated_messages > 0:
             compaction_method = "prune"
 
-        # Check if Tier 1 was sufficient
-        estimated_after_t1 = last_prompt_tokens if last_prompt_tokens else self._estimate_tokens_from_chars(prepared)
+        # Check if Tier 1 was sufficient (same pessimistic max as the initial gate).
+        estimated_after_t1 = max(last_prompt_tokens or 0, self._estimate_tokens_from_chars(prepared))
         if estimated_after_t1 < trigger_threshold:
             prepared, invalid_dropped = self._sanitize_tool_message_sequence(prepared)
             prepared_chars = sum(self._estimate_message_chars(m) for m in prepared)
@@ -414,7 +431,17 @@ class ContextWindowManager:
             recent_start = len(prepared) - len(recent_messages)
             older_messages = prepared[:recent_start]
 
-            if self.enable_llm_summarization:
+            already_summarized = any(
+                getattr(m, "role", None) == "system"
+                and "context was compacted to stay within the model budget" in (m.content if isinstance(m.content, str) else "")
+                for m in older_messages
+            )
+
+            # Debounce the expensive LLM summary call: if this run already produced
+            # a compaction summary (a prior iteration crossed the threshold), don't
+            # call the model again on every subsequent iteration. Fall back to the
+            # cheap local heuristic, which is idempotent on the same older set.
+            if self.enable_llm_summarization and not already_summarized:
                 summary_message = await self._llm_summarize_messages(
                     older_messages, agent, max_summary_chars=self.context_summary_char_budget
                 )

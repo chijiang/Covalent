@@ -448,5 +448,43 @@ class SessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
                          "Prior messages should not be loaded with memory_mode=none")
 
 
+class DelegateSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    """M6: a delegate sub-agent must inherit the parent's session_id so its
+    trace/final answer is persisted into the same conversation. Before the fix,
+    ``_build_delegate_context`` passed session_id=None and the sub-agent's
+    history was lost on replay.
+    """
+
+    def test_delegate_context_inherits_parent_session_id(self) -> None:
+        registry = make_test_registry(make_test_agent(name="parent"))
+        runtime = make_test_runtime(registry)
+        parent = make_test_agent(name="parent", model="m-p").model_copy(update={"delegate_agents": ["child"]})
+        child = make_test_agent(name="child", model="m-c")
+
+        parent_context = RunContext(
+            agent_name="parent", session_id="shared-session",
+            metadata={"memory_mode": "session"},
+        )
+        delegate_context = runtime._build_delegate_context(parent, child, parent_context)
+
+        self.assertEqual(delegate_context.session_id, "shared-session",
+                         "delegate must inherit the parent session_id so its run persists")
+        self.assertEqual(delegate_context.metadata.get("delegated_by"), "parent")
+        self.assertEqual(delegate_context.metadata.get("memory_mode"), "session",
+                         "delegate must inherit the parent memory_mode")
+        self.assertEqual(delegate_context.metadata.get("delegation_chain"), ["parent"])
+
+    def test_delegate_context_no_parent_session(self) -> None:
+        """When the parent has no session_id, the delegate also has none — no
+        spurious persistence to a non-existent session."""
+        registry = make_test_registry(make_test_agent(name="parent"))
+        runtime = make_test_runtime(registry)
+        parent = make_test_agent(name="parent", model="m-p").model_copy(update={"delegate_agents": ["child"]})
+        child = make_test_agent(name="child", model="m-c")
+
+        delegate_context = runtime._build_delegate_context(parent, child, RunContext(agent_name="parent"))
+        self.assertIsNone(delegate_context.session_id)
+
+
 if __name__ == "__main__":
     unittest.main()
