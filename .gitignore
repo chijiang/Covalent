@@ -44,7 +44,7 @@ tmp
 .pnpm-store/
 frontend/.pnpm-store/
 *.tsbuildinfo
-.agent_framework/
+.covalent/
 
 # Local .git backups (e.g. from history rewrites)
 .git-backup-*
@@ -53,6 +53,6 @@ frontend/.pnpm-store/
 skills/uploaded
 
 # agent workspace
-.agent_framework/session-workspaces/
-.agent_framework/downloads/
+.covalent/session-workspaces/
+.covalent/downloads/
 

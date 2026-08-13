@@ -45,9 +45,13 @@ async function forward(request: NextRequest, pathSegments: string[]): Promise<Re
   try {
     const upstream = await fetch(target, init);
     // Allowlist response headers instead of forwarding everything upstream sends.
-    // The backend runs in-process; we don't want to leak Set-Cookie, Server,
-    // X-Powered-By, or other transport-internal headers to the browser. Keep
-    // only the headers the client genuinely needs to interpret the body/flow.
+    // The backend runs in-process; we don't want to leak Server, X-Powered-By,
+    // or other transport-internal headers to the browser. Keep only the headers
+    // the client genuinely needs to interpret the body/flow.
+    // NOTE: set-cookie IS forwarded. The auth routes (login/register/password)
+    // set the console session cookie here; dropping it would leave the browser
+    // without a session even though the request succeeded (every subsequent
+    // /me, /agents, ... would 401).
     const allowedResponseHeaders = new Set([
       "content-type",
       "content-disposition",
@@ -62,6 +66,7 @@ async function forward(request: NextRequest, pathSegments: string[]): Promise<Re
       "x-request-id",
       "x-accel-buffering",
       "vary",
+      "set-cookie",
     ]);
     const responseHeaders = new Headers();
     upstream.headers.forEach((value, key) => {
