@@ -34,5 +34,25 @@ class OpenAICompatibleProviderParseArgumentsTests(unittest.TestCase):
         self.assertIn("Expected a JSON object", error.detail)
 
 
+class OpenAICompatibleProviderContentNormalizationTests(unittest.TestCase):
+    def test_adds_missing_type_to_provider_text_part(self) -> None:
+        content = [{"text": "Important conversation result"}]
+
+        normalized = OpenAICompatibleProvider._normalize_content_parts(content)
+
+        self.assertEqual(normalized, [{"type": "text", "text": "Important conversation result"}])
+        self.assertEqual(OpenAICompatibleProvider._extract_text(normalized), "Important conversation result")
+
+    def test_preserves_valid_multimodal_content(self) -> None:
+        content = [
+            {"type": "text", "text": "Inspect this image"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+
+        normalized = OpenAICompatibleProvider._normalize_content_parts(content)
+
+        self.assertEqual(normalized, content)
+
+
 if __name__ == "__main__":
     unittest.main()

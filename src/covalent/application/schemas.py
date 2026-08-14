@@ -390,6 +390,21 @@ class ChatSessionUpdateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
 
 
+class ChatTranscriptMessageInput(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class TranscriptReplaceRequest(BaseModel):
+    # Exactly one of the two must be supplied:
+    #   truncate_before_message_id -> keep messages strictly before this id (edit-and-resend)
+    #   messages                   -> explicit full replace (undo)
+    truncate_before_message_id: str | None = None
+    messages: list[ChatTranscriptMessageInput] | None = None
+
+
 # --- Skill management schemas ---
 
 

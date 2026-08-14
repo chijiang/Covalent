@@ -63,9 +63,10 @@ class OpenAICompatibleProvider(ModelAdapter):
             for raw_call in raw_tool_calls
             if self._raw_tool_call_name(raw_call)
         ]
+        normalized_content = self._normalize_content_parts(getattr(message, "content", ""))
         assistant_message = Message(
             role=str(getattr(message, "role", "assistant") or "assistant"),
-            content=getattr(message, "content", "") or "",
+            content=normalized_content,
             tool_calls=raw_tool_calls,
             reasoning_content=str(getattr(message, "reasoning_content", "") or ""),
         )
@@ -79,7 +80,7 @@ class OpenAICompatibleProvider(ModelAdapter):
                 total_tokens=int(usage_data.get("total_tokens", 0)),
             )
         return GenerationResponse(
-            output_text=self._extract_text(getattr(message, "content", "")),
+            output_text=self._extract_text(normalized_content),
             tool_calls=tool_calls,
             assistant_message=assistant_message,
             raw_response=self._model_dump(response),
@@ -106,6 +107,9 @@ class OpenAICompatibleProvider(ModelAdapter):
 
     def _build_payload(self, request: GenerationRequest) -> dict[str, Any]:
         messages = [message.model_dump(exclude_none=True, exclude_defaults=True) for message in request.messages]
+        for message in messages:
+            if "content" in message:
+                message["content"] = self._normalize_content_parts(message["content"])
         if request.system_prompt:
             messages = [{"role": "system", "content": request.system_prompt}, *messages]
 
@@ -228,6 +232,26 @@ class OpenAICompatibleProvider(ModelAdapter):
                     parts.append(str(item))
             return "".join(parts)
         return "" if content is None else str(content)
+
+    @staticmethod
+    def _normalize_content_parts(content: Any) -> Any:
+        """Repair text parts emitted by permissive OpenAI-compatible providers.
+
+        Some providers return ``[{"text": "..."}]`` instead of the standard
+        ``[{"type": "text", "text": "..."}]``. These responses may already
+        exist in persisted session history, so normalization is applied both
+        when a response is received and again before messages are sent.
+        """
+        if not isinstance(content, list):
+            return content
+
+        normalized: list[Any] = []
+        for item in content:
+            if isinstance(item, dict) and not item.get("type") and "text" in item:
+                normalized.append({"type": "text", **item})
+            else:
+                normalized.append(item)
+        return normalized
 
     def _translate_error(self, exc: Exception) -> ModelProviderError:
         status_code = getattr(exc, "status_code", None)

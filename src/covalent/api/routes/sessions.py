@@ -34,9 +34,13 @@ from covalent.application.schemas import AttachmentUploadResponse
 from covalent.application.schemas import ChatSessionResponse
 from covalent.application.schemas import ChatSessionSummaryResponse
 from covalent.application.schemas import ChatSessionUpdateRequest
+from covalent.application.schemas import TranscriptReplaceRequest
 from covalent.application.services.management_service import _ensure_console_principal_can_access_session
+from covalent.application.services.session_service import _build_session_preview
 from covalent.core.attachment_processing import process_attachment_bytes
 from covalent.infra.db import DatabaseManager
+from covalent.infra.memory import ChatSessionRecord
+from covalent.infra.memory import ChatTranscriptMessage
 from covalent.infra.memory import SessionStore
 from covalent.infra.settings import AppSettings
 
@@ -76,6 +80,68 @@ async def rename_session(request: Request, session_id: str, update_request: Chat
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}") from exc
     return to_chat_session_response(record)
+
+@router.put("/sessions/{session_id}/transcript")
+async def replace_transcript(
+    request: Request, session_id: str, update_request: TranscriptReplaceRequest
+) -> ChatSessionResponse:
+    session_store: SessionStore = request.app.state.session_store
+    principal = await _resolve_console_principal(request, request.app.state.db_manager)
+
+    existing = await session_store.get_session(session_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
+    _ensure_console_principal_can_access_session(principal, existing)
+
+    # Decide the new message list. Activity is intentionally left unchanged
+    # (append-only store; stale trace rows are harmless in the flat history).
+    if update_request.truncate_before_message_id is not None:
+        target_id = update_request.truncate_before_message_id
+        try:
+            index = next(
+                i for i, m in enumerate(existing.messages) if m.id == target_id
+            )
+        except StopIteration:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown message id: {target_id}",
+            ) from None
+        new_messages = existing.messages[:index]
+    elif update_request.messages is not None:
+        if not update_request.messages:
+            raise HTTPException(status_code=400, detail="messages must not be empty")
+        ids = [m.id for m in update_request.messages]
+        if len(set(ids)) != len(ids):
+            raise HTTPException(status_code=400, detail="message ids must be unique")
+        new_messages = [
+            ChatTranscriptMessage(
+                id=m.id, role=m.role, content=m.content, attachments=list(m.attachments)
+            )
+            for m in update_request.messages
+        ]
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either truncate_before_message_id or messages.",
+        )
+
+    record = ChatSessionRecord(
+        id=existing.id,
+        title=existing.title,
+        title_source=existing.title_source,
+        agent_name=existing.agent_name,
+        owner_user_id=existing.owner_user_id,
+        workspace_id=existing.workspace_id,
+        created_by_token_id=existing.created_by_token_id,
+        preview_text=_build_session_preview(new_messages),
+        created_at=existing.created_at,
+        updated_at=datetime.now(UTC),
+        memory_messages=existing.memory_messages,
+        messages=new_messages,
+        activity=existing.activity,
+    )
+    saved = await session_store.save_session(record)
+    return to_chat_session_response(saved)
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(request: Request, session_id: str) -> dict[str, str]:

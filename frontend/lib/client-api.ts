@@ -40,6 +40,13 @@ import type {
   SkillSummary,
 } from "@/lib/types";
 
+export type ChatTranscriptMessageInput = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  attachments?: unknown[];
+};
+
 const API_PREFIX = "/api/backend";
 
 function buildPath(path: string): string {
@@ -169,6 +176,18 @@ export function renameChatSession(sessionId: string, title: string): Promise<Cha
 export function deleteChatSession(sessionId: string): Promise<{ status: string; id: string }> {
   return apiFetchJson<{ status: string; id: string }>(`sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
+  });
+}
+
+export type TranscriptReplaceBody = {
+  truncate_before_message_id?: string;
+  messages?: ChatTranscriptMessageInput[];
+};
+
+export function replaceChatTranscript(sessionId: string, body: TranscriptReplaceBody): Promise<ChatSession> {
+  return apiFetchJson<ChatSession>(`sessions/${encodeURIComponent(sessionId)}/transcript`, {
+    method: "PUT",
+    body: JSON.stringify(body),
   });
 }
 

@@ -39,6 +39,7 @@ import {
   getChatSession,
   getHealth,
   renameChatSession,
+  replaceChatTranscript,
   sortAgentsForPicker,
   streamAgent,
   StreamAbortedError,
@@ -56,6 +57,7 @@ import type {
   PendingQuestionRequest,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 type Message = {
   id: string;
@@ -621,17 +623,90 @@ function AskUserPromptSummary({ prompt }: { prompt: PendingQuestionRequest }) {
   );
 }
 
-function ChatMessageBubble({ message, sending }: { message: Message; sending: boolean }) {
+function ChatMessageBubble({
+  message,
+  sending,
+  editingMessageId,
+  editingDraft,
+  onEditStart,
+  onEditChange,
+  onEditCancel,
+  onEditSubmit,
+}: {
+  message: Message;
+  sending: boolean;
+  editingMessageId: string | null;
+  editingDraft: string;
+  onEditStart: (message: Message) => void;
+  onEditChange: (value: string) => void;
+  onEditCancel: () => void;
+  onEditSubmit: () => void;
+}) {
   const tone = message.role === "user" ? "outbound" : "inbound";
+  const isEditing = editingMessageId === message.id;
+  const canEdit = message.role === "user" && !sending && !isEditing && !message.askUserPrompt;
   const displayContent =
     message.askUserPrompt && isWaitingForAnswerContent(message.content) ? "" : message.content;
   const markdownContent =
     displayContent || (sending && message.role === "assistant" ? "Thinking..." : "");
 
+  const editTriggerStyle: CSSProperties = {
+    position: "absolute",
+    top: 6,
+    right: 38,
+    zIndex: 2,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    border: "1px solid rgba(255, 255, 255, 0.32)",
+    background: "rgba(255, 255, 255, 0.22)",
+    boxShadow: "0 6px 14px rgba(0, 0, 0, 0.16)",
+    color: "var(--fg-inverse)",
+    cursor: "pointer",
+    fontSize: 13,
+    lineHeight: 1,
+    padding: 0,
+  };
+
+  const editContainerStyle: CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.5rem",
+    width: "100%",
+  };
+
+  const editInputStyle: CSSProperties = {
+    width: "100%",
+    resize: "vertical",
+    minHeight: "4rem",
+    boxSizing: "border-box",
+  };
+
+  const editActionsStyle: CSSProperties = {
+    display: "flex",
+    gap: "0.5rem",
+    justifyContent: "flex-end",
+  };
+
   return (
     <article className={message.role === "user" ? "chat-message-row outbound" : "chat-message-row inbound"}>
       <div className={message.role === "user" ? "chat-bubble outbound" : "chat-bubble inbound"}>
         <ChatBubbleCopy content={displayContent || ""} tone={tone} />
+        {canEdit ? (
+          <button
+            className="chat-bubble-copy"
+            onClick={() => onEditStart(message)}
+            type="button"
+            aria-label="Edit message"
+            title="Edit message"
+            style={editTriggerStyle}
+          >
+            <Pencil width={14} height={14} />
+          </button>
+        ) : null}
         {message.askUserPrompt ? <AskUserPromptSummary prompt={message.askUserPrompt} /> : null}
         {message.attachments?.length ? (
           <div className="chat-attachment-list">
@@ -659,7 +734,27 @@ function ChatMessageBubble({ message, sending }: { message: Message; sending: bo
             )}
           </div>
         ) : null}
-        <ChatMarkdownContent content={markdownContent} tone={tone} />
+        {isEditing ? (
+          <div className="chat-bubble-edit" style={editContainerStyle}>
+            <textarea
+              className="chat-bubble-edit-input"
+              value={editingDraft}
+              onChange={(event) => onEditChange(event.target.value)}
+              rows={3}
+              style={editInputStyle}
+            />
+            <div className="chat-bubble-edit-actions" style={editActionsStyle}>
+              <button type="button" onClick={onEditCancel}>
+                Cancel
+              </button>
+              <button type="button" onClick={onEditSubmit} disabled={!editingDraft.trim()}>
+                Save &amp; resend
+              </button>
+            </div>
+          </div>
+        ) : (
+          <ChatMarkdownContent content={markdownContent} tone={tone} />
+        )}
       </div>
     </article>
   );
@@ -1819,6 +1914,8 @@ export function ChatWorkspace() {
   const [draftAttachments, setDraftAttachments] = useState<ComposerAttachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState("");
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [attachmentDeliveryMode, setAttachmentDeliveryMode] = useState<AttachmentDeliveryMode>("workspace");
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
@@ -1845,6 +1942,17 @@ export function ChatWorkspace() {
   // one so its stream can no longer mutate thread state.
   const activeRunRef = useRef<{ id: number; controller: AbortController } | null>(null);
 
+  // Snapshot used by Task 8's undo toast: the original edited message and the
+  // tail that was discarded when the user resent an edited message. Cleared on
+  // error and after undo is consumed.
+  const editUndoRef = useRef<{
+    threadId: string;
+    sessionId: string;
+    originalMessage: Message;
+    removedTail: Message[];
+    prefix: Message[];
+  } | null>(null);
+
   useEffect(() => {
     return () => {
       // Abort any in-flight stream when the component unmounts.
@@ -1852,6 +1960,12 @@ export function ChatWorkspace() {
       activeRunRef.current = null;
     };
   }, []);
+
+  // Clear the undo slot when the active thread changes so a stale snapshot
+  // from one thread can't be restored into another.
+  useEffect(() => {
+    editUndoRef.current = null;
+  }, [activeThreadId]);
 
   useEffect(() => {
     const traceStored = window.localStorage.getItem(TRACE_PANEL_VISIBLE_STORAGE_KEY);
@@ -2466,6 +2580,114 @@ export function ChatWorkspace() {
     }
   }
 
+  // Restores the transcript snapshot stashed by handleEditResend: the original
+  // edited message plus the tail that was discarded. Server-side replace then
+  // local update; clears the undo slot on success.
+  async function handleUndoEdit() {
+    const snapshot = editUndoRef.current;
+    if (!snapshot) {
+      return;
+    }
+    const { threadId, sessionId, originalMessage, removedTail, prefix } = snapshot;
+    const restored = [...prefix, originalMessage, ...removedTail];
+    try {
+      await replaceChatTranscript(sessionId, {
+        messages: restored.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          attachments: (m.attachments ?? []) as unknown[],
+        })),
+      });
+    } catch (undoError) {
+      setError(undoError instanceof Error ? undoError.message : "Failed to undo edit.");
+      return;
+    }
+    updateThread(threadId, (t) => ({
+      ...t,
+      messages: restored as unknown as ChatThread["messages"],
+      updatedAt: Date.now(),
+    }));
+    editUndoRef.current = null;
+  }
+
+  function showEditUndoToast(_threadId: string, _editedContent: string) {
+    toast("Edited message and resent.", {
+      action: {
+        label: "Undo",
+        onClick: () => {
+          void handleUndoEdit();
+        },
+      },
+      duration: 8000,
+    });
+  }
+
+  // Edit-and-resend: truncate the transcript at the edited user message
+  // (server-side then local), then re-enter the run loop with the edited text
+  // and the message's original attachments. `editUndoRef` stashes a snapshot
+  // for the undo toast above.
+  async function handleEditResend(message: Message, newContent: string) {
+    if (!currentAgent || sending || !activeThread || !newContent.trim()) {
+      return;
+    }
+
+    const thread = activeThread;
+    const messageIndex = thread.messages.findIndex((m) => m.id === message.id);
+    if (messageIndex === -1) {
+      return;
+    }
+
+    // Snapshot for undo: original message + everything strictly after it.
+    const originalMessage = message;
+    const removedTail = thread.messages.slice(messageIndex + 1) as Message[];
+    const prefix = thread.messages.slice(0, messageIndex) as Message[];
+    editUndoRef.current = {
+      threadId: thread.id,
+      sessionId: thread.sessionId,
+      originalMessage,
+      removedTail,
+      prefix,
+    };
+
+    setEditingMessageId(null);
+    setEditingDraft("");
+
+    // 1. Truncate server-side transcript (skip if the thread isn't persisted yet).
+    if (thread.isPersisted) {
+      try {
+        await replaceChatTranscript(thread.sessionId, {
+          truncate_before_message_id: message.id,
+        });
+      } catch (truncateError) {
+        setError(truncateError instanceof Error ? truncateError.message : "Failed to edit message.");
+        editUndoRef.current = null;
+        return;
+      }
+    }
+
+    // 2. Drop message-and-after from the local thread.
+    updateThread(thread.id, (t) => ({
+      ...t,
+      updatedAt: Date.now(),
+      messages: t.messages.slice(0, messageIndex),
+    }));
+
+    // 3. Rebuild the edited input and resend via the existing run loop.
+    const attachments = (message.attachments ?? []) as ComposerAttachment[];
+    const requestInput = buildRequestInput(newContent, attachments);
+    await runThreadRequest({
+      thread,
+      requestInput,
+      userContent: newContent,
+      attachments,
+      clearPendingQuestion: true,
+    });
+
+    // 4. Offer undo (Task 8 surfaces the toast; here we just flag completion).
+    showEditUndoToast(thread.id, newContent);
+  }
+
   async function handleSend() {
     if (!currentAgent || sending || uploadingAttachments || !activeThread || (!input.trim() && attachmentDrafts.length === 0)) {
       return;
@@ -2683,7 +2905,30 @@ export function ChatWorkspace() {
               </div>
             ) : (
               conversationMessages.map((message) => (
-                <ChatMessageBubble key={message.id} message={message} sending={sending} />
+                <ChatMessageBubble
+                  key={message.id}
+                  message={message}
+                  sending={sending}
+                  editingMessageId={editingMessageId}
+                  editingDraft={editingDraft}
+                  onEditStart={(m) => {
+                    setEditingMessageId(m.id);
+                    setEditingDraft(m.content);
+                  }}
+                  onEditChange={setEditingDraft}
+                  onEditCancel={() => {
+                    setEditingMessageId(null);
+                    setEditingDraft("");
+                  }}
+                  onEditSubmit={() => {
+                    if (editingMessageId) {
+                      const msg = activeThread?.messages.find((m) => m.id === editingMessageId);
+                      if (msg) {
+                        void handleEditResend(msg as Message, editingDraft);
+                      }
+                    }
+                  }}
+                />
               ))
             )}
           </div>

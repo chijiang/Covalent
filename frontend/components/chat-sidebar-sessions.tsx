@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { Loader2, Plus, Search } from "lucide-react";
+import { Loader2, Search } from "lucide-react";
 
 import { useChatSessions } from "@/components/chat-sessions-provider";
 import {
@@ -14,6 +14,14 @@ import {
 import { buildChatHref } from "@/lib/chat-session-routing";
 import { buildHistorySections, filterThreadsByQuery } from "@/lib/chat-thread-model";
 
+function ChatSessionTitle({ title }: { title: string }) {
+  return (
+    <span className="sidebar-chat-session-title">
+      <span className="sidebar-chat-session-title-text">{title}</span>
+    </span>
+  );
+}
+
 export function ChatSidebarSessions() {
   const {
     threads,
@@ -21,7 +29,6 @@ export function ChatSidebarSessions() {
     historyQuery,
     setHistoryQuery,
     activeThreadId,
-    handleNewChat,
   } = useChatSessions();
 
   const historySections = useMemo(() => {
@@ -30,26 +37,15 @@ export function ChatSidebarSessions() {
 
   return (
     <div className="sidebar-chat-sessions group-data-[collapsible=icon]:hidden">
-      <SidebarMenuSub className="sidebar-chat-submenu">
+      <SidebarMenuSub className="sidebar-chat-submenu mx-0 translate-x-0 border-0 px-0 py-1">
         <SidebarMenuSubItem className="relative flex items-center">
           <Search className="pointer-events-none absolute left-2.5 size-3.5 text-muted-foreground" />
           <SidebarInput
             className="sidebar-chat-search-input"
             onChange={(event) => setHistoryQuery(event.target.value)}
-            placeholder="Search sessions"
+            placeholder="Search chats"
             value={historyQuery}
           />
-        </SidebarMenuSubItem>
-
-        <SidebarMenuSubItem>
-          <SidebarMenuSubButton
-            className="sidebar-chat-new-chat"
-            render={<button onClick={() => handleNewChat()} type="button" />}
-            size="sm"
-          >
-            <Plus className="size-3.5" />
-            <span>New chat</span>
-          </SidebarMenuSubButton>
         </SidebarMenuSubItem>
 
         {loading ? (
@@ -78,7 +74,7 @@ export function ChatSidebarSessions() {
                       render={<Link href={buildChatHref(thread.id)} />}
                       size="sm"
                     >
-                      <span>{thread.title}</span>
+                      <ChatSessionTitle title={thread.title} />
                     </SidebarMenuSubButton>
                   </SidebarMenuSubItem>
                 ))}

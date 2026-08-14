@@ -56,3 +56,4 @@ skills/uploaded
 .covalent/session-workspaces/
 .covalent/downloads/
 
+.playwright-cli

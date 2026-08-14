@@ -13,6 +13,7 @@ import {
   Cpu,
   LogOut,
   MessageSquare,
+  Plus,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -33,7 +34,6 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
@@ -58,10 +58,9 @@ const ADMIN_ITEMS = [
 ] as const;
 
 const SIDEBAR_SECTION_STORAGE_KEYS = {
-  workspace: "covalent.sidebar.workspace-open",
-  console: "covalent.sidebar.console-open",
-  administration: "covalent.sidebar.admin-open",
-  chatSessions: "covalent.sidebar.chat-sessions-open",
+  console: "covalent.sidebar.service-console-open.v2",
+  administration: "covalent.sidebar.administration-open.v2",
+  chatSessions: "covalent.sidebar.recent-chats-open.v2",
 } as const;
 
 function isNavActive(pathname: string, href: string, exact = false) {
@@ -74,7 +73,7 @@ function isNavActive(pathname: string, href: string, exact = false) {
 function navButtonClass(active: boolean) {
   return cn(
     active &&
-      "bg-sidebar-accent font-medium text-sidebar-accent-foreground hover:bg-sidebar-accent/90 hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground shadow-[inset_3px_0_0_var(--surface-accent-strong)]",
+      "bg-sidebar-accent font-medium text-sidebar-accent-foreground shadow-[inset_0_0_0_1px_var(--sidebar-border)] hover:bg-sidebar-accent/90 hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground",
   );
 }
 
@@ -127,7 +126,7 @@ function SidebarSectionToggle({
 }) {
   return (
     <SidebarGroupLabel
-      className="w-full cursor-pointer justify-between text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-label)] transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:hidden"
+      className="h-7 w-full cursor-pointer justify-between px-2 text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-label)] transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:hidden"
       render={
         <button
           aria-expanded={open}
@@ -149,24 +148,45 @@ function SidebarSectionToggle({
 export function AppSidebar() {
   const pathname = usePathname();
   const { logout, user } = useAuth();
-  const { chatHref } = useChatSessions();
+  const { chatHref, handleNewChat } = useChatSessions();
   const isChatPage = pathname === "/";
+  const isConsoleSettingsPage =
+    pathname === "/service-console" || CONSOLE_ITEMS.some((item) => isNavActive(pathname, item.href));
+  const isAdministrationPage = ADMIN_ITEMS.some((item) => isNavActive(pathname, item.href));
   const initials = userInitials(user?.display_name || user?.email || "U");
-  const [workspaceOpen, setWorkspaceOpen] = usePersistedDisclosure(
-    SIDEBAR_SECTION_STORAGE_KEYS.workspace,
-  );
   const [consoleOpen, setConsoleOpen] = usePersistedDisclosure(
     SIDEBAR_SECTION_STORAGE_KEYS.console,
+    isConsoleSettingsPage,
   );
   const [administrationOpen, setAdministrationOpen] = usePersistedDisclosure(
     SIDEBAR_SECTION_STORAGE_KEYS.administration,
+    isAdministrationPage,
   );
   const [chatSessionsOpen, setChatSessionsOpen] = usePersistedDisclosure(
     SIDEBAR_SECTION_STORAGE_KEYS.chatSessions,
+    isChatPage,
   );
 
+  useEffect(() => {
+    if (isChatPage) {
+      setChatSessionsOpen(true);
+    }
+  }, [isChatPage, setChatSessionsOpen]);
+
+  useEffect(() => {
+    if (isConsoleSettingsPage) {
+      setConsoleOpen(true);
+    }
+  }, [isConsoleSettingsPage, setConsoleOpen]);
+
+  useEffect(() => {
+    if (isAdministrationPage) {
+      setAdministrationOpen(true);
+    }
+  }, [isAdministrationPage, setAdministrationOpen]);
+
   return (
-    <Sidebar className="border-r border-sidebar-border" collapsible="icon" variant="sidebar">
+    <Sidebar className="border-r border-sidebar-border/80" collapsible="icon" variant="sidebar">
       <SidebarHeader className="h-13 shrink-0 border-b border-sidebar-border/70 px-3 py-0 group-data-[collapsible=icon]:px-2">
         <Link
           aria-label="Covalent home"
@@ -192,67 +212,61 @@ export function AppSidebar() {
           />
         </Link>
       </SidebarHeader>
-      <SidebarContent className="gap-0 overflow-hidden">
-        <SidebarGroup
-          className={cn(
-            "min-h-0",
-            workspaceOpen && isChatPage && chatSessionsOpen ? "flex-1" : "shrink-0",
-          )}
-        >
-          <SidebarSectionToggle
-            label="Workspace"
-            onToggle={() => setWorkspaceOpen(!workspaceOpen)}
-            open={workspaceOpen}
-          />
-          <SidebarGroupContent
+      <SidebarContent className="gap-0 overflow-x-hidden">
+        <SidebarGroup className="shrink-0 px-2 pb-1 pt-2">
+          <SidebarMenu className="gap-1">
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                className="bg-sidebar-primary font-medium text-sidebar-primary-foreground hover:bg-sidebar-primary/90 hover:text-sidebar-primary-foreground"
+                onClick={() => handleNewChat()}
+                tooltip="New chat"
+                type="button"
+              >
+                <Plus />
+                <span>New chat</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            {WORKSPACE_ITEMS.map((item) => {
+              const active = isNavActive(pathname, item.href, item.exact);
+              const Icon = item.icon;
+              return (
+                <SidebarMenuItem key={item.href}>
+                  <SidebarMenuButton
+                    className={navButtonClass(active)}
+                    isActive={active}
+                    render={<Link href={chatHref} />}
+                    tooltip={item.label}
+                  >
+                    <Icon />
+                    <span>{item.label}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })}
+          </SidebarMenu>
+        </SidebarGroup>
+
+        {isChatPage ? (
+          <SidebarGroup
             className={cn(
-              workspaceOpen
-                ? cn(
-                    "flex min-h-0 flex-col",
-                    isChatPage && chatSessionsOpen && "flex-1",
-                  )
-                : "hidden group-data-[collapsible=icon]:block",
+              "min-h-0 px-2 py-1 group-data-[collapsible=icon]:hidden!",
+              chatSessionsOpen ? "flex-1" : "shrink-0",
             )}
           >
-            <SidebarMenu>
-              {WORKSPACE_ITEMS.map((item) => {
-                const active = isNavActive(pathname, item.href, item.exact);
-                const Icon = item.icon;
-                return (
-                  <SidebarMenuItem key={item.href}>
-                    <SidebarMenuButton
-                      className={navButtonClass(active)}
-                      isActive={active}
-                      render={<Link href={chatHref} />}
-                      tooltip={item.label}
-                    >
-                      <Icon />
-                      <span>{item.label}</span>
-                    </SidebarMenuButton>
-                    {isChatPage ? (
-                      <SidebarMenuAction
-                        aria-expanded={chatSessionsOpen}
-                        aria-label={`${chatSessionsOpen ? "Collapse" : "Expand"} chat sessions`}
-                        onClick={() => setChatSessionsOpen(!chatSessionsOpen)}
-                        type="button"
-                      >
-                        <ChevronDown
-                          aria-hidden="true"
-                          className={cn(
-                            "transition-transform duration-150",
-                            !chatSessionsOpen && "-rotate-90",
-                          )}
-                        />
-                      </SidebarMenuAction>
-                    ) : null}
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-            {isChatPage && chatSessionsOpen ? <ChatSidebarSessions /> : null}
-          </SidebarGroupContent>
-        </SidebarGroup>
-        <SidebarGroup>
+            <SidebarSectionToggle
+              label="Recent conversations"
+              onToggle={() => setChatSessionsOpen(!chatSessionsOpen)}
+              open={chatSessionsOpen}
+            />
+            {chatSessionsOpen ? (
+              <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
+                <ChatSidebarSessions />
+              </SidebarGroupContent>
+            ) : null}
+          </SidebarGroup>
+        ) : null}
+
+        <SidebarGroup className="shrink-0 px-2 py-1">
           <SidebarSectionToggle
             label="Service Console"
             onToggle={() => setConsoleOpen(!consoleOpen)}
@@ -283,7 +297,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
         {user?.role === "admin" ? (
-          <SidebarGroup>
+          <SidebarGroup className="shrink-0 px-2 py-1">
             <SidebarSectionToggle
               label="Administration"
               onToggle={() => setAdministrationOpen(!administrationOpen)}
