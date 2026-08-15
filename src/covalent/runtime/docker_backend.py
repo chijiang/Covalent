@@ -1,18 +1,26 @@
-"""Docker execution backend — runs skill runners/scripts inside a per-session
-container, exec'd over a hijacked socket (see :mod:`docker_process`).
+"""Docker execution backend — runs skill runners/scripts inside per-sandbox-instance
+containers, exec'd over a hijacked socket (see :mod:`docker_process`).
 
-Per-session container; bind-mount skill source dirs + the session workspace at
+One container per logical sandbox instance (an (execution scope, agent) pair,
+see ``SandboxBinding``); sibling instances of one session bind-mount the same
+session workspace (collaboration) while keeping private process trees, HOME,
+caches, and ``/tmp``. Skill source dirs + the session workspace are mounted at
 their host-absolute paths (so host-absolute entry points / working dirs resolve
-unchanged); rewrite the two host-only command tokens that don't exist in the
-container (``sys.executable`` → ``python``, the host runners directory →
+unchanged); the two host-only command tokens that don't exist in the container
+are rewritten (``sys.executable`` → ``python``, the host runners directory →
 ``/runners/``). Every Docker SDK call is blocking, so each is wrapped in
 :func:`asyncio.to_thread` to keep the event loop responsive.
 
-Phase 1b hardening: resource ceilings (mem/pids/cpu) + ``tmpfs`` for ``/tmp`` +
-network isolation (``network_mode`` default ``none``); per-session teardown via
-``stop`` (called from the session DELETE handler); ``startup_sweep`` reclaims
-orphan containers from previous runs; ``list_sandbox_sessions`` feeds the
-lifespan reaper; one-shot ``exec`` (with stdin) over a hijacked socket.
+Hardening: resource ceilings (mem/pids/cpu, per-instance from the pinned spec)
++ ``tmpfs`` for ``/tmp`` + network isolation (``network_mode`` default ``none``,
+bridge only when the binding's outbound policy is non-empty); teardown via
+``stop_instance``/``stop_scope``/``stop`` (session compatibility);
+``startup_sweep`` reclaims orphan containers; ``list_sandbox_sessions`` feeds
+the lifespan reaper; one-shot ``exec`` (with stdin) over a hijacked socket.
+
+Legacy callers that only pass ``session_id`` keep working: the session id is
+used as the instance key with a settings-derived default spec, exactly the
+pre-instance behavior.
 
 Deferred: sandbox image CI; in-container ``kill`` for hung execs (the
 ``DockerExecProcess`` socket-close fallback remains); egress allow-list /
@@ -36,7 +44,15 @@ from typing import TYPE_CHECKING
 
 import docker
 
-from covalent.runtime.backend import BackendUnavailable, ExecResult, ExecutionBackend, HostPathWorkspace
+from covalent.runtime.backend import (
+    BackendUnavailable,
+    ExecResult,
+    ExecutionBackend,
+    ExecutionTarget,
+    HostPathWorkspace,
+    SandboxBinding,
+    SandboxSpec,
+)
 from covalent.runtime.docker_process import DockerExecProcess
 
 if TYPE_CHECKING:
@@ -52,6 +68,12 @@ _HOST_PYTHON = sys.executable
 _HOST_ENV_DROP = {"PATH", "PYTHONPATH", "PYTHONHOME"}
 _SANDBOX_LABEL = "covalent.sandbox"
 _SESSION_LABEL = "covalent.session"
+_EXECUTION_SCOPE_LABEL = "covalent.execution-scope"
+_INSTANCE_LABEL = "covalent.sandbox-instance"
+_AGENT_LABEL = "covalent.agent"
+_PROFILE_LABEL = "covalent.sandbox-profile"
+_PROFILE_REVISION_LABEL = "covalent.sandbox-profile-revision"
+_CONTAINER_HOME = "/home/covalent"
 _DOCKER_TIMESTAMP_RE = re.compile(
     r"^(?P<base>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(?P<fraction>\d+))?(?P<tz>Z|[+-]\d{2}:\d{2})?$"
 )
@@ -135,7 +157,7 @@ _UNAVAILABLE_EXC: tuple[type[BaseException], ...] = (
 
 
 class DockerBackend(ExecutionBackend):
-    """Run skill runners and scripts inside one container per session."""
+    """Run skill runners and scripts inside one container per sandbox instance."""
 
     name = "docker"
 
@@ -153,49 +175,146 @@ class DockerBackend(ExecutionBackend):
         self._nano_cpus = int(settings.execution_backend_docker_cpus * 1e9)
         self._network_mode = settings.execution_backend_docker_network
         self._tmpfs_size = settings.execution_backend_docker_tmpfs_size
-        self._max_sessions = settings.execution_backend_docker_max_sessions
+        max_instances = (
+            settings.execution_backend_docker_max_instances
+            or settings.execution_backend_docker_max_sessions
+        )
+        self._max_instances = max_instances
         self._idle_timeout = settings.execution_backend_docker_idle_timeout_seconds
         self._client = docker_client  # lazily created on first use
-        self._sessions: dict[str, object] = {}
+        # sandbox_instance_id -> live container
+        self._containers: dict[str, object] = {}
+        # sandbox_instance_id -> registered binding (spec + outbound policy)
+        self._bindings: dict[str, SandboxBinding] = {}
+        # Per-instance creation lock: concurrent tools from one agent must not
+        # create duplicate containers (or trip the stale-name retry wrongly).
+        self._instance_locks: dict[str, asyncio.Lock] = {}
+        # sandbox_instance_id -> {agent_name, outbound, session_id, started_at, ...}
+        self._instance_meta: dict[str, dict[str, object]] = {}
         self._metrics = SandboxMetrics()
-        # Per-session metadata: session_id → {agent_name, outbound, started_at}
-        self._session_meta: dict[str, dict[str, object]] = {}
-        self._session_semaphore: asyncio.Semaphore | None = (
-            asyncio.Semaphore(self._max_sessions) if self._max_sessions > 0 else None
+        self._capacity_semaphore: asyncio.Semaphore | None = (
+            asyncio.Semaphore(self._max_instances) if self._max_instances > 0 else None
         )
 
-    # -- container lifecycle -------------------------------------------------
+    # -- binding registration -------------------------------------------------
 
-    def record_session(self, session_id: str, agent_name: str, allowed_outbound: list[str]) -> None:
-        """Record per-session metadata before the container is created. Drives
-        network mode (bridge if outbound) and the admin monitoring snapshot.
+    def _default_spec(self) -> SandboxSpec:
+        """Settings-derived spec used by legacy session-keyed callers."""
+        return SandboxSpec(
+            profile_id="default",
+            profile_revision=1,
+            image=self._image,
+            keepalive_command=("tail", "-f", "/dev/null"),
+            runtime_capabilities=frozenset({"python", "shell"}),
+            contract_version=1,
+            memory_limit=self._mem_limit,
+            pids_limit=self._pids_limit,
+            cpus=self._nano_cpus / 1e9,
+            tmpfs_size=self._tmpfs_size,
+        )
 
-        If the outbound list changes in a way that flips the network mode and a
-        container already exists, marks it for recreation on the next ``ensure()``.
+    def configure(self, binding: SandboxBinding) -> None:
+        """Register a logical sandbox binding. No container is created here —
+        the first ``ensure``/``exec``/``spawn_stream`` for the instance creates
+        it from the pinned spec.
+
+        If the outbound policy flips the network mode while a container is
+        live, the instance is marked for recreation on its next ``ensure``.
         """
         now = time.time()
-        old_outbound = self._session_meta.get(session_id, {}).get("outbound", [])
-        new_outbound = list(allowed_outbound) if allowed_outbound else []
-        needs_recreate = bool(old_outbound) != bool(new_outbound) and session_id in self._sessions
-        self._session_meta[session_id] = {
-            "agent_name": agent_name,
+        instance_id = binding.target.sandbox_instance_id
+        existing_meta = self._instance_meta.get(instance_id, {})
+        old_outbound = existing_meta.get("outbound", []) or []
+        new_outbound = list(binding.allowed_outbound) if binding.allowed_outbound else []
+        needs_recreate = (
+            bool(old_outbound) != bool(new_outbound) and instance_id in self._containers
+        )
+        self._bindings[instance_id] = binding
+        self._instance_meta[instance_id] = {
+            "agent_name": binding.target.agent_name,
+            "session_id": binding.target.session_id,
+            "execution_scope_id": binding.target.execution_scope_id,
+            "profile_id": binding.spec.profile_id,
+            "profile_revision": binding.spec.profile_revision,
             "outbound": new_outbound,
-            "started_at": now,
+            "started_at": existing_meta.get("started_at", now),
             "last_activity": now,
         }
         if needs_recreate:
-            self._session_meta[session_id]["needs_recreate"] = True
+            self._instance_meta[instance_id]["needs_recreate"] = True
 
-    def agent_outbound(self, session_id: str) -> list[str]:
-        return self._session_meta.get(session_id, {}).get("outbound", [])
+    def record_session(self, session_id: str, agent_name: str, allowed_outbound: list[str]) -> None:
+        """Compatibility: register a legacy session-keyed binding."""
+        self.configure(
+            SandboxBinding(
+                target=ExecutionTarget(
+                    execution_scope_id=session_id,
+                    session_id=session_id,
+                    workspace_scope_id=session_id,
+                    sandbox_instance_id=session_id,
+                    agent_name=agent_name,
+                ),
+                spec=self._default_spec(),
+                allowed_outbound=tuple(allowed_outbound or []),
+            )
+        )
+
+    def _binding_for(self, sandbox_instance_id: str, session_id: str | None = None) -> SandboxBinding:
+        binding = self._bindings.get(sandbox_instance_id)
+        if binding is not None:
+            return binding
+        # Legacy/unregistered: synthesize the settings-default binding so the
+        # pre-instance behavior (one container per session id) still works.
+        scope = session_id or sandbox_instance_id
+        meta = self._instance_meta.get(sandbox_instance_id, {})
+        return SandboxBinding(
+            target=ExecutionTarget(
+                execution_scope_id=scope,
+                session_id=scope,
+                workspace_scope_id=scope,
+                sandbox_instance_id=sandbox_instance_id,
+                agent_name=str(meta.get("agent_name") or ""),
+            ),
+            spec=self._default_spec(),
+            allowed_outbound=tuple(meta.get("outbound", []) or ()),
+        )
+
+    def agent_outbound(self, sandbox_instance_id: str) -> list[str]:
+        """Outbound patterns registered for an instance (legacy callers pass a
+        session id, which was the instance key)."""
+        return list(self._instance_meta.get(sandbox_instance_id, {}).get("outbound", []) or [])
 
     def is_session_tracked(self, session_id: str) -> bool:
-        """Whether this backend is actively managing the session's container."""
-        return session_id in self._sessions
+        """Whether this backend is actively managing any instance of a session."""
+        return any(
+            meta.get("session_id") == session_id for meta in self._instance_meta.values()
+        )
+
+    def tracked_instance_ids(self) -> list[str]:
+        return list(self._containers)
+
+    def instance_session_id(self, sandbox_instance_id: str) -> str | None:
+        meta = self._instance_meta.get(sandbox_instance_id)
+        session_id = meta.get("session_id") if meta else None
+        return str(session_id) if session_id else None
 
     def session_idle_seconds(self, session_id: str) -> float | None:
-        """Seconds since last activity for a tracked session, or None."""
-        meta = self._session_meta.get(session_id)
+        """Seconds since the most recent activity across a session's tracked
+        instances, or None when the session has none."""
+        idle_values = [
+            self._instance_idle_seconds(instance_id)
+            for instance_id, meta in self._instance_meta.items()
+            if meta.get("session_id") == session_id
+        ]
+        idle_values = [value for value in idle_values if value is not None]
+        return min(idle_values) if idle_values else None
+
+    def instance_idle_seconds(self, sandbox_instance_id: str) -> float | None:
+        """Seconds since last activity for a tracked instance, or None."""
+        return self._instance_idle_seconds(sandbox_instance_id)
+
+    def _instance_idle_seconds(self, sandbox_instance_id: str) -> float | None:
+        meta = self._instance_meta.get(sandbox_instance_id)
         if meta is None:
             return None
         return time.time() - float(meta.get("last_activity", meta.get("started_at", time.time())))
@@ -216,22 +335,28 @@ class DockerBackend(ExecutionBackend):
 
     def metrics_snapshot(self) -> dict[str, object]:
         """Sandbox status for ``/healthz``: live container count + counters."""
-        return {"backend": self.name, "live_containers": len(self._sessions), **self._metrics.to_dict()}
+        return {"backend": self.name, "live_containers": len(self._containers), **self._metrics.to_dict()}
 
     async def sandbox_snapshot(self) -> dict[str, object]:
-        """Admin monitoring snapshot: per-session live status + config + metrics."""
-        sessions: list[dict[str, object]] = []
+        """Admin monitoring snapshot: one flat entry per live instance (carrying
+        its session/scope identity) + config + metrics."""
+        instances: list[dict[str, object]] = []
         now = time.time()
-        for sid, container in list(self._sessions.items()):
-            meta = self._session_meta.get(sid, {})
+        for instance_id, container in list(self._containers.items()):
+            meta = self._instance_meta.get(instance_id, {})
+            binding = self._bindings.get(instance_id)
             outbound = list(meta.get("outbound", []) or [])
-            alive = await self.is_alive(sid)
-            sessions.append(await asyncio.to_thread(self._session_snapshot, sid, container, meta, outbound, alive, now))
+            alive = await self.is_alive(instance_id)
+            instances.append(
+                await asyncio.to_thread(
+                    self._instance_snapshot, instance_id, container, meta, binding, outbound, alive, now
+                )
+            )
         return {
             "backend": self.name,
             "supported": True,
             "snapshot_at": now,
-            "live": len(self._sessions),
+            "live": len(self._containers),
             "metrics": self._metrics.to_dict(),
             "config": {
                 "image": self._image,
@@ -241,18 +366,19 @@ class DockerBackend(ExecutionBackend):
                 "network": self._network_mode,
                 "tmpfs_size": self._tmpfs_size,
                 "reaper_interval_seconds": self._settings.execution_backend_docker_reaper_interval_seconds,
-                "max_sessions": self._max_sessions,
+                "max_instances": self._max_instances,
                 "idle_timeout_seconds": self._idle_timeout,
                 "shell_tool_enabled": getattr(self._settings, "execution_backend_shell_tool_enabled", False),
             },
-            "sessions": sessions,
+            "sessions": instances,
         }
 
-    def _session_snapshot(
+    def _instance_snapshot(
         self,
-        session_id: str,
+        sandbox_instance_id: str,
         container,
         meta: dict[str, object],
+        binding: SandboxBinding | None,
         outbound: list[str],
         alive: bool,
         now: float,
@@ -268,14 +394,19 @@ class DockerBackend(ExecutionBackend):
         last_activity_at = self._float_or_none(meta.get("last_activity"))
         network_mode = str(host_config.get("NetworkMode") or ("bridge" if outbound else self._network_mode))
         network_policy = "allowlist" if outbound else "disabled" if network_mode == "none" else "custom"
+        session_id = meta.get("session_id")
         return {
-            "session_id": session_id,
+            "session_id": str(session_id) if session_id else None,
+            "execution_scope_id": str(meta.get("execution_scope_id") or sandbox_instance_id),
+            "sandbox_instance_id": sandbox_instance_id,
             "agent_name": str(meta.get("agent_name") or ""),
             "container_id": str(getattr(container, "id", "") or ""),
             "container_name": str(getattr(container, "name", "") or ""),
             "container_created_at": created_at,
             "image_id": str(attrs.get("Image") or ""),
-            "image_name": str(config.get("Image") or self._image),
+            "image_name": str(config.get("Image") or (binding.spec.image if binding else self._image)),
+            "profile_id": str(meta.get("profile_id") or (binding.spec.profile_id if binding else "")),
+            "profile_revision": meta.get("profile_revision") or (binding.spec.profile_revision if binding else None),
             "started_at": started_at or created_at,
             "last_activity_at": last_activity_at,
             "idle_seconds": max(0.0, now - last_activity_at) if last_activity_at else None,
@@ -370,68 +501,126 @@ class DockerBackend(ExecutionBackend):
         except (TypeError, ValueError):
             return None
 
-    async def ensure(self, session_id: str):
-        existing = self._sessions.get(session_id)
-        if existing is not None:
-            meta = self._session_meta.get(session_id, {})
-            if meta.get("needs_recreate"):
-                # Network mode changed — remove the old container but keep the
-                # (updated) meta so the new one gets the correct network_mode.
-                self._sessions.pop(session_id, None)
-                meta.pop("needs_recreate", None)
-                await asyncio.to_thread(self._remove_container, existing)
-                self._metrics.containers_stopped += 1
-                if self._session_semaphore is not None:
-                    self._session_semaphore.release()
-                # Fall through to create a fresh container.
-            else:
-                self._touch_activity(session_id)
-                return existing
-        # New (or recreated) session — queue if at capacity.
-        if self._session_semaphore is not None:
-            await self._session_semaphore.acquire()
-        try:
-            container = await asyncio.to_thread(
-                self._translate_unavailable, self._create_session_container, session_id
-            )
-        except BaseException:
-            if self._session_semaphore is not None:
-                self._session_semaphore.release()
-            raise
-        self._sessions[session_id] = container
-        self._metrics.containers_started += 1
-        self._touch_activity(session_id)
-        return container
+    async def ensure(self, sandbox_instance_id: str):
+        """Make the instance's container ready. Per-instance lock with a
+        double-check so concurrent tools from one agent never create duplicate
+        containers. Queues on the capacity semaphore when at the limit.
 
-    def _touch_activity(self, session_id: str) -> None:
-        """Update last_activity timestamp for a tracked session."""
-        meta = self._session_meta.get(session_id)
+        The recreate path (outbound flip) also runs under the lock: pop,
+        removal, capacity release, and re-creation are one atomic sequence, so
+        a concurrent ``ensure`` can never create a same-name container while
+        the old one is still being removed."""
+        existing = self._containers.get(sandbox_instance_id)
+        if (
+            existing is not None
+            and not self._instance_meta.get(sandbox_instance_id, {}).get("needs_recreate")
+        ):
+            self._touch_activity(sandbox_instance_id)
+            return existing
+
+        lock = self._instance_locks.setdefault(sandbox_instance_id, asyncio.Lock())
+        async with lock:
+            # Double-check after acquiring: a concurrent ensure may have created
+            # (or recreated) the container while we waited.
+            existing = self._containers.get(sandbox_instance_id)
+            if existing is not None:
+                meta = self._instance_meta.get(sandbox_instance_id, {})
+                if meta.get("needs_recreate"):
+                    # Network mode changed — remove the old container but keep
+                    # the (updated) meta so the new one gets the correct mode.
+                    self._containers.pop(sandbox_instance_id, None)
+                    meta.pop("needs_recreate", None)
+                    await asyncio.to_thread(self._remove_container, existing)
+                    self._metrics.containers_stopped += 1
+                    self._release_capacity()
+                    # Fall through to create a fresh container.
+                else:
+                    self._touch_activity(sandbox_instance_id)
+                    return existing
+
+            binding = self._binding_for(sandbox_instance_id)
+            if sandbox_instance_id not in self._bindings:
+                # Legacy/unregistered caller: record the synthesized binding so
+                # the container is discoverable for stop/snapshot/reaper.
+                self.configure(binding)
+            if self._capacity_semaphore is not None:
+                await self._capacity_semaphore.acquire()
+            try:
+                container = await asyncio.to_thread(
+                    self._translate_unavailable, self._create_instance_container, binding
+                )
+            except BaseException:
+                self._release_capacity()
+                raise
+            self._containers[sandbox_instance_id] = container
+            self._metrics.containers_started += 1
+            self._touch_activity(sandbox_instance_id)
+            return container
+
+    def _touch_activity(self, sandbox_instance_id: str) -> None:
+        """Update last_activity timestamp for a tracked instance."""
+        meta = self._instance_meta.get(sandbox_instance_id)
         if meta is not None:
             meta["last_activity"] = time.time()
 
+    def _release_capacity(self) -> None:
+        if self._capacity_semaphore is not None:
+            self._capacity_semaphore.release()
+
     def workspace(self, session_id: str | None) -> HostPathWorkspace:
-        # The session workspace is bind-mounted into the container at this host
-        # path, so host-side pathlib sees the same files the container writes.
+        # The session workspace is bind-mounted into every sibling container at
+        # this host path, so host-side pathlib sees the same files the
+        # containers write.
         if isinstance(session_id, str) and session_id.strip():
             return HostPathWorkspace(host_path=self._settings.session_workspace_dir(session_id))
         return HostPathWorkspace(host_path=self._settings.workspace_root())
 
-    def _create_session_container(self, session_id: str):
+    def _container_name(self, binding: SandboxBinding) -> str:
+        scope = _safe_name(binding.target.execution_scope_id)
+        short = binding.target.sandbox_instance_id[-12:]
+        return f"covalent-sandbox-{scope}-{short}"
+
+    def _instance_state_dir(self, binding: SandboxBinding) -> Path:
+        """Instance-private state (HOME, caches), outside the shared session
+        workspace and unreachable through workspace file tools."""
+        return self._instance_state_dir_by_target(binding.target)
+
+    def _create_instance_container(self, binding: SandboxBinding):
         client = self._api()
-        volumes = self._build_volumes(session_id)
-        name = f"covalent-sandbox-{_safe_name(session_id)}"
+        spec = binding.spec
+        target = binding.target
+        volumes = self._build_volumes(target)
+        state_dir = self._instance_state_dir(binding)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        labels = {
+            _SANDBOX_LABEL: "1",
+            _EXECUTION_SCOPE_LABEL: target.execution_scope_id,
+            _INSTANCE_LABEL: target.sandbox_instance_id,
+            _AGENT_LABEL: target.agent_name,
+            _PROFILE_LABEL: spec.profile_id,
+            _PROFILE_REVISION_LABEL: str(spec.profile_revision),
+        }
+        if target.session_id:
+            labels[_SESSION_LABEL] = target.session_id
+        name = self._container_name(binding)
         kwargs = dict(
-            image=self._image,
-            command=["tail", "-f", "/dev/null"],
+            image=spec.image,
+            command=list(spec.keepalive_command),
             volumes=volumes,
             detach=True,
-            labels={_SANDBOX_LABEL: "1", _SESSION_LABEL: session_id},
+            labels=labels,
             name=name,
-            mem_limit=self._mem_limit,
-            pids_limit=self._pids_limit,
-            nano_cpus=self._nano_cpus,
-            network_mode="bridge" if self._session_meta.get(session_id, {}).get("outbound") else self._network_mode,
-            tmpfs={"/tmp": f"size={self._tmpfs_size}"},
+            mem_limit=spec.memory_limit,
+            pids_limit=spec.pids_limit,
+            nano_cpus=int(spec.cpus * 1e9),
+            network_mode="bridge" if binding.allowed_outbound else self._network_mode,
+            tmpfs={"/tmp": f"size={spec.tmpfs_size}"},
+            environment={
+                "HOME": _CONTAINER_HOME,
+                "XDG_CACHE_HOME": f"{_CONTAINER_HOME}/.cache",
+                "PIP_CACHE_DIR": f"{_CONTAINER_HOME}/.cache/pip",
+                "npm_config_cache": f"{_CONTAINER_HOME}/.cache/npm",
+            },
         )
         try:
             return client.containers.run(**kwargs)
@@ -443,12 +632,18 @@ class DockerBackend(ExecutionBackend):
                 pass
             return client.containers.run(**kwargs)
 
-    def _build_volumes(self, session_id: str) -> dict[str, dict[str, str]]:
+    def _build_volumes(self, target: ExecutionTarget) -> dict[str, dict[str, str]]:
         volumes: dict[str, dict[str, str]] = {}
-        workspace = self._settings.session_workspace_dir(session_id)
+        # The shared execution-scope workspace: every sibling instance of the
+        # scope bind-mounts the same host directory read/write.
+        workspace = self._settings.session_workspace_dir(target.workspace_scope_id)
         workspace.mkdir(parents=True, exist_ok=True)
         workspace_path = str(workspace)
         volumes[workspace_path] = {"bind": workspace_path, "mode": "rw"}
+        # Instance-private HOME/cache state.
+        state_dir = self._instance_state_dir_by_target(target)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        volumes[str(state_dir)] = {"bind": _CONTAINER_HOME, "mode": "rw"}
         try:
             source_dirs = list(self._skill_source_dirs_provider() or [])
         except Exception:
@@ -461,8 +656,17 @@ class DockerBackend(ExecutionBackend):
             volumes[host_path] = {"bind": host_path, "mode": "rw"}
         return volumes
 
-    async def is_alive(self, session_id: str) -> bool:
-        container = self._sessions.get(session_id)
+    def _instance_state_dir_by_target(self, target: ExecutionTarget) -> Path:
+        return (
+            self._settings.workspace_root()
+            / ".covalent"
+            / "sandbox-state"
+            / _safe_name(target.execution_scope_id)
+            / _safe_name(target.sandbox_instance_id)
+        )
+
+    async def is_alive(self, sandbox_instance_id: str) -> bool:
+        container = self._containers.get(sandbox_instance_id)
         if container is None:
             return False
         try:
@@ -471,22 +675,51 @@ class DockerBackend(ExecutionBackend):
         except Exception:
             return False
 
-    async def stop(self, session_id: str) -> None:
-        """Stop+remove the session's container. Robust to untracked containers
+    async def stop_instance(self, sandbox_instance_id: str) -> None:
+        """Stop+remove one instance's container. Robust to untracked containers
         (e.g. created by a previous process) by falling back to a name lookup."""
-        container = self._sessions.pop(session_id, None)
-        self._session_meta.pop(session_id, None)
+        container = self._containers.pop(sandbox_instance_id, None)
+        self._instance_meta.pop(sandbox_instance_id, None)
+        self._bindings.pop(sandbox_instance_id, None)
         if container is not None:
             await asyncio.to_thread(self._remove_container, container)
             self._metrics.containers_stopped += 1
-            if self._session_semaphore is not None:
-                self._session_semaphore.release()
+            self._release_capacity()
+            return
+        await asyncio.to_thread(self._remove_container_by_instance, sandbox_instance_id)
+
+    async def stop_scope(self, execution_scope_id: str) -> None:
+        """Stop every active instance of one execution scope."""
+        for instance_id in self._instance_ids_for_scope(execution_scope_id):
+            await self.stop_instance(instance_id)
+
+    async def stop(self, session_id: str) -> None:
+        """Compatibility: stop every active instance bound to a chat session."""
+        stopped = False
+        for instance_id, meta in list(self._instance_meta.items()):
+            if meta.get("session_id") == session_id:
+                await self.stop_instance(instance_id)
+                stopped = True
+        if stopped:
             return
         await asyncio.to_thread(self._remove_container_by_name, session_id)
 
+    def _instance_ids_for_scope(self, execution_scope_id: str) -> list[str]:
+        instance_ids = [
+            instance_id
+            for instance_id, meta in self._instance_meta.items()
+            if meta.get("execution_scope_id") == execution_scope_id
+            or meta.get("session_id") == execution_scope_id
+        ]
+        # Include tracked containers whose meta was lost (crash-adjacent paths).
+        for instance_id, binding in self._bindings.items():
+            if binding.target.execution_scope_id == execution_scope_id and instance_id not in instance_ids:
+                instance_ids.append(instance_id)
+        return instance_ids
+
     async def aclose(self) -> None:
-        containers = list(self._sessions.values())
-        self._sessions.clear()
+        containers = list(self._containers.values())
+        self._containers.clear()
         for container in containers:
             await asyncio.to_thread(self._remove_container, container)
         if containers:
@@ -502,13 +735,28 @@ class DockerBackend(ExecutionBackend):
         except Exception:
             pass
 
-    def _remove_container_by_name(self, session_id: str) -> None:
-        name = f"covalent-sandbox-{_safe_name(session_id)}"
+    def _remove_container_by_instance(self, sandbox_instance_id: str) -> None:
+        """Find an untracked container by its instance label and remove it."""
         try:
-            container = self._api().containers.get(name)
+            containers = self._api().containers.list(
+                all=True, filters={"label": [f"{_INSTANCE_LABEL}={sandbox_instance_id}"]}
+            )
         except Exception:
             return
-        self._remove_container(container)
+        for container in containers:
+            self._remove_container(container)
+
+    def _remove_container_by_name(self, session_id: str) -> None:
+        """Legacy fallback: a session-keyed name from a pre-instance process."""
+        for name in (
+            f"covalent-sandbox-{_safe_name(session_id)}-{_safe_name(session_id)[-12:]}",
+            f"covalent-sandbox-{_safe_name(session_id)}",
+        ):
+            try:
+                container = self._api().containers.get(name)
+            except Exception:
+                continue
+            self._remove_container(container)
 
     # -- sweep / reaper support ---------------------------------------------
     def _list_sandbox_containers(self) -> list:
@@ -534,6 +782,28 @@ class DockerBackend(ExecutionBackend):
             if sid:
                 sessions.append(sid)
         return sessions
+
+    async def list_sandbox_instance_summaries(self) -> list[dict[str, object]]:
+        """Per-instance summaries from daemon-labeled containers (across
+        restarts): instance id, owning session id (None for run scopes), and
+        execution scope. Feeds the reaper's orphan reconciliation."""
+        containers = await asyncio.to_thread(self._list_sandbox_containers)
+        summaries: list[dict[str, object]] = []
+        for container in containers:
+            labels = container.labels or {}
+            summaries.append(
+                {
+                    "sandbox_instance_id": labels.get(_INSTANCE_LABEL) or "",
+                    "session_id": labels.get(_SESSION_LABEL),
+                    "execution_scope_id": labels.get(_EXECUTION_SCOPE_LABEL) or "",
+                }
+            )
+        return summaries
+
+    def is_instance_tracked(self, sandbox_instance_id: str) -> bool:
+        """Whether this backend process is actively managing the instance's
+        container (as opposed to an orphan from a previous process)."""
+        return sandbox_instance_id in self._containers
 
     # -- execution -----------------------------------------------------------
     def rewrite_command(self, command: list[str]) -> list[str]:
@@ -564,10 +834,12 @@ class DockerBackend(ExecutionBackend):
         cwd: str | Path | None,
         env: dict[str, str],
         session_id: str | None = None,
+        sandbox_instance_id: str | None = None,
     ):
-        if not session_id:
-            raise ValueError("DockerBackend.spawn_stream requires a session_id")
-        container = await self.ensure(session_id)
+        instance_id = sandbox_instance_id or session_id
+        if not instance_id:
+            raise ValueError("DockerBackend.spawn_stream requires a sandbox_instance_id (or legacy session_id)")
+        container = await self.ensure(instance_id)
         rewritten = self.rewrite_command(command)
         exec_id, sock = await asyncio.to_thread(
             self._translate_unavailable,
@@ -647,11 +919,13 @@ class DockerBackend(ExecutionBackend):
         env: dict[str, str] | None = None,
         timeout: float | None = None,
         session_id: str | None = None,
+        sandbox_instance_id: str | None = None,
         stdin: bytes | None = None,
     ) -> ExecResult:
-        if not session_id:
-            raise ValueError("DockerBackend.exec requires a session_id")
-        container = await self.ensure(session_id)
+        instance_id = sandbox_instance_id or session_id
+        if not instance_id:
+            raise ValueError("DockerBackend.exec requires a sandbox_instance_id (or legacy session_id)")
+        container = await self.ensure(instance_id)
         rewritten = self.rewrite_command(command)
         try:
             return await asyncio.wait_for(

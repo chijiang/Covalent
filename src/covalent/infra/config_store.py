@@ -223,6 +223,8 @@ class PersistedAgentConfig(BaseModel):
     skills: list[str] = Field(default_factory=list)
     local_tools: list[str] = Field(default_factory=list)
     allowed_outbound: list[str] = Field(default_factory=list)
+    # Administrator-managed sandbox profile (stable id). None = default profile.
+    sandbox_profile_id: str | None = None
     delegate_agents: list[str] = Field(default_factory=list)
     mcp_servers: list[str] = Field(default_factory=list)
     mcp_tools: list[McpToolReference] = Field(default_factory=list)

@@ -30,10 +30,15 @@ class AgentInvocationService:
         session_id: str,
         metadata: dict[str, Any] | None,
         execution_backend: Any,
+        workspace_id: str | None = None,
     ) -> RunContext:
+        # A persistent chat run's execution/workspace scope IS the session.
         return RunContext(
             agent_name=agent_name,
             session_id=session_id,
+            execution_scope_id=session_id,
+            workspace_scope_id=session_id,
+            workspace_id=workspace_id,
             metadata=dict(metadata or {}),
             execution_backend=execution_backend,
         )
@@ -45,12 +50,13 @@ class AgentInvocationService:
         session_id: str,
         metadata: dict[str, Any] | None,
         execution_backend: Any,
+        workspace_id: str | None = None,
     ) -> GenerationResponse:
         agent = self.registry.get_agent(agent_name)
         return await self.runtime.run(
             agent,
             user_input,
-            self.build_context(agent_name, session_id, metadata, execution_backend),
+            self.build_context(agent_name, session_id, metadata, execution_backend, workspace_id),
         )
 
     async def stream(
@@ -60,12 +66,13 @@ class AgentInvocationService:
         session_id: str,
         metadata: dict[str, Any] | None,
         execution_backend: Any,
+        workspace_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         agent = self.registry.get_agent(agent_name)
         async for event in self.runtime.stream_events(
             agent,
             user_input,
-            self.build_context(agent_name, session_id, metadata, execution_backend),
+            self.build_context(agent_name, session_id, metadata, execution_backend, workspace_id),
         ):
             yield event
 

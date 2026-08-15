@@ -29,7 +29,12 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from covalent.runtime.backend import ExecResult, ExecutionBackend, HostPathWorkspace
+from covalent.runtime.backend import (
+    ExecResult,
+    ExecutionBackend,
+    HostPathWorkspace,
+    SandboxBinding,
+)
 
 if TYPE_CHECKING:
     from covalent.infra.settings import AppSettings
@@ -51,6 +56,12 @@ class FileSystemBackend(ExecutionBackend):
         # settings-less default is fine for that path.
         self._settings = settings
 
+    def configure(self, binding: SandboxBinding) -> None:
+        """Register a logical sandbox binding. The host filesystem has no
+        per-sandbox environment to provision, so this is a no-op; profile
+        selection is persisted but not enforced under this backend."""
+        return None
+
     def workspace(self, session_id: str | None) -> HostPathWorkspace:
         if self._settings is None:
             raise RuntimeError("FileSystemBackend has no settings; cannot resolve workspace")
@@ -69,6 +80,7 @@ class FileSystemBackend(ExecutionBackend):
         cwd: str | Path | None,
         env: dict[str, str],
         session_id: str | None = None,
+        sandbox_instance_id: str | None = None,
     ) -> asyncio.subprocess.Process:
         return await asyncio.create_subprocess_exec(
             *command,
@@ -87,6 +99,7 @@ class FileSystemBackend(ExecutionBackend):
         env: dict[str, str] | None = None,
         timeout: float | None = None,
         session_id: str | None = None,
+        sandbox_instance_id: str | None = None,
         stdin: bytes | None = None,
     ) -> ExecResult:
         process = await asyncio.create_subprocess_exec(
@@ -124,6 +137,14 @@ class FileSystemBackend(ExecutionBackend):
 
     async def stop(self, session_id: str) -> None:
         """No per-session teardown on the host filesystem."""
+        return None
+
+    async def stop_instance(self, sandbox_instance_id: str) -> None:
+        """No per-instance sandbox environments on the host filesystem."""
+        return None
+
+    async def stop_scope(self, execution_scope_id: str) -> None:
+        """No per-scope sandbox environments on the host filesystem."""
         return None
 
     async def is_alive(self, session_id: str) -> bool:

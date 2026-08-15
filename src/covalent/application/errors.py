@@ -39,5 +39,13 @@ class InvalidInputError(ApplicationError):
     status_code = 400
 
 
+class UnprocessableEntityError(ApplicationError):
+    status_code = 422
+
+
+class ServiceUnavailableError(ApplicationError):
+    status_code = 503
+
+
 class QuotaExceededError(ApplicationError):
     status_code = 429

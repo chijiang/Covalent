@@ -143,8 +143,9 @@ class SkillProcessManager:
     and concurrency control via semaphores and busy flags."""
 
     def __init__(self, backend: ExecutionBackend | None = None) -> None:
-        # Keyed by (skill_name, session_id) so a backend that isolates sessions
-        # (e.g. Docker) never reuses one session's warm process for another.
+        # Keyed by (skill_name, sandbox_instance_id) so a backend that isolates
+        # sandbox instances (e.g. Docker) never reuses one agent's warm process
+        # for another — and never hands out a handle whose container is gone.
         self._pools: dict[tuple[str, str | None], list[SkillProcessHandle]] = {}
         self._semaphores: dict[tuple[str, str | None], asyncio.Semaphore] = {}
         self._health_task: asyncio.Task[None] | None = None
@@ -167,6 +168,16 @@ class SkillProcessManager:
         self._pools.clear()
         self._semaphores.clear()
 
+    async def stop_sandbox_instance(self, sandbox_instance_id: str) -> None:
+        """Evict every warm handle for one sandbox instance before its container
+        is torn down, so no handle retains a dead exec connection."""
+        keys = [key for key in self._pools if key[1] == sandbox_instance_id]
+        for key in keys:
+            pool = self._pools.pop(key)
+            self._semaphores.pop(key, None)
+            for handle in pool:
+                await self._terminate(handle)
+
     async def acquire(
         self,
         spec: ManifestSkillSpec,
@@ -174,14 +185,18 @@ class SkillProcessManager:
     ) -> SkillProcessHandle:
         """Acquire a process slot. Blocks if all instances are busy, up to max_instances.
 
-        ``context`` carries the session id; the pool is scoped per (skill, session)
-        so a backend that isolates sessions (e.g. Docker) never reuses one session's
-        warm process for another.
+        ``context`` carries the sandbox instance id (falling back to the legacy
+        session id); the pool is scoped per (skill, instance) so a backend that
+        isolates sandboxes never reuses one agent's warm process for another.
         """
         if not spec.is_executable:
             raise SkillProcessError({"code": -32002, "message": f"Skill '{spec.name}' is not executable"})
-        session_id = context.session_id if context else None
-        key = (spec.name, session_id)
+        instance_id = (
+            (getattr(context, "sandbox_execution_key", None) or getattr(context, "session_id", None))
+            if context
+            else None
+        )
+        key = (spec.name, instance_id)
         sem = self._semaphores.get(key)
         if sem is None:
             sem = asyncio.Semaphore(spec.process.max_instances)
@@ -189,7 +204,7 @@ class SkillProcessManager:
 
         await sem.acquire()
         try:
-            handle = await self._get_or_spawn(spec, session_id)
+            handle = await self._get_or_spawn(spec, instance_id)
             handle._busy = True
             return handle
         except Exception:
@@ -200,7 +215,7 @@ class SkillProcessManager:
         """Release a process back to the pool."""
         handle._busy = False
         handle._last_activity = time.monotonic()
-        sem = self._semaphores.get((handle.spec.name, getattr(handle, "_session_id", None)))
+        sem = self._semaphores.get((handle.spec.name, getattr(handle, "_sandbox_instance_id", None)))
         if sem:
             sem.release()
 
@@ -215,8 +230,8 @@ class SkillProcessManager:
         """Names of skills that currently have at least one process in the pool.
 
         Public read surface for ops/health checks — callers must not reach into
-        the private ``_pools`` dict (and the pool is keyed by (skill, session),
-        so a bare ``_pools.get(skill_name)`` would never match).
+        the private ``_pools`` dict (and the pool is keyed by (skill, sandbox
+        instance), so a bare ``_pools.get(skill_name)`` would never match).
         """
         return {key[0] for key, pool in self._pools.items() if pool}
 
@@ -228,19 +243,19 @@ class SkillProcessManager:
             for handle in pool:
                 await self._terminate(handle)
 
-    async def _get_or_spawn(self, spec: ManifestSkillSpec, session_id: str | None) -> SkillProcessHandle:
+    async def _get_or_spawn(self, spec: ManifestSkillSpec, sandbox_instance_id: str | None) -> SkillProcessHandle:
         """Find an available process or spawn a new one."""
-        pool = self._pools.setdefault((spec.name, session_id), [])
+        pool = self._pools.setdefault((spec.name, sandbox_instance_id), [])
         # Try to find an idle, ready process
         for handle in pool:
             if handle.is_available:
                 return handle
         # Spawn a new one (semaphore already limits concurrency)
-        handle = await self._spawn(spec, session_id)
+        handle = await self._spawn(spec, sandbox_instance_id)
         pool.append(handle)
         return handle
 
-    async def _spawn(self, spec: ManifestSkillSpec, session_id: str | None = None) -> SkillProcessHandle:
+    async def _spawn(self, spec: ManifestSkillSpec, sandbox_instance_id: str | None = None) -> SkillProcessHandle:
         assert spec.runtime is not None
         command = spec.runtime.command or self._default_command(spec.runtime.type)
         extra_args: list[str] = []
@@ -249,7 +264,7 @@ class SkillProcessManager:
         env = self._build_env(spec)
         # Merge agent-level outbound patterns into SKILL_NET_ALLOW so the
         # skill SDK enforces the agent's extra whitelist alongside the skill's.
-        agent_extras = getattr(self._backend, "agent_outbound", lambda _: [])(session_id)
+        agent_extras = getattr(self._backend, "agent_outbound", lambda _: [])(sandbox_instance_id)
         if agent_extras:
             existing = env.get("SKILL_NET_ALLOW", "")
             joined = ",".join(agent_extras)
@@ -260,10 +275,11 @@ class SkillProcessManager:
             full_args,
             cwd=spec.resolved_working_dir(),
             env=env,
-            session_id=session_id,
+            session_id=sandbox_instance_id,
+            sandbox_instance_id=sandbox_instance_id,
         )
         handle = SkillProcessHandle(spec=spec, process=process)
-        handle._session_id = session_id
+        handle._sandbox_instance_id = sandbox_instance_id
         handle._reader_task = asyncio.create_task(handle._read_loop())
         asyncio.create_task(self._stderr_logger(spec.name, process))
 

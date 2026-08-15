@@ -226,14 +226,15 @@ async def _run_skill_script(
     # real command + which environment ran it.
     executed_command = active_backend.rewrite_command(command)
     encoded_stdin = stdin_data.encode("utf-8") if stdin_data else None
-    session_id = context.session_id if context else None
+    instance_id = getattr(context, "sandbox_execution_key", None) or getattr(context, "session_id", None) if context else None
     try:
         result = await active_backend.exec(
             command,
             cwd=cwd,
             env=env,
             timeout=timeout,
-            session_id=session_id,
+            session_id=instance_id,
+            sandbox_instance_id=instance_id,
             stdin=encoded_stdin,
         )
     except asyncio.TimeoutError as exc:

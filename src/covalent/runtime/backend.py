@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from covalent.core.agent import AgentSpec
+    from covalent.core.types import RunContext
     from covalent.infra.settings import AppSettings
 
 
@@ -36,6 +38,63 @@ class ExecResult:
     exit_code: int
     stdout: bytes
     stderr: bytes
+
+
+@dataclass(frozen=True)
+class ExecutionTarget:
+    """Where a logical sandbox execution belongs.
+
+    Separates conversation identity (``session_id``, may be None for a
+    stateless run) from execution identity: the lifecycle scope
+    (``execution_scope_id`` = chat session id or run id), the filesystem
+    scope shared by collaborating agents (``workspace_scope_id``), and the
+    per-agent logical sandbox (``sandbox_instance_id``).
+    """
+
+    execution_scope_id: str
+    session_id: str | None
+    workspace_scope_id: str
+    sandbox_instance_id: str
+    agent_name: str
+
+
+@dataclass(frozen=True)
+class SandboxSpec:
+    """Immutable snapshot of the profile revision a sandbox instance uses."""
+
+    profile_id: str
+    profile_revision: int
+    image: str
+    keepalive_command: tuple[str, ...]
+    runtime_capabilities: frozenset[str]
+    contract_version: int
+    memory_limit: str
+    pids_limit: int
+    cpus: float
+    tmpfs_size: str
+
+
+@dataclass(frozen=True)
+class SandboxBinding:
+    """A resolved execution target plus its pinned spec and outbound policy."""
+
+    target: ExecutionTarget
+    spec: SandboxSpec
+    allowed_outbound: tuple[str, ...]
+
+
+class ExecutionBindingResolver(Protocol):
+    """Resolves the logical sandbox binding for an agent run.
+
+    The concrete implementation lives in the application layer
+    (``SandboxBindingService``); the runtime package depends only on this
+    protocol. ``resolve`` mutates ``RunContext`` execution identity fields,
+    configures the execution backend (without eagerly creating a container),
+    and returns the binding for the (execution scope, agent) pair.
+    """
+
+    async def resolve(self, agent: "AgentSpec", context: "RunContext") -> SandboxBinding:
+        ...
 
 
 class BackendUnavailable(RuntimeError):
@@ -74,12 +133,23 @@ class ExecutionBackend(Protocol):
     Implementations: :class:`~covalent.runtime.filesystem_backend.FileSystemBackend`
     (default), :class:`~covalent.runtime.docker_backend.DockerBackend`,
     KubernetesBackend (Phase 3).
+
+    Execution is keyed by ``sandbox_instance_id`` (one logical sandbox per
+    (execution scope, agent) pair) after ``configure(binding)`` registered it.
+    The legacy ``session_id`` arguments remain as a compatibility fallback
+    (one instance per session, default settings-derived spec) until all call
+    sites move to explicit instance identity.
     """
 
     name: str
 
-    async def ensure(self, session_id: str) -> None:
-        """Make the per-session execution environment ready. Idempotent."""
+    def configure(self, binding: SandboxBinding) -> None:
+        """Register a logical sandbox binding. No container is created until
+        the first ``ensure``/``exec``/``spawn_stream`` for its instance."""
+        ...
+
+    async def ensure(self, sandbox_instance_id: str) -> None:
+        """Make the instance's execution environment ready. Idempotent."""
         ...
 
     def workspace(self, session_id: str | None) -> WorkspaceAccess:
@@ -95,6 +165,7 @@ class ExecutionBackend(Protocol):
         cwd: str | Path | None,
         env: dict[str, str],
         session_id: str | None = None,
+        sandbox_instance_id: str | None = None,
     ) -> asyncio.subprocess.Process:
         """Start a long-lived process with piped stdio for JSON-RPC."""
         ...
@@ -107,6 +178,7 @@ class ExecutionBackend(Protocol):
         env: dict[str, str] | None = None,
         timeout: float | None = None,
         session_id: str | None = None,
+        sandbox_instance_id: str | None = None,
         stdin: bytes | None = None,
     ) -> ExecResult:
         """Run a one-shot command to completion and capture its output."""
@@ -119,8 +191,17 @@ class ExecutionBackend(Protocol):
         Useful for recording the real command in execution traces."""
         ...
 
+    async def stop_instance(self, sandbox_instance_id: str) -> None:
+        """Stop and remove one sandbox instance's live container (the logical
+        binding is deliberately not the backend's concern)."""
+        ...
+
+    async def stop_scope(self, execution_scope_id: str) -> None:
+        """Stop every active instance in one execution scope."""
+        ...
+
     async def stop(self, session_id: str) -> None:
-        """Tear down the per-session environment."""
+        """Compatibility: stop every active instance for a chat session."""
         ...
 
     def record_session(self, session_id: str, agent_name: str, allowed_outbound: list[str]) -> None:

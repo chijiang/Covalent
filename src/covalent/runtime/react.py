@@ -13,6 +13,7 @@ from covalent.infra.memory import SessionStore
 from covalent.model.base import ModelProviderError
 from covalent.registry.registry import FrameworkRegistry
 from covalent.runtime.base import AgentRuntime
+from covalent.runtime.backend import ExecutionBindingResolver
 from covalent.runtime.context_window_manager import ContextWindowManager
 from covalent.skills.bundle import SkillBundle
 
@@ -61,10 +62,12 @@ class ReactAgentRuntime(AgentRuntime):
         context_min_recent_messages: int = 4,
         context_summary_model: str | None = None,
         enable_llm_summarization: bool = True,
+        binding_resolver: "ExecutionBindingResolver | None" = None,
     ) -> None:
         self.registry = registry
         self.session_store = session_store
         self.session_history_limit = session_history_limit
+        self.binding_resolver = binding_resolver
         self.context_token_budget = context_token_budget
         self.context_compact_threshold = max(min(context_compact_threshold, 0.95), 0.5)
         self.context_recent_messages = max(context_recent_messages, 5)
@@ -434,6 +437,7 @@ class ReactAgentRuntime(AgentRuntime):
                     summary=(
                         f"Started with task: {self._truncate_text(delegate_input, 240)}"
                     ),
+                    delegate_context=delegate_context,
                 )
             )
 
@@ -459,6 +463,7 @@ class ReactAgentRuntime(AgentRuntime):
                     tool_call=tool_call,
                     context=context,
                     parent_iteration=parent_iteration,
+                    delegate_context=delegate_context,
                 )
                 if delegate_trace_event is not None:
                     await event_sink(delegate_trace_event)
@@ -493,6 +498,7 @@ class ReactAgentRuntime(AgentRuntime):
                     context=context,
                     parent_iteration=parent_iteration,
                     exc=exc,
+                    delegate_context=delegate_context,
                 ))
             return ToolResult(
                 name=tool_call.name,
@@ -509,9 +515,10 @@ class ReactAgentRuntime(AgentRuntime):
         tool_call: ToolCall,
         context: RunContext | None,
         parent_iteration: int,
+        delegate_context: RunContext | None = None,
     ) -> dict[str, Any]:
         chain = list((context.metadata if context else {}).get("delegation_chain", []))
-        return {
+        metadata: dict[str, Any] = {
             "agent_name": delegate_agent.name,
             "delegated_by": parent_agent.name,
             "delegate_tool_name": tool_call.name,
@@ -519,6 +526,17 @@ class ReactAgentRuntime(AgentRuntime):
             "delegation_depth": len(chain) + 1,
             "parent_iteration": parent_iteration,
         }
+        # Execution identity of the delegate's own sandbox (when a binding has
+        # resolved) so conflicting workspace writes can be diagnosed per agent.
+        source = delegate_context if delegate_context is not None else context
+        if source is not None:
+            if source.execution_scope_id:
+                metadata["execution_scope_id"] = source.execution_scope_id
+            if source.workspace_scope_id:
+                metadata["workspace_scope_id"] = source.workspace_scope_id
+            if source.sandbox_instance_id:
+                metadata["sandbox_instance_id"] = source.sandbox_instance_id
+        return metadata
 
     def _decorate_delegate_event(
         self,
@@ -529,6 +547,7 @@ class ReactAgentRuntime(AgentRuntime):
         tool_call: ToolCall,
         context: RunContext | None,
         parent_iteration: int,
+        delegate_context: RunContext | None = None,
     ) -> dict[str, Any] | None:
         event_name = str(event.get("event") or "")
         if not event_name:
@@ -543,6 +562,7 @@ class ReactAgentRuntime(AgentRuntime):
             tool_call=tool_call,
             context=context,
             parent_iteration=parent_iteration,
+            delegate_context=delegate_context,
         )
         payload = event.get("payload")
 
@@ -566,6 +586,7 @@ class ReactAgentRuntime(AgentRuntime):
         parent_iteration: int,
         kind: str,
         summary: str,
+        delegate_context: RunContext | None = None,
     ) -> dict[str, Any]:
         thought_event = self._thought_event(
             iteration=parent_iteration,
@@ -578,6 +599,7 @@ class ReactAgentRuntime(AgentRuntime):
                 tool_call=tool_call,
                 context=context,
                 parent_iteration=parent_iteration,
+                delegate_context=delegate_context,
             ),
         )
         return {
@@ -594,6 +616,7 @@ class ReactAgentRuntime(AgentRuntime):
         context: RunContext | None,
         parent_iteration: int,
         exc: Exception,
+        delegate_context: RunContext | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             **self._delegate_trace_metadata(
@@ -602,6 +625,7 @@ class ReactAgentRuntime(AgentRuntime):
                 tool_call=tool_call,
                 context=context,
                 parent_iteration=parent_iteration,
+                delegate_context=delegate_context,
             ),
             "detail": str(exc) or exc.__class__.__name__,
         }
@@ -632,9 +656,14 @@ class ReactAgentRuntime(AgentRuntime):
             parent_memory_mode = context.metadata.get("memory_mode")
             if parent_memory_mode is not None:
                 metadata["memory_mode"] = parent_memory_mode
+        # The delegate inherits the conversation/execution/workspace scope but
+        # NEVER the parent's sandbox_instance_id: it resolves its own stable
+        # instance for (scope, delegate agent) on its first run.
         return RunContext(
             agent_name=delegate_agent.name,
             session_id=context.session_id if context is not None else None,
+            execution_scope_id=context.execution_scope_id if context is not None else None,
+            workspace_scope_id=context.workspace_scope_id if context is not None else None,
             metadata=metadata,
             execution_backend=getattr(context, "execution_backend", None) if context is not None else None,
         )
@@ -788,6 +817,12 @@ class ReactAgentRuntime(AgentRuntime):
         user_input: PromptContent,
         context: RunContext | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
+        if self.binding_resolver is not None and context is not None:
+            # Bind this (execution scope, agent) run to its logical sandbox.
+            # The resolver sets the context's execution identity and configures
+            # the backend; container creation stays lazy (first exec/spawn), so
+            # model-only agents consume no sandbox capacity.
+            await self.binding_resolver.resolve(agent, context)
         adapter = self.registry.get_model_provider(agent.provider)
         instructions = self._build_system_prompt(agent)
         messages = await self._load_session_messages(agent, context)

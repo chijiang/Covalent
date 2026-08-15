@@ -110,6 +110,7 @@ class AgentRepository:
                     skills=skill_map.get(row.name, []),
                     local_tools=row.local_tools or [],
                     allowed_outbound=row.allowed_outbound or [],
+                    sandbox_profile_id=row.sandbox_profile_id,
                     delegate_agents=_translate_names(delegate_map.get(row.name, []), agent_public_map),
                     mcp_servers=_translate_names(mcp_map.get(row.name, []), mcp_public_map),
                     mcp_tools=_translate_tool_refs(mcp_tool_map.get(row.name, []), mcp_public_map),
@@ -218,6 +219,7 @@ class AgentRepository:
                     row.reasoning_level = agent.reasoning_level
                     row.local_tools = list(agent.local_tools)
                     row.allowed_outbound = list(agent.allowed_outbound)
+                    row.sandbox_profile_id = agent.sandbox_profile_id
                     row.provider_name = agent.provider.provider
                     row.provider_model = agent.provider.model
                     row.provider_api_key = agent.provider.api_key

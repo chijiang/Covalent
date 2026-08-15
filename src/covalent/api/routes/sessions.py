@@ -153,6 +153,15 @@ async def delete_session(request: Request, session_id: str) -> dict[str, str]:
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
     _ensure_console_principal_can_access_session(principal, existing)
+    # Stop the session's sandbox instances BEFORE deleting the session row —
+    # the row delete cascades the logical binding rows the stop needs. The
+    # binding service also evicts warm skill processes and instance-private
+    # state; fall back to the raw backend stop when not wired (tests).
+    binding_service = getattr(request.app.state, "sandbox_binding_service", None)
+    if binding_service is not None:
+        await binding_service.stop_session(session_id)
+    else:
+        await request.app.state.execution_backend.stop(session_id)
     if not await session_store.delete_session(session_id):
         raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
 
@@ -167,7 +176,6 @@ async def delete_session(request: Request, session_id: str) -> dict[str, str]:
         _rmtree_async(_download_session_dir(settings.workspace_root(), session_id), ignore_errors=True),
         _remove_workspace_dir(),
     )
-    await request.app.state.execution_backend.stop(session_id)
     return {"status": "deleted", "id": session_id}
 
 @router.post("/attachments/upload")

@@ -30,6 +30,7 @@ from covalent.application.services.management_service import _request_resource_p
 from covalent.application.services.management_service import _review_resource_publication
 from covalent.application.services.management_service import _serialize_management_export_payload
 from covalent.application.services.management_service import _validate_config_payload
+from covalent.application.services.sandbox_profile_service import skill_runtime_lookup_from_registry
 from covalent.application.services.runtime_apply import _apply_runtime_config
 from covalent.infra.config_store import ConfigStore
 from covalent.infra.db import DatabaseManager
@@ -67,6 +68,14 @@ async def put_config(request: Request, kind: str, update_request: ConfigDocument
         validated = _validate_config_payload(normalized, raw_payload)
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.errors()) from exc
+    if normalized == "agents":
+        profile_service = getattr(request.app.state, "sandbox_profile_service", None)
+        if profile_service is not None:
+            await profile_service.validate_agent_selections(
+                validated,
+                workspace_id=principal.workspace_id,
+                skill_runtime_lookup=skill_runtime_lookup_from_registry(request.app.state.registry),
+            )
     agent_renames = _extract_agent_renames(update_request.metadata) if normalized == "agents" else None
     payload = await config_store.save_document(normalized, validated, principal=principal.config, agent_renames=agent_renames)
     global_payload = await config_store.get_document(normalized)
@@ -131,4 +140,4 @@ async def import_management_config(request: Request, kind: str, file: UploadFile
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=400, detail="Imported file must be UTF-8 encoded text") from exc
-    return await _import_management_payload(request.app.state.db_manager, request.app.state.registry, request.app.state.config_store, request.app.state.settings, request.app.state.skill_loader, request.app.state.execution_backend, normalized_kind, text, file.filename, principal, _request_metadata(request))
+    return await _import_management_payload(request.app.state.db_manager, request.app.state.registry, request.app.state.config_store, request.app.state.settings, request.app.state.skill_loader, request.app.state.execution_backend, normalized_kind, text, file.filename, principal, _request_metadata(request), getattr(request.app.state, "sandbox_profile_service", None))

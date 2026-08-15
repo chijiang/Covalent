@@ -302,6 +302,28 @@ class WorkspaceToolTests(unittest.TestCase):
                 {"path": "story.html"},
             )
 
+    def test_publish_downloadable_file_works_for_stateless_runs(self) -> None:
+        """memory.mode=none runs have no session_id — downloads scope to the
+        run's execution scope instead (restores the pre-binding behavior where
+        the run id reached this tool via session_id)."""
+        run_context = SimpleNamespace(
+            session_id=None, execution_scope_id="run-42", workspace_scope_id="run-42"
+        )
+        run_root = self.root / "run-42"
+        run_root.mkdir()
+        (run_root / "report.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+
+        result = json.loads(
+            _publish_downloadable_file(
+                self.settings,
+                run_context,
+                "/api/backend/downloads",
+                {"file_path": "report.csv"},
+            )
+        )
+        self.assertEqual(result["download_url"], "/api/backend/downloads/run-42/report.csv")
+        self.assertTrue((self.root / ".covalent" / "downloads" / "run-42" / "report.csv").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

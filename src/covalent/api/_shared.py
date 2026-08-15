@@ -149,19 +149,6 @@ async def _record_audit_log(
 
 
 
-def _record_sandbox_session(backend: ExecutionBackend | None, session_id: str, agent: AgentSpec) -> None:
-    if backend is None or not session_id:
-        return
-    record_fn = getattr(backend, "record_session", None)
-    if not callable(record_fn):
-        return
-    outbound = list(getattr(agent, "allowed_outbound", None) or [])
-    try:
-        record_fn(session_id, agent.name, outbound)
-    except Exception as exc:
-        logger.debug("Failed to record sandbox metadata for session %s: %s", session_id, exc)
-
-
 
 async def _augment_sandbox_snapshot(snapshot: dict[str, Any], session_store: SessionStore) -> dict[str, Any]:
     sessions = snapshot.get("sessions")
@@ -325,39 +312,99 @@ async def _sandbox_reaper_loop(
     session_store: SessionStore,
     interval_seconds: float,
     idle_timeout_seconds: float = 0.0,
+    process_manager: Any | None = None,
+    sandbox_repository: Any | None = None,
 ) -> None:
-    """Periodically reclaim sandbox containers.
+    """Periodically reclaim sandbox containers, per instance.
 
-    For sessions **actively tracked** by the backend: stop them if idle beyond
-    ``idle_timeout_seconds`` (0 = never auto-stop). For sessions **not tracked**
-    (orphans from a previous process): stop if the session is gone from the store.
-    No-op for the FileSystem backend (``list_sandbox_sessions`` returns ``[]``).
+    Tracked instances (managed by this backend process): stopped individually
+    once idle beyond ``idle_timeout_seconds`` — the logical binding row is kept,
+    so the next run recreates the container. Untracked labeled containers
+    (orphans from a previous process): removed when their chat session is gone
+    from the store, or — for run-scoped orphans with no session label — when no
+    logical binding row remains for the scope. No-op for the FileSystem backend.
     """
     while True:
         try:
             await asyncio.sleep(interval_seconds)
+            summaries_fn = getattr(backend, "list_sandbox_instance_summaries", None)
+            if callable(summaries_fn):
+                for summary in await summaries_fn():
+                    try:
+                        await _reap_sandbox_instance(
+                            backend,
+                            session_store,
+                            summary,
+                            idle_timeout_seconds=idle_timeout_seconds,
+                            process_manager=process_manager,
+                            sandbox_repository=sandbox_repository,
+                        )
+                    except Exception as exc:
+                        logger.error("Sandbox reaper error for instance %s: %s", summary, exc)
+                continue
+            # Legacy backends without instance summaries.
             for session_id in await backend.list_sandbox_sessions():
                 try:
-                    is_tracked = getattr(backend, "is_session_tracked", lambda _: False)(session_id)
-                    if is_tracked:
-                        # Active session — only stop if idle beyond the timeout.
-                        if idle_timeout_seconds > 0:
-                            idle = getattr(backend, "session_idle_seconds", lambda _: None)(session_id)
-                            if idle is not None and idle >= idle_timeout_seconds:
-                                logger.info(
-                                    "Stopping idle sandbox for session %s (idle %ds >= %ds)",
-                                    session_id, int(idle), int(idle_timeout_seconds),
-                                )
-                                await backend.stop(session_id)
-                        continue
-                    # Untracked (orphan from a previous run) — reap if session is gone.
-                    if await session_store.get_session(session_id) is None:
-                        logger.info("Reaping orphan sandbox container for session %s", session_id)
-                        await backend.stop(session_id)
+                    if not getattr(backend, "is_session_tracked", lambda _: False)(session_id):
+                        if await session_store.get_session(session_id) is None:
+                            logger.info("Reaping orphan sandbox container for session %s", session_id)
+                            await backend.stop(session_id)
                 except Exception as exc:
                     logger.error("Sandbox reaper error for session %s: %s", session_id, exc)
         except asyncio.CancelledError:
             return
         except Exception as exc:
             logger.error("Sandbox reaper loop error: %s", exc)
+
+
+async def _reap_sandbox_instance(
+    backend: ExecutionBackend,
+    session_store: SessionStore,
+    summary: dict[str, object],
+    *,
+    idle_timeout_seconds: float,
+    process_manager: Any | None,
+    sandbox_repository: Any | None,
+) -> None:
+    instance_id = str(summary.get("sandbox_instance_id") or "")
+    if not instance_id:
+        return
+    is_tracked_fn = getattr(backend, "is_instance_tracked", None)
+    tracked = callable(is_tracked_fn) and is_tracked_fn(instance_id)
+    if tracked:
+        if idle_timeout_seconds <= 0:
+            return
+        idle_fn = getattr(backend, "instance_idle_seconds", None)
+        idle = idle_fn(instance_id) if callable(idle_fn) else None
+        if idle is None or idle < idle_timeout_seconds:
+            return
+        logger.info(
+            "Stopping idle sandbox instance %s (idle %ds >= %ds)",
+            instance_id, int(idle), int(idle_timeout_seconds),
+        )
+        if process_manager is not None:
+            try:
+                await process_manager.stop_sandbox_instance(instance_id)
+            except Exception:
+                logger.debug("Process eviction failed for idle instance %s", instance_id, exc_info=True)
+        await backend.stop_instance(instance_id)
+        return
+
+    # Untracked: an orphan from a previous process (or another worker's
+    # container). Session-scoped: reap only when the session is gone.
+    session_id = summary.get("session_id")
+    if session_id:
+        if await session_store.get_session(str(session_id)) is None:
+            logger.info("Reaping orphan sandbox container for session %s", session_id)
+            await backend.stop_instance(instance_id)
+        return
+    # Run-scoped orphan (no session label): reap only when no logical binding
+    # remains — a live run in another worker still holds its binding rows.
+    scope_id = str(summary.get("execution_scope_id") or "")
+    if not scope_id or sandbox_repository is None:
+        return
+    bindings = await sandbox_repository.list_bindings_by_scope(scope_id)
+    if not bindings:
+        logger.info("Reaping orphan run-scoped sandbox container for scope %s", scope_id)
+        await backend.stop_instance(instance_id)
 

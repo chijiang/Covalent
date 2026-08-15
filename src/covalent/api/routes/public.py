@@ -16,7 +16,6 @@ from typing import Any
 
 from covalent.api._auth_helpers import _request_metadata
 from covalent.api._shared import _new_chat_item_id
-from covalent.api._shared import _record_sandbox_session
 from covalent.api.auth import authenticate_api_token
 from covalent.api.auth import require_agent_allowed
 from covalent.api.auth import require_memory_mode_allowed
@@ -109,9 +108,16 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
         requested_session_id=invoke_request.memory.session_id,
         run_id=run_id,
     )
+    # Execution identity: a persistent chat run's scope is its session; a
+    # stateless run's scope is the run id (with NO session_id — never a fake
+    # chat session). The binding resolver assigns per-agent sandbox instances
+    # from this scope at run start; container creation stays lazy.
     context = RunContext(
         agent_name=agent.name,
-        session_id=session_id or run_id,
+        session_id=session_id,
+        execution_scope_id=session_id or run_id,
+        workspace_scope_id=session_id or run_id,
+        workspace_id=principal.workspace_id,
         metadata={
             **(invoke_request.metadata or {}),
             "memory_mode": memory_mode,
@@ -125,9 +131,20 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
         execution_backend=getattr(request.app.state, "execution_backend", None),
     )
 
-    # Record sandbox metadata before the first container is created
-    # (agent name for monitoring; outbound affects network mode).
-    _record_sandbox_session(getattr(request.app.state, "execution_backend", None), context.session_id or "", agent)
+    async def _cleanup_stateless_scope() -> None:
+        """Full run-scope teardown for memory.mode=none. Cancellation-safe; runs
+        on success, failure, timeout, and client disconnect."""
+        if memory_mode != "none":
+            return
+        binding_service = getattr(request.app.state, "sandbox_binding_service", None)
+        if binding_service is None:
+            return
+        try:
+            await binding_service.cleanup_stateless_run(run_id)
+        except Exception:
+            logger.warning(
+                "Stateless run scope cleanup failed for %s", run_id, exc_info=True
+            )
 
     if invoke_request.stream:
         limiter: _ApiTokenRunLimiter | None = getattr(request.app.state, "api_token_run_limiter", None)
@@ -183,23 +200,28 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
                             final_payload=final_payload,
                         ),
                     )
-                await _record_public_agent_run(
-                    db_manager,
-                    principal=principal,
-                    run_id=run_id,
-                    agent_name=agent.name,
-                    memory_mode=memory_mode,
-                    session_id=session_id,
-                    status=status,
-                    latency_ms=latency_ms,
-                    provider=agent.provider.provider,
-                    model=agent.provider.model,
-                    usage=_usage_payload(final_payload),
-                    error=error_payload,
-                    metadata=invoke_request.metadata,
-                )
-                if limiter is not None:
-                    await limiter.release(principal.token_id)
+                try:
+                    await _record_public_agent_run(
+                        db_manager,
+                        principal=principal,
+                        run_id=run_id,
+                        agent_name=agent.name,
+                        memory_mode=memory_mode,
+                        session_id=session_id,
+                        status=status,
+                        latency_ms=latency_ms,
+                        provider=agent.provider.provider,
+                        model=agent.provider.model,
+                        usage=_usage_payload(final_payload),
+                        error=error_payload,
+                        metadata=invoke_request.metadata,
+                    )
+                finally:
+                    # Resource cleanup must run even if run-log recording fails,
+                    # otherwise a stateless sandbox + its concurrency slot leak.
+                    await _cleanup_stateless_scope()
+                    if limiter is not None:
+                        await limiter.release(principal.token_id)
 
         return StreamingResponse(
             event_stream(),
@@ -237,6 +259,7 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
         )
         raise HTTPException(status_code=status_code, detail=exc.detail) from exc
     finally:
+        await _cleanup_stateless_scope()
         if limiter is not None:
             await limiter.release(principal.token_id)
 

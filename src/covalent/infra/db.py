@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, TypeVar
 
 import anyio
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -86,6 +86,11 @@ class AgentRow(TimestampMixin, Base):
     max_iterations: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     reasoning_level: Mapped[str] = mapped_column(String(32), nullable=False, default="none")
+    sandbox_profile_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("sandbox_profiles.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class SkillSourceRow(TimestampMixin, Base):
@@ -317,6 +322,83 @@ class AuditLogRow(Base):
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SandboxProfileRow(TimestampMixin, Base):
+    """Administrator-managed sandbox environment template.
+
+    ``workspace_id`` keeps its tenant/organization meaning here (NULL = global);
+    it is not the filesystem ``workspace_scope_id`` used at runtime.
+    """
+
+    __tablename__ = "sandbox_profiles"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_sandbox_profiles_workspace_name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    image: Mapped[str] = mapped_column(Text, nullable=False)
+    pull_policy: Mapped[str] = mapped_column(String(32), nullable=False, default="if_not_present")
+    keepalive_command: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    runtime_capabilities: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    contract_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    memory_limit: Mapped[str] = mapped_column(String(32), nullable=False)
+    pids_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    cpus: Mapped[float] = mapped_column(Float, nullable=False)
+    tmpfs_size: Mapped[str] = mapped_column(String(32), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    validation_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    validated_image_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validated_image_digest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SandboxInstanceRow(TimestampMixin, Base):
+    """Logical sandbox binding for one (execution scope, agent) pair.
+
+    The row survives container teardown; the Docker container is recreated
+    lazily from ``spec_snapshot`` (an immutable profile-revision snapshot).
+    ``session_id`` is NULL for stateless ``scope_kind='run'`` bindings, which
+    are removed by the run cleanup path.
+    """
+
+    __tablename__ = "sandbox_instances"
+    __table_args__ = (
+        UniqueConstraint("execution_scope_id", "agent_name", name="uq_sandbox_instances_scope_agent"),
+        CheckConstraint("scope_kind IN ('session', 'run')", name="ck_sandbox_instances_scope_kind"),
+        CheckConstraint(
+            "(scope_kind = 'session' AND session_id IS NOT NULL) OR (scope_kind = 'run' AND session_id IS NULL)",
+            name="ck_sandbox_instances_scope_session",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    execution_scope_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    session_id: Mapped[str | None] = mapped_column(
+        String(255),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    scope_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    profile_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("sandbox_profiles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    profile_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    profile_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    spec_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    allowed_outbound_snapshot: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class ChatSessionRow(TimestampMixin, Base):

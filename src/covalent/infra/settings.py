@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -94,6 +95,9 @@ class AppSettings(BaseSettings):
     execution_backend_docker_reaper_interval_seconds: float = 60.0
     # 0 = unlimited; >0 = queue new sessions when at capacity (asyncio.Semaphore).
     execution_backend_docker_max_sessions: int = 0
+    # Active-container limit (counts sandbox instances, not chat sessions).
+    # Takes precedence over the deprecated max_sessions alias; 0 = unlimited.
+    execution_backend_docker_max_instances: int = 0
     # Idle timeout: stop a sandbox container if no skill/script/shell activity
     # for this many seconds. 0 = never auto-stop (session DELETE / reaper only).
     execution_backend_docker_idle_timeout_seconds: float = 1800.0
@@ -103,6 +107,14 @@ class AppSettings(BaseSettings):
     execution_backend_shell_tool_binary: str = "sh"
     execution_backend_shell_tool_timeout_seconds: float = 120.0
     execution_backend_shell_tool_max_bytes: int = 51200
+    # Operator hard maximums for sandbox profile resources. None/empty = only
+    # basic positive/range validation applies. Registry allowlist (empty = any
+    # registry) is matched against the parsed image reference registry, not by
+    # substring.
+    execution_backend_docker_max_memory: str | None = None
+    execution_backend_docker_max_cpus: float | None = None
+    execution_backend_docker_max_pids: int | None = None
+    execution_backend_docker_allowed_image_registries: list[str] = Field(default_factory=list)
     skills_root_dir: str = "skills"
     skills_directories: str | None = None
     skills_cache_dir: str = "~/.covalent/skill_cache"

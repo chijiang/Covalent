@@ -16,7 +16,6 @@ import json
 from covalent.api._auth_helpers import _resolve_console_principal
 from covalent.api._shared import _new_chat_item_id
 from covalent.api._shared import _payload_text
-from covalent.api._shared import _record_sandbox_session
 from covalent.api._shared import to_agent_summary
 from covalent.application.schemas import AgentRunRequest
 from covalent.application.schemas import AgentRunResponse
@@ -105,12 +104,6 @@ async def run_agent(request: Request, agent_name: str, run_request: AgentRunRequ
     resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
     await _ensure_console_principal_can_access_agent(db_manager, principal, resolved_agent_name)
     session_id = run_request.session_id or _new_chat_item_id("session")
-    # Record sandbox metadata before the container is created.
-    try:
-        agent = registry.get_agent(resolved_agent_name)
-        _record_sandbox_session(getattr(request.app.state, "execution_backend", None), session_id, agent)
-    except Exception:
-        logger.debug("Failed to record sandbox session metadata for %s", session_id, exc_info=True)
     try:
         agent = registry.get_agent(resolved_agent_name)
     except KeyError as exc:
@@ -120,6 +113,7 @@ async def run_agent(request: Request, agent_name: str, run_request: AgentRunRequ
         result = await service.run(
             resolved_agent_name, run_request.input, session_id, run_request.metadata,
             getattr(request.app.state, "execution_backend", None),
+            principal.workspace_id,
         )
     except ModelProviderError as exc:
         status_code = 502 if exc.status_code is None else min(max(exc.status_code, 400), 599)
@@ -144,12 +138,6 @@ async def stream_agent(request: Request, agent_name: str, run_request: AgentRunR
     resolved_agent_name = await _resolve_console_agent_name(db_manager, principal, agent_name)
     await _ensure_console_principal_can_access_agent(db_manager, principal, resolved_agent_name)
     session_id = run_request.session_id or _new_chat_item_id("session")
-    # Record sandbox metadata before the container is created.
-    try:
-        agent = registry.get_agent(resolved_agent_name)
-        _record_sandbox_session(getattr(request.app.state, "execution_backend", None), session_id, agent)
-    except Exception:
-        logger.debug("Failed to record sandbox session metadata for %s", session_id, exc_info=True)
     try:
         agent = registry.get_agent(resolved_agent_name)
     except KeyError as exc:
@@ -194,6 +182,7 @@ async def stream_agent(request: Request, agent_name: str, run_request: AgentRunR
             async for event in service.stream(
                 resolved_agent_name, run_request.input, session_id, runtime_metadata,
                 getattr(request.app.state, "execution_backend", None),
+                principal.workspace_id,
             ):
                 event_name = event["event"]
                 payload = event["payload"]

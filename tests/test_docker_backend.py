@@ -20,6 +20,7 @@ import socket
 import struct
 import sys
 import tempfile
+import time
 import types
 import unittest
 import uuid
@@ -108,16 +109,31 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             call = fake_client.containers.run_calls[0]
             self.assertEqual(call["image"], IMAGE)
             self.assertEqual(call["command"], ["tail", "-f", "/dev/null"])
-            self.assertEqual(call["labels"], {"covalent.sandbox": "1", "covalent.session": "sess-1"})
-            self.assertEqual(call["name"], "covalent-sandbox-sess-1")
+            self.assertEqual(
+                call["labels"],
+                {
+                    "covalent.sandbox": "1",
+                    "covalent.session": "sess-1",
+                    "covalent.execution-scope": "sess-1",
+                    "covalent.sandbox-instance": "sess-1",
+                    "covalent.agent": "",
+                    "covalent.sandbox-profile": "default",
+                    "covalent.sandbox-profile-revision": "1",
+                },
+            )
+            self.assertEqual(call["name"], "covalent-sandbox-sess-1-sess-1")
             # The session workspace and the skill source dir are both mounted at
-            # their host-absolute paths.
+            # their host-absolute paths; the instance-private HOME is separate.
             workspace_host = str(settings_session_workspace_dir(tmp_path, "sess-1"))
             binds = {k: v["bind"] for k, v in call["volumes"].items()}
-            self.assertIn(workspace_host, binds)
             self.assertEqual(binds[workspace_host], workspace_host)
             self.assertIn(str(skill_dir), binds)
             self.assertEqual(binds[str(skill_dir)], str(skill_dir))
+            home_source = str(
+                tmp_path.resolve() / ".covalent" / "sandbox-state" / "sess-1" / "sess-1"
+            )
+            self.assertEqual(binds[home_source], "/home/covalent")
+            self.assertEqual(call["environment"]["HOME"], "/home/covalent")
 
             # Idempotent: a second ensure reuses the cached container.
             await backend.ensure("sess-1")
@@ -310,19 +326,20 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(snapshot["sessions"]), 1)
             session = snapshot["sessions"][0]
             self.assertEqual(session["session_id"], "s-snap")
+            self.assertEqual(session["sandbox_instance_id"], "s-snap")
             self.assertEqual(session["agent_name"], "my-agent")
             self.assertEqual(session["network_mode"], "bridge")
             self.assertEqual(session["network_policy"], "allowlist")
             self.assertEqual(session["allowed_outbound"], ["api.example.com"])
             self.assertIsNotNone(session["started_at"])
-            self.assertEqual(session["container_name"], "covalent-sandbox-s-snap")
+            self.assertEqual(session["container_name"], "covalent-sandbox-s-snap-s-snap")
             self.assertEqual(session["image_name"], "covalent-sandbox:dev")
             self.assertEqual(session["resources"]["pids_current"], 7)
             self.assertEqual(session["resources"]["memory_usage_bytes"], 64 * 1024 * 1024)
             self.assertAlmostEqual(session["resources"]["cpu_percent"], 50.0)
             self.assertIn("config", snapshot)
             self.assertEqual(snapshot["config"]["image"], "covalent-sandbox:dev")
-            self.assertEqual(snapshot["config"]["max_sessions"], 0)
+            self.assertEqual(snapshot["config"]["max_instances"], 0)
             self.assertEqual(snapshot["config"]["idle_timeout_seconds"], 1800.0)
 
     async def test_container_recreation_on_outbound_change(self) -> None:
@@ -338,7 +355,7 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fake.containers.run_calls[1]["network_mode"], "bridge")
 
     async def test_session_idle_seconds_tracks_activity(self) -> None:
-        """session_idle_seconds reports time since last activity."""
+        """session_idle_seconds reports time since the session's most recent activity."""
         with tempfile.TemporaryDirectory() as tmp:
             backend = self._make_backend(Path(tmp), client=_FakeDockerClient())
             backend.record_session("s1", "agent", [])
@@ -346,7 +363,7 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             idle = backend.session_idle_seconds("s1")
             self.assertIsNotNone(idle)
             self.assertLess(idle, 5.0)
-            backend._session_meta["s1"]["last_activity"] = 0.0
+            backend._instance_meta["s1"]["last_activity"] = 0.0
             idle = backend.session_idle_seconds("s1")
             self.assertGreater(idle, 1000.0)
 
@@ -370,6 +387,201 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
 def settings_session_workspace_dir(workspace_root: Path, session_id: str) -> Path:
     """Mirror AppSettings.session_workspace_dir for assertion expectations."""
     return AppSettings(workspace_root_dir=str(workspace_root)).session_workspace_dir(session_id)
+
+
+def _binding(
+    instance_id: str,
+    scope: str = "sess-1",
+    agent: str = "master",
+    *,
+    image: str = IMAGE,
+    session_id: str | None | object = "inherit",
+    outbound: tuple[str, ...] = (),
+    mem_limit: str = "512m",
+    cpus: float = 1.0,
+) -> "SandboxBinding":
+    from covalent.runtime.backend import ExecutionTarget, SandboxBinding, SandboxSpec
+
+    resolved_session: str | None
+    if session_id == "inherit":
+        resolved_session = scope  # session-scoped binding by default
+    else:
+        resolved_session = None if session_id is None else str(session_id)
+    return SandboxBinding(
+        target=ExecutionTarget(
+            execution_scope_id=scope,
+            session_id=resolved_session,
+            workspace_scope_id=scope,
+            sandbox_instance_id=instance_id,
+            agent_name=agent,
+        ),
+        spec=SandboxSpec(
+            profile_id="profile-x",
+            profile_revision=1,
+            image=image,
+            keepalive_command=("tail", "-f", "/dev/null"),
+            runtime_capabilities=frozenset({"python"}),
+            contract_version=1,
+            memory_limit=mem_limit,
+            pids_limit=256,
+            cpus=cpus,
+            tmpfs_size="128m",
+        ),
+        allowed_outbound=tuple(outbound),
+    )
+
+
+class SandboxInstanceKeyedTests(unittest.IsolatedAsyncioTestCase):
+    """Instance-keyed execution: sibling containers per agent, shared workspace,
+    private HOME/tmpfs, per-instance lifecycle and capacity."""
+
+    def _make_backend(self, tmpdir: Path, *, client=None, max_instances: int = 0) -> DockerBackend:
+        settings = AppSettings(
+            workspace_root_dir=str(tmpdir),
+            execution_backend_docker_max_instances=max_instances,
+        )
+        return DockerBackend(
+            settings,
+            skill_source_dirs_provider=lambda: [],
+            docker_client=client,
+        )
+
+    async def test_two_instances_one_session_two_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake)
+            backend.configure(_binding("sbx-a", agent="master", image="img-python:3"))
+            backend.configure(_binding("sbx-b", agent="delegate", image="img-node:22"))
+            await backend.ensure("sbx-a")
+            await backend.ensure("sbx-b")
+
+            self.assertEqual(len(fake.containers.run_calls), 2)
+            images = [call["image"] for call in fake.containers.run_calls]
+            self.assertEqual(sorted(images), ["img-node:22", "img-python:3"])
+            names = [call["name"] for call in fake.containers.run_calls]
+            self.assertEqual(len(set(names)), 2)
+            # Same shared workspace source for both siblings.
+            workspace = str(settings_session_workspace_dir(Path(tmp), "sess-1"))
+            for call in fake.containers.run_calls:
+                self.assertIn(workspace, call["volumes"])
+                self.assertEqual(call["volumes"][workspace]["bind"], workspace)
+            # HOME state dirs are distinct and bind to the container HOME.
+            home_targets = {
+                call["volumes"][str(Path(tmp).resolve() / ".covalent" / "sandbox-state" / "sess-1" / iid)]["bind"]
+                for iid, call in zip(("sbx-a", "sbx-b"), fake.containers.run_calls)
+            }
+            self.assertEqual(home_targets, {"/home/covalent"})
+            # Labels carry instance identity.
+            labels_a = fake.containers.run_calls[0]["labels"]
+            self.assertEqual(labels_a["covalent.sandbox-instance"], "sbx-a")
+            self.assertEqual(labels_a["covalent.agent"], "master")
+
+    async def test_per_instance_resources_and_tmpfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake)
+            backend.configure(_binding("sbx-big", mem_limit="1g", cpus=2.0))
+            await backend.ensure("sbx-big")
+            call = fake.containers.run_calls[0]
+            self.assertEqual(call["mem_limit"], "1g")
+            self.assertEqual(call["nano_cpus"], 2_000_000_000)
+            self.assertEqual(call["tmpfs"], {"/tmp": "size=128m"})
+
+    async def test_concurrent_ensure_creates_one_container(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake)
+            backend.configure(_binding("sbx-race"))
+            await asyncio.gather(backend.ensure("sbx-race"), backend.ensure("sbx-race"))
+            self.assertEqual(len(fake.containers.run_calls), 1)
+            self.assertEqual(backend.metrics_snapshot()["live_containers"], 1)
+
+    async def test_stop_instance_leaves_sibling_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake)
+            backend.configure(_binding("sbx-a"))
+            backend.configure(_binding("sbx-b"))
+            await backend.ensure("sbx-a")
+            await backend.ensure("sbx-b")
+
+            await backend.stop_instance("sbx-a")
+
+            self.assertTrue(fake.containers._by_name["covalent-sandbox-sess-1-sbx-a"].removed)
+            self.assertFalse(fake.containers._by_name["covalent-sandbox-sess-1-sbx-b"].removed)
+            self.assertTrue(await backend.is_alive("sbx-b"))
+            self.assertFalse(await backend.is_alive("sbx-a"))
+
+    async def test_stop_scope_removes_all_and_releases_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake, max_instances=2)
+            backend.configure(_binding("sbx-a"))
+            backend.configure(_binding("sbx-b"))
+            backend.configure(_binding("sbx-c", scope="sess-2"))
+            await backend.ensure("sbx-a")
+            await backend.ensure("sbx-b")
+
+            # Capacity is full (2/2): sbx-c queues until a scope-1 slot frees.
+            queued = asyncio.create_task(backend.ensure("sbx-c"))
+            await asyncio.sleep(0.05)
+            self.assertFalse(queued.done())
+            await backend.stop_scope("sess-1")
+            await asyncio.wait_for(queued, timeout=2.0)
+
+            self.assertTrue(fake.containers._by_name["covalent-sandbox-sess-1-sbx-a"].removed)
+            self.assertTrue(fake.containers._by_name["covalent-sandbox-sess-1-sbx-b"].removed)
+            self.assertEqual(backend.metrics_snapshot()["live_containers"], 1)
+
+    async def test_outbound_change_recreates_only_affected_instance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake)
+            backend.configure(_binding("sbx-a"))
+            backend.configure(_binding("sbx-b"))
+            await backend.ensure("sbx-a")
+            await backend.ensure("sbx-b")
+            old_a = fake.containers._by_name["covalent-sandbox-sess-1-sbx-a"]
+
+            backend.configure(_binding("sbx-a", outbound=("api.example.com",)))
+            await backend.ensure("sbx-a")
+
+            self.assertEqual(len(fake.containers.run_calls), 3)
+            self.assertEqual(fake.containers.run_calls[2]["network_mode"], "bridge")
+            self.assertTrue(old_a.removed)
+            # The sibling's container was untouched.
+            self.assertFalse(fake.containers._by_name["covalent-sandbox-sess-1-sbx-b"].removed)
+            self.assertEqual(fake.containers.run_calls[2]["name"], "covalent-sandbox-sess-1-sbx-a")
+
+    async def test_stateless_run_instance_has_no_session_label(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake)
+            backend.configure(_binding("sbx-run", scope="run-42", session_id=None))
+            await backend.ensure("sbx-run")
+            labels = fake.containers.run_calls[0]["labels"]
+            self.assertNotIn("covalent.session", labels)
+            self.assertEqual(labels["covalent.execution-scope"], "run-42")
+
+    async def test_recreate_removal_is_protected_by_instance_lock(self) -> None:
+        """Outbound-recreate removal must happen under the instance lock: a
+        concurrent ensure during the removal window must wait, not race a
+        same-name create into Docker's name-conflict path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _StrictNameClient()
+            backend = self._make_backend(Path(tmp), client=fake)
+            backend.configure(_binding("sbx-a"))
+            await backend.ensure("sbx-a")
+            fake.containers.removal_delay_seconds = 0.2
+
+            backend.configure(_binding("sbx-a", outbound=("api.example.com",)))
+            await asyncio.gather(backend.ensure("sbx-a"), backend.ensure("sbx-a"))
+
+            # Exactly one recreation; Docker never saw a name conflict.
+            self.assertEqual(len(fake.containers.run_calls), 2)
+            self.assertEqual(fake.containers.name_conflicts, 0)
+            self.assertEqual(backend.metrics_snapshot()["live_containers"], 1)
+            self.assertEqual(fake.containers.run_calls[1]["network_mode"], "bridge")
 
 
 class _FakeContainer:
@@ -457,6 +669,41 @@ class _FakeContainers:
 class _FakeDockerClient(types.SimpleNamespace):
     def __init__(self) -> None:
         super().__init__(containers=_FakeContainers())
+
+
+class _StrictNameContainers(_FakeContainers):
+    """Docker-accurate name handling: creating a container whose name is held
+    by a live container raises; removal can be slowed to widen the race
+    window."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.removal_delay_seconds = 0.0
+        self.name_conflicts = 0
+
+    def run(self, **kwargs):
+        name = kwargs.get("name", "anon")
+        existing = self._by_name.get(name)
+        if existing is not None and not existing.removed:
+            self.name_conflicts += 1
+            raise docker.errors.APIError(f"Conflict. The container name /{name} is already in use")
+        container = super().run(**kwargs)
+
+        original_remove = container.remove
+
+        def slow_remove(**kwargs2):
+            if self.removal_delay_seconds:
+                time.sleep(self.removal_delay_seconds)
+            original_remove(**kwargs2)
+
+        container.remove = slow_remove
+        return container
+
+
+class _StrictNameClient(_FakeDockerClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.containers = _StrictNameContainers()
 
 
 # --------------------------------------------------------------------------- #

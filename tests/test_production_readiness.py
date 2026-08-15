@@ -50,10 +50,10 @@ class _FailingBackend:
     def record_session(self, *args, **kwargs):
         pass
 
-    async def spawn_stream(self, command, *, cwd=None, env=None, session_id=None):
+    async def spawn_stream(self, command, *, cwd=None, env=None, session_id=None, sandbox_instance_id=None):
         raise BackendUnavailable("daemon down", cause=ConnectionError("refused"))
 
-    async def exec(self, command, *, cwd=None, env=None, timeout=None, session_id=None, stdin=None):
+    async def exec(self, command, *, cwd=None, env=None, timeout=None, session_id=None, sandbox_instance_id=None, stdin=None):
         raise BackendUnavailable("daemon down", cause=ConnectionError("refused"))
 
     async def ensure(self, session_id):

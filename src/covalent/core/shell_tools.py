@@ -101,9 +101,11 @@ async def _run_shell(
 
     command = [binary, "-c", script]
     executed_command = backend.rewrite_command(command)
-    session_id = context.session_id if context else None
+    instance_id = getattr(context, "sandbox_execution_key", None) or getattr(context, "session_id", None) if context else None
     try:
-        result = await backend.exec(command, cwd=cwd, env=None, timeout=timeout, session_id=session_id)
+        result = await backend.exec(
+            command, cwd=cwd, env=None, timeout=timeout, session_id=instance_id, sandbox_instance_id=instance_id
+        )
     except asyncio.TimeoutError as exc:
         raise RuntimeError(f"run_shell timed out after {timeout}s") from exc
     except BackendUnavailable as exc:

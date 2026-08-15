@@ -611,12 +611,20 @@ async def _import_management_payload(
     file_name: str | None,
     principal: ConsolePrincipalContext,
     request_metadata: RequestMetadata | None = None,
+    sandbox_profile_service: Any | None = None,
 ) -> ManagementImportResponse:
     parsed = _parse_management_upload(raw_text, file_name)
 
     if kind in {"agents", "mcp"}:
         raw_items = _extract_management_items(kind, parsed)
         validated = _validate_config_payload(kind, raw_items, settings)
+        if kind == "agents" and sandbox_profile_service is not None:
+            from .sandbox_profile_service import skill_runtime_lookup_from_registry
+            await sandbox_profile_service.validate_agent_selections(
+                validated,
+                workspace_id=principal.workspace_id,
+                skill_runtime_lookup=skill_runtime_lookup_from_registry(registry),
+            )
         saved = await config_store.save_document(kind, validated, principal=principal.config)
         await _apply_runtime_config(registry, config_store, settings, loader, execution_backend, kind, await config_store.get_document(kind))
         label = "agents" if kind == "agents" else "MCP services"
@@ -969,6 +977,7 @@ def _build_agent_specs(
                 skills=persisted.skills,
                 local_tools=[t for t in _dedupe_strings(persisted.local_tools) if t != "echo"],
                 allowed_outbound=_dedupe_strings(getattr(persisted, "allowed_outbound", []) or []),
+                sandbox_profile_id=getattr(persisted, "sandbox_profile_id", None),
                 delegate_agents=persisted.delegate_agents,
                 mcp_servers=resolved_mcp,
                 mcp_tools=persisted.mcp_tools,

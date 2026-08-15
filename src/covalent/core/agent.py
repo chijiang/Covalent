@@ -23,6 +23,9 @@ class AgentSpec(BaseModel):
     # these patterns are merged into SKILL_NET_ALLOW so the skill SDK enforces
     # them alongside the skill's own permissions.network.allow_outbound.
     allowed_outbound: list[str] = Field(default_factory=list)
+    # Administrator-approved sandbox profile (stable id). None resolves to the
+    # active default profile at binding time.
+    sandbox_profile_id: str | None = None
     delegate_agents: list[str] = Field(default_factory=list)
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     mcp_tools: list[McpToolReference] = Field(default_factory=list)

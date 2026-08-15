@@ -15,6 +15,8 @@ from covalent.api._auth_helpers import ConsoleAuthGuardMiddleware
 from covalent.api._shared import _sandbox_reaper_loop
 from covalent.application.services.invoke_service import _ApiTokenRunLimiter
 from covalent.application.services.management_service import build_registry
+from covalent.application.services.sandbox_binding_service import SandboxBindingService
+from covalent.application.services.sandbox_profile_service import SandboxProfileService
 from covalent.application.services.skill_service import (
     _reconcile_skill_process_manager,
     _sync_registry_skill_states,
@@ -23,6 +25,7 @@ from covalent.application.services.user_service import _seed_initial_admin_user
 from covalent.infra.config_store import ConfigStore
 from covalent.infra.db import DatabaseManager
 from covalent.infra.memory import PersistentSessionStore
+from covalent.infra.sandbox_repository import SandboxRepository
 from covalent.infra.settings import AppSettings
 from covalent.runtime.backend import make_backend
 from covalent.runtime.react import ReactAgentRuntime
@@ -98,6 +101,32 @@ async def lifespan(app: FastAPI):
     await _sync_registry_skill_states(registry, config_store)
     await _reconcile_skill_process_manager(registry, execution_backend)
 
+    # Sandbox binding resolution: every master/delegate run resolves its logical
+    # (execution scope, agent) sandbox through this service. The image validator
+    # port is attached later (Docker-backed validation adapter); without it,
+    # profile CRUD works but validation reports unavailable.
+    sandbox_repository = SandboxRepository(db_manager.session_factory)
+    sandbox_profile_service = SandboxProfileService(sandbox_repository, settings)
+
+    def _skill_runtime_lookup(skill_name: str) -> str | None:
+        spec = registry.manifest_skills.get(skill_name)
+        return spec.runtime.type if spec is not None and spec.runtime is not None else None
+
+    sandbox_binding_service = SandboxBindingService(
+        repository=sandbox_repository,
+        profile_service=sandbox_profile_service,
+        settings=settings,
+        execution_backend=execution_backend,
+        skill_runtime_lookup=_skill_runtime_lookup,
+        process_manager=getattr(registry, "skill_process_manager", None),
+    )
+    # First boot with an empty profile table seeds the compatibility default
+    # from the deployment's Docker settings (legacy_unverified, executable).
+    try:
+        await sandbox_profile_service.ensure_seeded()
+    except Exception:
+        logger.warning("Failed to seed the default sandbox profile", exc_info=True)
+
     app.state.settings = settings
     app.state.execution_backend = execution_backend
     app.state.db_manager = db_manager
@@ -106,10 +135,12 @@ async def lifespan(app: FastAPI):
     app.state.skill_loader = loader
     app.state.session_store = PersistentSessionStore(db_manager.session_factory)
     app.state.api_token_run_limiter = _ApiTokenRunLimiter(settings.api_token_max_concurrent_runs)
+    app.state.sandbox_binding_service = sandbox_binding_service
+    app.state.sandbox_profile_service = sandbox_profile_service
 
     # Reclaim sandbox containers orphaned by a previous run, then start a periodic
-    # reaper that removes containers whose session has been deleted. No-op for the
-    # FileSystem backend (list_sandbox_sessions returns []).
+    # reaper that stops idle instances and removes containers whose session (or
+    # run scope) no longer exists. No-op for the FileSystem backend.
     await execution_backend.startup_sweep()
     reaper_task = asyncio.create_task(
         _sandbox_reaper_loop(
@@ -117,6 +148,8 @@ async def lifespan(app: FastAPI):
             app.state.session_store,
             settings.execution_backend_docker_reaper_interval_seconds,
             settings.execution_backend_docker_idle_timeout_seconds,
+            process_manager=getattr(registry, "skill_process_manager", None),
+            sandbox_repository=sandbox_repository,
         )
     )
 
@@ -128,6 +161,7 @@ async def lifespan(app: FastAPI):
         context_compact_threshold=settings.context_compact_threshold,
         context_summary_model=settings.context_summary_model,
         enable_llm_summarization=settings.enable_llm_summarization,
+        binding_resolver=sandbox_binding_service,
     )
     app.state.agent_invocation = AgentInvocationService(registry, app.state.runtime)
 

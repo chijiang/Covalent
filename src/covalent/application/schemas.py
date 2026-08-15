@@ -538,3 +538,44 @@ class SkillManagementItemResponse(BaseModel):
     version: str = ""
     description: str = ""
     source: SkillManagementSourceResponse
+
+
+SandboxRuntimeCapability = Literal["python", "nodejs", "shell"]
+SandboxPullPolicy = Literal["never", "if_not_present", "always"]
+
+
+class SandboxProfileCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    image: str
+    pull_policy: SandboxPullPolicy = "if_not_present"
+    keepalive_command: list[str]
+    runtime_capabilities: list[SandboxRuntimeCapability]
+    contract_version: int = 1
+    memory_limit: str
+    pids_limit: int
+    cpus: float
+    tmpfs_size: str
+
+
+class SandboxProfileUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    image: str | None = None
+    pull_policy: SandboxPullPolicy | None = None
+    keepalive_command: list[str] | None = None
+    runtime_capabilities: list[SandboxRuntimeCapability] | None = None
+    contract_version: int | None = None
+    memory_limit: str | None = None
+    pids_limit: int | None = None
+    cpus: float | None = None
+    tmpfs_size: str | None = None
+    is_default: bool | None = None
+    enabled: bool | None = None
+
+
+class SandboxProfileValidationResponse(BaseModel):
+    status: Literal["pending", "valid", "invalid", "legacy_unverified"]
+    message: str | None = None
+    image_id: str | None = None
+    digest: str | None = None
