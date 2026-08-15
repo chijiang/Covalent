@@ -228,9 +228,16 @@ class SandboxProfileService:
             raise ServiceUnavailableError(
                 "image validation is unavailable: no Docker validation adapter is configured"
             )
-        result = await self._image_validator.validate(
-            {key: profile[key] for key in ("image", "pull_policy", "keepalive_command", "runtime_capabilities", "contract_version", "memory_limit", "pids_limit", "cpus", "tmpfs_size")}
-        )
+        try:
+            result = await self._image_validator.validate(
+                {key: profile[key] for key in ("image", "pull_policy", "keepalive_command", "runtime_capabilities", "contract_version", "memory_limit", "pids_limit", "cpus", "tmpfs_size")}
+            )
+        except Exception as exc:
+            if isinstance(exc, ServiceUnavailableError):
+                raise
+            # The validator raises BackendUnavailable when the daemon/registry
+            # is unreachable — surface as a clean 503 rather than a raw error.
+            raise ServiceUnavailableError(f"image validation is unavailable: {exc}") from exc
         status = result.get("status")
         if status not in ("valid", "invalid"):
             raise ServiceUnavailableError(f"image validator returned an unusable status: {status!r}")

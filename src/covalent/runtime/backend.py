@@ -65,6 +65,7 @@ class SandboxSpec:
     profile_id: str
     profile_revision: int
     image: str
+    pull_policy: str
     keepalive_command: tuple[str, ...]
     runtime_capabilities: frozenset[str]
     contract_version: int

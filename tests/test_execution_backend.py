@@ -13,6 +13,7 @@ def _sample_spec() -> SandboxSpec:
         profile_id="profile-python-312",
         profile_revision=3,
         image="covalent-sandbox:dev",
+        pull_policy="if_not_present",
         keepalive_command=("tail", "-f", "/dev/null"),
         runtime_capabilities=frozenset({"python", "shell"}),
         contract_version=1,

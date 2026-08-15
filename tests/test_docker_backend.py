@@ -288,8 +288,16 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             def get(self, _name):
                 raise docker.errors.APIError("daemon down")
 
+        class _DownImages:
+            def get(self, _name):
+                raise docker.errors.APIError("daemon down")
+
+            def pull(self, _name):
+                raise docker.errors.APIError("daemon down")
+
         class _DownClient(types.SimpleNamespace):
             containers = _DownContainers()
+            images = _DownImages()
 
         with tempfile.TemporaryDirectory() as tmp:
             backend = self._make_backend(Path(tmp), client=_DownClient())
@@ -419,6 +427,7 @@ def _binding(
             profile_id="profile-x",
             profile_revision=1,
             image=image,
+            pull_policy="if_not_present",
             keepalive_command=("tail", "-f", "/dev/null"),
             runtime_capabilities=frozenset({"python"}),
             contract_version=1,
@@ -666,9 +675,21 @@ class _FakeContainers:
         return result
 
 
+class _FakeImages:
+    def __init__(self) -> None:
+        self.pulls: list[str] = []
+
+    def get(self, name: str):
+        return types.SimpleNamespace(attrs={"Id": "sha256:fake", "RepoDigests": [f"{name}@sha256:fake"]})
+
+    def pull(self, name: str):
+        self.pulls.append(name)
+        return self.get(name)
+
+
 class _FakeDockerClient(types.SimpleNamespace):
     def __init__(self) -> None:
-        super().__init__(containers=_FakeContainers())
+        super().__init__(containers=_FakeContainers(), images=_FakeImages())
 
 
 class _StrictNameContainers(_FakeContainers):

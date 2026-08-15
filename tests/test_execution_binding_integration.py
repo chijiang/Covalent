@@ -76,6 +76,7 @@ class _RecordingResolver:
                 profile_id="default",
                 profile_revision=1,
                 image="covalent-sandbox:dev",
+                pull_policy="if_not_present",
                 keepalive_command=("tail", "-f", "/dev/null"),
                 runtime_capabilities=frozenset({"python", "shell"}),
                 contract_version=1,

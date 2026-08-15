@@ -54,6 +54,15 @@ class _FakeImageValidator:
         }
 
 
+class _DownImageValidator:
+    """Raises BackendUnavailable like a validator whose daemon is unreachable."""
+
+    async def validate(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        from covalent.runtime.backend import BackendUnavailable
+
+        raise BackendUnavailable("daemon down", cause=ConnectionError("refused"))
+
+
 def _create_request(**overrides: Any) -> SandboxProfileCreateRequest:
     payload: dict[str, Any] = {
         "name": "Python 3.12",
@@ -444,6 +453,21 @@ class SandboxProfileServiceTestCase(unittest.IsolatedAsyncioTestCase):
         assert disabled["enabled"] is False
         reenabled = await service.enable_profile(seeded["id"])
         assert reenabled["enabled"] is True
+
+    async def test_legacy_unverified_becomes_valid_after_explicit_validation(self) -> None:
+        service = self._service()
+        await service.ensure_seeded()
+        seeded = (await service.list_profiles())[0]
+        assert seeded["validation_status"] == "legacy_unverified"
+
+        validated = await self._service(validator=_FakeImageValidator()).validate_profile(seeded["id"])
+        assert validated["validation_status"] == "valid"
+
+    async def test_validator_daemon_down_maps_to_unavailable(self) -> None:
+        service = self._service(validator=_DownImageValidator())
+        created = await service.create_profile(_create_request())
+        with self.assertRaises(ServiceUnavailableError):
+            await service.validate_profile(created["id"])
 
 
 if __name__ == "__main__":

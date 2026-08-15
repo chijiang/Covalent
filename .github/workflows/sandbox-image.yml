@@ -1,19 +1,25 @@
 name: sandbox-image
 
-# Build and publish the covalent-sandbox image to GitHub Container Registry.
-# Triggers only when the sandbox image or its baked-in runners change (plus a
+# Build and publish the Covalent sandbox images to GitHub Container Registry.
+# Triggers only when a sandbox image or its baked-in runners change (plus a
 # manual dispatch). Uses the default GITHUB_TOKEN — no extra secret needed.
+#
+# The Python image (covalent-sandbox) is the compatibility/default; the Node
+# image (covalent-sandbox-node) backs nodejs profiles. Both bake the same
+# framework runners, so the matrix shares one build context.
 
 on:
   push:
     branches: [main]
     paths:
       - "Dockerfile.sandbox"
+      - "Dockerfile.sandbox.node"
       - "src/covalent/skills/runners/**"
       - ".github/workflows/sandbox-image.yml"
   pull_request:
     paths:
       - "Dockerfile.sandbox"
+      - "Dockerfile.sandbox.node"
       - "src/covalent/skills/runners/**"
       - ".github/workflows/sandbox-image.yml"
   workflow_dispatch:
@@ -25,6 +31,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: covalent-sandbox
+            file: Dockerfile.sandbox
+          - image: covalent-sandbox-node
+            file: Dockerfile.sandbox.node
     steps:
       - uses: actions/checkout@v4
 
@@ -42,7 +55,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/covalent-sandbox
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-,format=short
@@ -51,7 +64,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.sandbox
+          file: ${{ matrix.file }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -204,6 +204,7 @@ class DockerBackend(ExecutionBackend):
             profile_id="default",
             profile_revision=1,
             image=self._image,
+            pull_policy="if_not_present",
             keepalive_command=("tail", "-f", "/dev/null"),
             runtime_capabilities=frozenset({"python", "shell"}),
             contract_version=1,
@@ -589,6 +590,7 @@ class DockerBackend(ExecutionBackend):
         client = self._api()
         spec = binding.spec
         target = binding.target
+        self._ensure_image(spec.image, spec.pull_policy)
         volumes = self._build_volumes(target)
         state_dir = self._instance_state_dir(binding)
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -664,6 +666,22 @@ class DockerBackend(ExecutionBackend):
             / _safe_name(target.execution_scope_id)
             / _safe_name(target.sandbox_instance_id)
         )
+
+    def _ensure_image(self, image: str, pull_policy: str) -> None:
+        """Resolve the instance's image per its pinned pull policy. Raises
+        ``BackendUnavailable`` for daemon/registry failures (translated by
+        ``_translate_unavailable`` at the call site)."""
+        client = self._api()
+        if pull_policy == "never":
+            client.images.get(image)
+            return
+        if pull_policy == "always":
+            client.images.pull(image)
+            return
+        try:
+            client.images.get(image)
+        except (docker.errors.ImageNotFound, docker.errors.NotFound):
+            client.images.pull(image)
 
     async def is_alive(self, sandbox_instance_id: str) -> bool:
         container = self._containers.get(sandbox_instance_id)

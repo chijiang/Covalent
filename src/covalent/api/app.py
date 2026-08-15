@@ -29,6 +29,7 @@ from covalent.infra.sandbox_repository import SandboxRepository
 from covalent.infra.settings import AppSettings
 from covalent.runtime.backend import make_backend
 from covalent.runtime.react import ReactAgentRuntime
+from covalent.runtime.sandbox_image_validator import DockerImageValidator
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,9 @@ async def lifespan(app: FastAPI):
     # port is attached later (Docker-backed validation adapter); without it,
     # profile CRUD works but validation reports unavailable.
     sandbox_repository = SandboxRepository(db_manager.session_factory)
-    sandbox_profile_service = SandboxProfileService(sandbox_repository, settings)
+    sandbox_profile_service = SandboxProfileService(
+        sandbox_repository, settings, image_validator=DockerImageValidator(settings)
+    )
 
     def _skill_runtime_lookup(skill_name: str) -> str | None:
         spec = registry.manifest_skills.get(skill_name)

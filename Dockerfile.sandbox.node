@@ -1,0 +1,16 @@
+# Covalent Node sandbox image — Node runtime for the sandbox contract.
+#
+# The Python image (Dockerfile.sandbox) remains the compatibility/default;
+# this adds a Node variant so a nodejs profile can run its native runtime.
+# Both share the same framework runners baked at /runners/; the backend
+# rewrites the host runner path to /runners/<name> at exec time.
+#
+# Build:  docker build -t covalent-sandbox-node:dev -f Dockerfile.sandbox.node .
+
+FROM node:22-alpine
+
+# Framework runners baked into the image (python_runner.py + node_runner.js).
+COPY src/covalent/skills/runners/ /runners/
+
+# Keep the container alive; the backend execs skill runners into it.
+CMD ["tail", "-f", "/dev/null"]
