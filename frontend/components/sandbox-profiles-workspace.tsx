@@ -6,9 +6,11 @@ import {
   Box,
   Check,
   Layers,
+  Pencil,
   Plus,
   RefreshCw,
   ShieldCheck,
+  Star,
   Trash2,
 } from "lucide-react";
 
@@ -26,11 +28,13 @@ import {
   disableSandboxProfile,
   enableSandboxProfile,
   listSandboxProfiles,
+  updateSandboxProfile,
   validateSandboxProfile,
 } from "@/lib/client-api";
 import type {
   SandboxProfile,
   SandboxProfileCreateRequest,
+  SandboxProfileUpdateRequest,
   SandboxRuntimeCapability,
 } from "@/lib/types";
 
@@ -66,6 +70,7 @@ export function SandboxProfilesWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
   const [showForm, setShowForm] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<SandboxProfile | null>(null);
   const isMountedRef = useRef(true);
 
   // Create form state
@@ -125,39 +130,74 @@ export function SandboxProfilesWorkspace() {
     [refresh],
   );
 
-  const handleCreate = useCallback(async () => {
+  const resetForm = useCallback(() => {
+    setName("");
+    setImage("");
+    setMemoryLimit("512m");
+    setPidsLimit("256");
+    setCpus("1.0");
+    setTmpfsSize("128m");
+    setCapabilities(new Set(["python", "shell"]));
+    setEditingProfile(null);
+  }, []);
+
+  const handleSubmit = useCallback(async () => {
     if (!name.trim() || !image.trim()) {
       setError("Profile name and image are required.");
       return;
     }
-    const request: SandboxProfileCreateRequest = {
-      name: name.trim(),
-      image: image.trim(),
-      keepalive_command: ["tail", "-f", "/dev/null"],
-      runtime_capabilities: [...capabilities],
-      memory_limit: memoryLimit.trim(),
-      pids_limit: Number.parseInt(pidsLimit, 10) || 256,
-      cpus: Number.parseFloat(cpus) || 1.0,
-      tmpfs_size: tmpfsSize.trim(),
-    };
-    setBusyIds((current) => new Set(current).add("__create__"));
+    setBusyIds((current) => new Set(current).add("__form__"));
     try {
       setError(null);
-      await createSandboxProfile(request);
-      setName("");
-      setImage("");
+      if (editingProfile) {
+        const request: SandboxProfileUpdateRequest = {
+          name: name.trim(),
+          image: image.trim(),
+          runtime_capabilities: [...capabilities],
+          memory_limit: memoryLimit.trim(),
+          pids_limit: Number.parseInt(pidsLimit, 10) || 256,
+          cpus: Number.parseFloat(cpus) || 1.0,
+          tmpfs_size: tmpfsSize.trim(),
+        };
+        await updateSandboxProfile(editingProfile.id, request);
+      } else {
+        const request: SandboxProfileCreateRequest = {
+          name: name.trim(),
+          image: image.trim(),
+          keepalive_command: ["tail", "-f", "/dev/null"],
+          runtime_capabilities: [...capabilities],
+          memory_limit: memoryLimit.trim(),
+          pids_limit: Number.parseInt(pidsLimit, 10) || 256,
+          cpus: Number.parseFloat(cpus) || 1.0,
+          tmpfs_size: tmpfsSize.trim(),
+        };
+        await createSandboxProfile(request);
+      }
+      resetForm();
       setShowForm(false);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create profile");
+      setError(err instanceof Error ? err.message : "Failed to save profile");
     } finally {
       setBusyIds((current) => {
         const next = new Set(current);
-        next.delete("__create__");
+        next.delete("__form__");
         return next;
       });
     }
-  }, [name, image, memoryLimit, pidsLimit, cpus, tmpfsSize, capabilities, refresh]);
+  }, [name, image, memoryLimit, pidsLimit, cpus, tmpfsSize, capabilities, editingProfile, resetForm, refresh]);
+
+  const startEditing = useCallback((profile: SandboxProfile) => {
+    setEditingProfile(profile);
+    setName(profile.name);
+    setImage(profile.image);
+    setMemoryLimit(profile.memory_limit);
+    setPidsLimit(String(profile.pids_limit));
+    setCpus(String(profile.cpus));
+    setTmpfsSize(profile.tmpfs_size);
+    setCapabilities(new Set(profile.runtime_capabilities || []));
+    setShowForm(true);
+  }, []);
 
   const toggleCapability = useCallback((value: SandboxRuntimeCapability) => {
     setCapabilities((current) => {
@@ -185,7 +225,16 @@ export function SandboxProfilesWorkspace() {
         <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
           <RefreshCw className={refreshing ? "mr-2 size-4 animate-spin" : "mr-2 size-4"} /> Refresh
         </Button>
-        <Button variant="default" size="sm" onClick={() => setShowForm((value) => !value)}>
+        <Button
+          variant="default"
+          size="sm"
+          onClick={() => {
+            if (!showForm) {
+              resetForm();
+            }
+            setShowForm((value) => !value);
+          }}
+        >
           <Plus className="mr-2 size-4" /> New profile
         </Button>
       </PageHeaderActions>
@@ -201,9 +250,10 @@ export function SandboxProfilesWorkspace() {
         <ConsolePanel className="shrink-0 overflow-visible">
           <div className="console-panel-header">
             <div>
-              <h2 className="panel-title text-base">Create sandbox profile</h2>
+              <h2 className="panel-title text-base">{editingProfile ? `Edit ${editingProfile.name}` : "Create sandbox profile"}</h2>
               <p className="text-muted-foreground mt-1 text-sm">
                 Profiles are validated before they can be enabled; only administrator-approved images satisfy the sandbox contract.
+                {editingProfile ? " Runtime-affecting edits create a new candidate revision; existing sessions keep their pinned snapshot." : ""}
               </p>
             </div>
           </div>
@@ -250,11 +300,18 @@ export function SandboxProfilesWorkspace() {
             </div>
           </div>
           <div className="mt-4 flex justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => setShowForm(false)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                resetForm();
+                setShowForm(false);
+              }}
+            >
               Cancel
             </Button>
-            <Button size="sm" onClick={() => void handleCreate()} disabled={busyIds.has("__create__")}>
-              Create profile
+            <Button size="sm" onClick={() => void handleSubmit()} disabled={busyIds.has("__form__")}>
+              {editingProfile ? "Save changes" : "Create profile"}
             </Button>
           </div>
         </ConsolePanel>
@@ -345,6 +402,17 @@ export function SandboxProfilesWorkspace() {
                           <div className="flex justify-end gap-1">
                             <Button
                               type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              title="Edit profile"
+                              aria-label="Edit profile"
+                              onClick={() => startEditing(profile)}
+                              disabled={busy}
+                            >
+                              <Pencil className="size-4" />
+                            </Button>
+                            <Button
+                              type="button"
                               variant="outline"
                               size="sm"
                               onClick={() => void runAction(profile.id, validateSandboxProfile)}
@@ -353,12 +421,30 @@ export function SandboxProfilesWorkspace() {
                             >
                               <Check className="mr-1 size-3" /> Validate
                             </Button>
+                            {profile.enabled && !profile.is_default && profile.validation_status === "valid" ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                  void runAction(profile.id, (id) => updateSandboxProfile(id, { is_default: true }))
+                                }
+                                disabled={busy}
+                                title="Make this the default profile for the workspace"
+                              >
+                                <Star className="mr-1 size-3" /> Default
+                              </Button>
+                            ) : null}
                             {profile.enabled ? (
                               <Button
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                onClick={() => void runAction(profile.id, disableSandboxProfile)}
+                                onClick={() => {
+                                  if (window.confirm(`Disable ${profile.name}? This stops its live containers (emergency revocation).`)) {
+                                    void runAction(profile.id, disableSandboxProfile);
+                                  }
+                                }}
                                 disabled={busy}
                               >
                                 Disable

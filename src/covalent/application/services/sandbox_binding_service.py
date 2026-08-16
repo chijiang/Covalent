@@ -354,13 +354,24 @@ class SandboxBindingService:
             )
 
     async def reset_instance(self, sandbox_instance_id: str) -> bool:
-        """Stop the container and delete one logical binding. The next run for
-        this (scope, agent) re-resolves the agent's current profile."""
+        """Stop the container, evict warm processes, remove the instance's
+        private state, and delete the logical binding. The next run for this
+        (scope, agent) generates a NEW instance id and re-resolves the agent's
+        current profile, so leaving the old state dir would orphan it."""
         row = await self._find_binding(sandbox_instance_id)
         if row is None:
             return False
         await self._stop_instance_container(sandbox_instance_id)
+        self._remove_instance_state_dir(str(row["execution_scope_id"]), sandbox_instance_id)
         return await self._repository.delete_binding(sandbox_instance_id)
+
+    def _remove_instance_state_dir(self, execution_scope_id: str, sandbox_instance_id: str) -> None:
+        safe = "".join(
+            char if (char.isalnum() or char in "._-") else "-" for char in sandbox_instance_id.strip()
+        ).strip(".-") or "instance"
+        instance_state = self._scope_state_root(execution_scope_id) / safe
+        if instance_state.exists():
+            shutil.rmtree(instance_state, ignore_errors=True)
 
     async def stop_instance(self, sandbox_instance_id: str) -> bool:
         """Stop the instance's live container (evicting warm skill processes)

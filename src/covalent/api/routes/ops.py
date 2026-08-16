@@ -10,7 +10,7 @@ from sqlalchemy import text
 from typing import Any
 
 from covalent.api._auth_helpers import _resolve_console_principal
-from covalent.api._shared import _augment_sandbox_snapshot
+from covalent.api._shared import _augment_sandbox_snapshot, _record_audit_log
 from covalent.application.services.audit_service import AuditLogEntry, list_audit_logs as _list_audit_logs
 from covalent.application.schemas import AuditLogResponse
 from covalent.infra.db import DatabaseManager
@@ -109,6 +109,14 @@ async def stop_sandbox_instance(request: Request, sandbox_instance_id: str) -> d
     stopped = await _binding_service(request).stop_instance(sandbox_instance_id)
     if not stopped:
         raise HTTPException(status_code=404, detail=f"Unknown sandbox instance: {sandbox_instance_id}")
+    await _record_audit_log(
+        request.app.state.db_manager,
+        action="sandbox.instance.stopped",
+        target_type="sandbox_instance",
+        target_id=sandbox_instance_id,
+        principal=principal,
+        request=request,
+    )
     return {"status": "stopped", "sandbox_instance_id": sandbox_instance_id}
 
 
@@ -123,6 +131,14 @@ async def reset_sandbox_instance(request: Request, sandbox_instance_id: str) -> 
     reset = await _binding_service(request).reset_instance(sandbox_instance_id)
     if not reset:
         raise HTTPException(status_code=404, detail=f"Unknown sandbox instance: {sandbox_instance_id}")
+    await _record_audit_log(
+        request.app.state.db_manager,
+        action="sandbox.instance.reset",
+        target_type="sandbox_instance",
+        target_id=sandbox_instance_id,
+        principal=principal,
+        request=request,
+    )
     return {"status": "reset", "sandbox_instance_id": sandbox_instance_id}
 
 @router.get("/audit-logs")

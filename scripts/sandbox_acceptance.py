@@ -13,6 +13,7 @@ outbound keeping network_mode=none, and stateless run-scope cleanup.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -75,9 +76,21 @@ async def _await_exec(backend: DockerBackend, instance: str, command: list[str],
 
 
 async def main() -> None:
-    tmp = tempfile.mkdtemp(prefix="covalent-acceptance-")
+    with tempfile.TemporaryDirectory(prefix="covalent-acceptance-") as tmp:
+        await _run_acceptance(tmp)
+
+
+async def _run_acceptance(tmp: str) -> None:
     settings = AppSettings(workspace_root_dir=tmp, execution_backend_kind="docker")
     backend = DockerBackend(settings, skill_source_dirs_provider=lambda: [])
+    try:
+        await _acceptance_backend_checks(tmp, backend)
+    finally:
+        await backend.aclose()
+
+
+async def _acceptance_backend_checks(tmp: str, backend: DockerBackend) -> None:
+    settings = AppSettings(workspace_root_dir=tmp, execution_backend_kind="docker")
     py = _binding("sbx-acc-py", "master", _spec(PY_IMAGE, frozenset({"python", "shell"})))
     node = _binding("sbx-acc-node", "delegate", _spec(NODE_IMAGE, frozenset({"nodejs", "shell"})))
     backend.configure(py)
@@ -173,9 +186,106 @@ async def main() -> None:
         _fail("node container survived scope teardown")
     print("PASS: execution-scope teardown")
 
-    await backend.aclose()
+    # 9. Binding-service cleanup semantics (needs a database): reset removes
+    # the instance-private state; stateless cleanup removes state + workspace.
+    database_url = os.environ.get("AGENT_FRAMEWORK_DATABASE_URL")
+    if database_url:
+        await _acceptance_binding_service_checks(tmp, database_url)
+    else:
+        print("SKIP: binding-service cleanup checks (set AGENT_FRAMEWORK_DATABASE_URL to enable)")
+
     print("\nALL ACCEPTANCE CHECKS PASSED")
 
 
+async def _acceptance_binding_service_checks(workspace_root: str, database_url: str) -> None:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from covalent.application.services.sandbox_binding_service import SandboxBindingService
+    from covalent.application.services.sandbox_profile_service import SandboxProfileService
+    from covalent.infra.sandbox_repository import SandboxRepository
+
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    repository = SandboxRepository(session_factory)
+    settings = AppSettings(workspace_root_dir=workspace_root)
+    service = SandboxBindingService(
+        repository=repository,
+        profile_service=SandboxProfileService(repository, settings),
+        settings=settings,
+        execution_backend=None,
+    )
+    scope = "acceptance-bind-1"
+    run_scope = "acceptance-run-bind-1"
+    try:
+        await SandboxProfileService(repository, settings).ensure_seeded()
+        await repository.ensure_session_row(scope)
+        await repository.create_binding(
+            {
+                "id": "sbx-acc-bind",
+                "execution_scope_id": scope,
+                "session_id": scope,
+                "scope_kind": "session",
+                "agent_name": "master",
+                "profile_id": "default",
+                "profile_name_snapshot": "default",
+                "profile_revision": 1,
+                "spec_snapshot": {"profile_id": "default", "profile_revision": 1, "image": PY_IMAGE},
+                "allowed_outbound_snapshot": [],
+            }
+        )
+        state_root = Path(workspace_root).resolve() / ".covalent" / "sandbox-state" / scope / "sbx-acc-bind"
+        state_root.mkdir(parents=True, exist_ok=True)
+        (state_root / "cache.txt").write_text("private")
+
+        if not await service.reset_instance("sbx-acc-bind"):
+            _fail("reset_instance returned False for a live binding")
+        if state_root.exists():
+            _fail(f"reset_instance left the private state dir behind: {state_root}")
+        if await repository.get_binding(scope, "master") is not None:
+            _fail("reset_instance left the binding row behind")
+        print("PASS: reset removes binding + private state")
+
+        # Stateless cleanup removes the temporary workspace and every binding.
+        run_workspace = settings.session_workspace_dir(run_scope)
+        run_workspace.mkdir(parents=True, exist_ok=True)
+        await repository.create_binding(
+            {
+                "id": "sbx-acc-runbind",
+                "execution_scope_id": run_scope,
+                "session_id": None,
+                "scope_kind": "run",
+                "agent_name": "master",
+                "profile_id": "default",
+                "profile_name_snapshot": "default",
+                "profile_revision": 1,
+                "spec_snapshot": {"profile_id": "default", "profile_revision": 1, "image": PY_IMAGE},
+                "allowed_outbound_snapshot": [],
+            }
+        )
+        await service.cleanup_stateless_run(run_scope)
+        if run_workspace.exists():
+            _fail("cleanup_stateless_run left the temporary workspace behind")
+        if await repository.list_bindings_by_scope(run_scope):
+            _fail("cleanup_stateless_run left binding rows behind")
+        print("PASS: stateless cleanup removes bindings + temporary workspace")
+    finally:
+        await repository.delete_bindings_by_scope(scope)
+        await repository.delete_bindings_by_scope(run_scope)
+        await engine.dispose()
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    finally:
+        import shutil as _shutil
+        import glob as _glob
+        # Defensive: report (not silently leak) any acceptance leftovers.
+        leftovers = _glob.glob("/tmp/covalent-acceptance-*") + _glob.glob(
+            f"{__import__('tempfile').gettempdir()}/covalent-acceptance-*"
+        )
+        for leftover in leftovers:
+            _shutil.rmtree(leftover, ignore_errors=True)
+        if leftovers:
+            print(f"cleaned {len(leftovers)} leftover acceptance dir(s)")

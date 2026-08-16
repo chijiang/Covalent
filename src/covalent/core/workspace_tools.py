@@ -597,39 +597,43 @@ def _edit_workspace_file(settings: Any, context: Any, args: dict[str, Any]) -> s
     target = _resolve_workspace_path(root, str(args.get("path", "")), must_exist=True)
     if not target.is_file():
         raise ValueError(f"Workspace path is not a file: {_relative_path(root, target)}")
-    original = _read_text_file(target)
-    expected_sha256 = str(args.get("expected_sha256") or "").strip()
-    if expected_sha256:
-        actual_sha256 = _sha256_text(original)
-        if actual_sha256 != expected_sha256:
-            raise ValueError("File content does not match expected_sha256")
 
     mode = str(args.get("mode", ""))
     new_text = str(args.get("new_text", ""))
-    replacements = 0
-    if mode == "replace_text":
-        old_text = args.get("old_text")
-        if not isinstance(old_text, str) or old_text == "":
-            raise ValueError("old_text is required for replace_text")
-        occurrences = original.count(old_text)
-        if occurrences != 1:
-            raise ValueError(f"old_text must match exactly once; found {occurrences} matches")
-        updated = original.replace(old_text, new_text, 1)
-        replacements = 1
-    elif mode == "replace_range":
-        updated = _replace_text_range(
-            original,
-            _required_positive_int(args, "start_line"),
-            _required_positive_int(args, "start_column"),
-            _required_positive_int(args, "end_line"),
-            _required_positive_int(args, "end_column"),
-            new_text,
-        )
-        replacements = 1
-    else:
-        raise ValueError("mode must be 'replace_text' or 'replace_range'")
-
+    # The lock covers the WHOLE read-check-modify-write transaction: reading
+    # outside it would let two agents observe the same base content and
+    # silently drop the first writer's change.
     with _WorkspacePathLock(target):
+        original = _read_text_file(target)
+        expected_sha256 = str(args.get("expected_sha256") or "").strip()
+        if expected_sha256:
+            actual_sha256 = _sha256_text(original)
+            if actual_sha256 != expected_sha256:
+                raise ValueError("File content does not match expected_sha256")
+
+        replacements = 0
+        if mode == "replace_text":
+            old_text = args.get("old_text")
+            if not isinstance(old_text, str) or old_text == "":
+                raise ValueError("old_text is required for replace_text")
+            occurrences = original.count(old_text)
+            if occurrences != 1:
+                raise ValueError(f"old_text must match exactly once; found {occurrences} matches")
+            updated = original.replace(old_text, new_text, 1)
+            replacements = 1
+        elif mode == "replace_range":
+            updated = _replace_text_range(
+                original,
+                _required_positive_int(args, "start_line"),
+                _required_positive_int(args, "start_column"),
+                _required_positive_int(args, "end_line"),
+                _required_positive_int(args, "end_column"),
+                new_text,
+            )
+            replacements = 1
+        else:
+            raise ValueError("mode must be 'replace_text' or 'replace_range'")
+
         _atomic_write_bytes(target, updated.encode("utf-8"))
     return json.dumps(
         {

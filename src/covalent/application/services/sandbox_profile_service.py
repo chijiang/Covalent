@@ -247,25 +247,7 @@ class SandboxProfileService:
         self, profile_id: str, workspace_id: str | None = None
     ) -> dict[str, Any]:
         profile = await self.get_profile(profile_id, workspace_id)
-        if self._image_validator is None:
-            raise ServiceUnavailableError(
-                "image validation is unavailable: no Docker validation adapter is configured"
-            )
-        try:
-            result = await self._image_validator.validate(
-                {key: profile[key] for key in ("image", "pull_policy", "keepalive_command", "runtime_capabilities", "contract_version", "memory_limit", "pids_limit", "cpus", "tmpfs_size")}
-            )
-        except Exception as exc:
-            if isinstance(exc, ServiceUnavailableError):
-                raise
-            # The validator raises BackendUnavailable when the daemon/registry
-            # is unreachable — surface as a clean 503 (with the message
-            # sanitized) rather than a raw, potentially credential-bearing error.
-            from covalent.runtime.sandbox_image_validator import sanitize_error_message
-
-            raise ServiceUnavailableError(
-                f"image validation is unavailable: {sanitize_error_message(str(exc))}"
-            ) from exc
+        result = await self._run_image_validation(profile)
         status = result.get("status")
         if status not in ("valid", "invalid"):
             raise ServiceUnavailableError(f"image validator returned an unusable status: {status!r}")
@@ -380,39 +362,61 @@ class SandboxProfileService:
             updates["enabled"] = False
             disabled_via_update = True
 
+        promote_to_default = False
         if changes.get("is_default"):
             if updates.get("validation_status", current["validation_status"]) not in EXECUTABLE_STATUSES:
                 raise ConflictError("profile cannot be the default until image validation succeeds")
             if not updates.get("enabled", current["enabled"]):
                 raise ConflictError("profile cannot be the default while disabled")
-            updates["is_default"] = True
+            promote_to_default = True
         elif changes.get("is_default") is False:
             updates["is_default"] = False
 
-        if not updates:
+        if not updates and not promote_to_default:
             return current
 
-        if updates.get("is_default"):
-            await self._demote_other_defaults(profile_id, current["workspace_id"])
-
         updated = await self._repository.update_profile(profile_id, updates)
+        assert updated is not None
+        if promote_to_default:
+            # Demote the previous default and promote this profile in one
+            # transaction — a failure or concurrent switch can never leave
+            # zero or multiple defaults in the availability scope.
+            promoted = await self._repository.set_default_profile(profile_id, current["workspace_id"])
+            assert promoted
+            updated = await self._repository.get_profile(profile_id)
+            assert updated is not None
         assert updated is not None
         if disabled_via_update and current["enabled"]:
             await self._notify_profile_disabled(profile_id)
         return updated
 
-    async def _validate_candidate(self, candidate: dict[str, Any]) -> dict[str, Any]:
+    async def _run_image_validation(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        """Run the image validator with daemon-unavailable failures mapped to
+        a clean, sanitized 503 — shared by the explicit validate path and the
+        enabled-profile candidate-update path."""
         if self._image_validator is None:
             raise ServiceUnavailableError(
-                "candidate validation is unavailable: no Docker validation adapter is configured; "
+                "image validation is unavailable: no Docker validation adapter is configured"
+            )
+        try:
+            return await self._image_validator.validate(candidate)
+        except Exception as exc:
+            if isinstance(exc, ServiceUnavailableError):
+                raise
+            from covalent.runtime.sandbox_image_validator import sanitize_error_message
+
+            raise ServiceUnavailableError(
+                f"image validation is unavailable: {sanitize_error_message(str(exc))}"
+            ) from exc
+
+    async def _validate_candidate(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await self._run_image_validation(candidate)
+        except ServiceUnavailableError:
+            raise ServiceUnavailableError(
+                "candidate validation is unavailable (Docker daemon/registry unreachable); "
                 "the active revision is unchanged"
             )
-        return await self._image_validator.validate(candidate)
-
-    async def _demote_other_defaults(self, profile_id: str, workspace_id: str | None) -> None:
-        for profile in await self._repository.list_profiles():
-            if profile["id"] != profile_id and profile["is_default"] and profile["workspace_id"] == workspace_id:
-                await self._repository.update_profile(profile["id"], {"is_default": False})
 
     async def enable_profile(self, profile_id: str, workspace_id: str | None = None) -> dict[str, Any]:
         return await self.update_profile(

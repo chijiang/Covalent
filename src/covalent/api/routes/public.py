@@ -194,7 +194,9 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
                 # shielded from client-disconnect cancellation: a cancelled
                 # yield/await inside this finally would otherwise leak the
                 # stateless sandbox, its bindings, and the concurrency slot.
-                async with anyio.CancelScope(shield=True):
+                # (CancelScope is a sync context manager; awaits inside the
+                # shielded scope are what it protects.)
+                with anyio.CancelScope(shield=True):
                     try:
                         await _record_public_agent_run(
                             db_manager,
@@ -264,9 +266,10 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
         )
         raise HTTPException(status_code=status_code, detail=exc.detail) from exc
     finally:
-        await _cleanup_stateless_scope()
-        if limiter is not None:
-            await limiter.release(principal.token_id)
+        with anyio.CancelScope(shield=True):
+            await _cleanup_stateless_scope()
+            if limiter is not None:
+                await limiter.release(principal.token_id)
 
     latency_ms = int((perf_counter() - started) * 1000)
     usage = result.usage.model_dump(mode="json") if result.usage is not None else {}

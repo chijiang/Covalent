@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -127,6 +127,32 @@ class SandboxRepository:
                 )
             ).scalar_one()
             return {"agents": int(agent_count), "instances": int(instance_count)}
+
+    async def set_default_profile(self, profile_id: str, workspace_id: str | None) -> bool:
+        """Promote one profile to default and demote the previous default of the
+        same availability scope in ONE transaction — a failure or concurrent
+        switch can never leave zero or multiple defaults."""
+        async with self._session_factory() as session:
+            async with session.begin():
+                row = await session.get(SandboxProfileRow, profile_id)
+                if row is None:
+                    return False
+                scope_clause = (
+                    SandboxProfileRow.workspace_id.is_(None)
+                    if workspace_id is None
+                    else SandboxProfileRow.workspace_id == workspace_id
+                )
+                await session.execute(
+                    update(SandboxProfileRow)
+                    .where(
+                        SandboxProfileRow.is_default.is_(True),
+                        scope_clause,
+                        SandboxProfileRow.id != profile_id,
+                    )
+                    .values(is_default=False)
+                )
+                row.is_default = True
+                return True
 
     # --- bindings ---------------------------------------------------------
 
