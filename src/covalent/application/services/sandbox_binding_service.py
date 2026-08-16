@@ -138,6 +138,7 @@ class SandboxBindingService:
         row = await self._repository.get_binding(execution_scope_id, agent.name)
         if row is not None:
             binding = _binding_from_row(row)
+            await self._check_profile_revoked(binding)
             binding = await self._reevaluate_outbound(binding, agent)
         else:
             binding = await self._create_binding(
@@ -156,6 +157,17 @@ class SandboxBindingService:
             self._execution_backend.configure(binding)
         await self._repository.touch_binding(binding.target.sandbox_instance_id)
         return binding
+
+    async def _check_profile_revoked(self, binding: SandboxBinding) -> None:
+        """Emergency-revocation guard for existing bindings: disabling a profile
+        must also block lazy recreation of containers pinned to it. Re-enabling
+        the profile permits recreation from the saved snapshot."""
+        profile = await self._repository.get_profile(binding.spec.profile_id)
+        if profile is None or not profile["enabled"]:
+            raise ConflictError(
+                f"sandbox profile '{binding.spec.profile_id}' is disabled; "
+                "instance recreation is blocked until it is re-enabled"
+            )
 
     async def _reevaluate_outbound(self, binding: SandboxBinding, agent: AgentSpec) -> SandboxBinding:
         """Outbound policy is security policy, not environment identity: it is
@@ -349,6 +361,16 @@ class SandboxBindingService:
             return False
         await self._stop_instance_container(sandbox_instance_id)
         return await self._repository.delete_binding(sandbox_instance_id)
+
+    async def stop_instance(self, sandbox_instance_id: str) -> bool:
+        """Stop the instance's live container (evicting warm skill processes)
+        but keep the logical binding, so the next run recreates the container
+        from the saved spec. Returns False when no binding exists."""
+        row = await self._find_binding(sandbox_instance_id)
+        if row is None:
+            return False
+        await self._stop_instance_container(sandbox_instance_id)
+        return True
 
     async def _find_binding(self, sandbox_instance_id: str) -> dict[str, Any] | None:
         for row in await self._repository.list_all_bindings():

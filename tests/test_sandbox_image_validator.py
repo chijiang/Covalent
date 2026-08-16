@@ -10,7 +10,7 @@ import docker
 
 from covalent.infra.settings import AppSettings
 from covalent.runtime.backend import BackendUnavailable
-from covalent.runtime.sandbox_image_validator import DockerImageValidator
+from covalent.runtime.sandbox_image_validator import DockerImageValidator, sanitize_error_message
 
 
 def _candidate(**overrides: object) -> dict[str, object]:
@@ -190,6 +190,27 @@ class DockerImageValidatorTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(BackendUnavailable):
             await validator.validate(_candidate())
+
+
+class SanitizerTests(unittest.TestCase):
+    def test_redacts_credential_patterns(self) -> None:
+        cleaned = sanitize_error_message(
+            "pull failed: authorization: hunter2 (bearer abc.def.ghi) and password=s3cret tail"
+        )
+        self.assertNotIn("hunter2", cleaned)
+        self.assertNotIn("abc.def.ghi", cleaned)
+        self.assertNotIn("s3cret", cleaned)
+        self.assertIn("<redacted>", cleaned)
+
+    def test_bearer_pattern_does_not_crash(self) -> None:
+        # Regression: the bearer pattern has no capture group beyond the label;
+        # sanitizing a bearer-bearing message must not raise.
+        cleaned = sanitize_error_message("registry denied: Bearer eyJhbGciOi.payload.sig")
+        self.assertIn("Bearer <redacted>", cleaned)
+
+    def test_caps_message_length(self) -> None:
+        cleaned = sanitize_error_message("x" * 10_000)
+        self.assertLessEqual(len(cleaned), 500)
 
 
 if __name__ == "__main__":

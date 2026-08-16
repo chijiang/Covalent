@@ -28,6 +28,9 @@ import type {
   McpInspectResponse,
   McpServerConfig,
   SandboxStatus,
+  SandboxProfile,
+  SandboxProfileCreateRequest,
+  SandboxProfileUpdateRequest,
   McpToolCallResponse,
   ManagementExportFormat,
   ManagementExportResponse,
@@ -156,6 +159,44 @@ export function getSandboxStatus(): Promise<SandboxStatus> {
 
 export function stopSandboxSession(sessionId: string): Promise<{ status: string; session_id: string }> {
   return apiFetchJson(`sandbox/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+}
+
+export function listSandboxProfiles(): Promise<SandboxProfile[]> {
+  return apiFetchJson<SandboxProfile[]>("sandbox/profiles", { method: "GET" });
+}
+
+export function getSandboxProfile(profileId: string): Promise<SandboxProfile> {
+  return apiFetchJson<SandboxProfile>(`sandbox/profiles/${encodeURIComponent(profileId)}`, { method: "GET" });
+}
+
+export function createSandboxProfile(request: SandboxProfileCreateRequest): Promise<SandboxProfile> {
+  return apiFetchJson<SandboxProfile>("sandbox/profiles", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function updateSandboxProfile(profileId: string, request: SandboxProfileUpdateRequest): Promise<SandboxProfile> {
+  return apiFetchJson<SandboxProfile>(`sandbox/profiles/${encodeURIComponent(profileId)}`, {
+    method: "PUT",
+    body: JSON.stringify(request),
+  });
+}
+
+export function validateSandboxProfile(profileId: string): Promise<SandboxProfile> {
+  return apiFetchJson<SandboxProfile>(`sandbox/profiles/${encodeURIComponent(profileId)}/validate`, { method: "POST" });
+}
+
+export function enableSandboxProfile(profileId: string): Promise<SandboxProfile> {
+  return apiFetchJson<SandboxProfile>(`sandbox/profiles/${encodeURIComponent(profileId)}/enable`, { method: "POST" });
+}
+
+export function disableSandboxProfile(profileId: string): Promise<SandboxProfile> {
+  return apiFetchJson<SandboxProfile>(`sandbox/profiles/${encodeURIComponent(profileId)}/disable`, { method: "POST" });
+}
+
+export function deleteSandboxProfile(profileId: string): Promise<{ status: string; id: string }> {
+  return apiFetchJson<{ status: string; id: string }>(`sandbox/profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
 }
 
 export function listChatSessions(): Promise<ChatSessionSummary[]> {

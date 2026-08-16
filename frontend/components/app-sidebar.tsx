@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ChevronUp,
   Cpu,
+  Layers,
   LogOut,
   MessageSquare,
   Plus,
@@ -55,6 +56,7 @@ const ADMIN_ITEMS = [
   { href: "/service-console/users", label: "Users", icon: UsersRound },
   { href: "/service-console/audit-logs", label: "Audit logs", icon: ShieldCheck },
   { href: "/service-console/sandbox", label: "Sandbox", icon: Box },
+  { href: "/service-console/sandbox-profiles", label: "Sandbox profiles", icon: Layers },
 ] as const;
 
 const SIDEBAR_SECTION_STORAGE_KEYS = {

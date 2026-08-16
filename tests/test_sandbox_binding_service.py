@@ -387,6 +387,23 @@ class SandboxBindingServiceTestCase(unittest.IsolatedAsyncioTestCase):
         assert stopped == [binding.target.sandbox_instance_id]
         assert backend.stopped_instances == [binding.target.sandbox_instance_id]
 
+    async def test_resolve_blocks_recreation_when_profile_disabled(self) -> None:
+        """Disabling a profile is emergency revocation: an existing binding must
+        not lazily recreate its container on the next run."""
+        service, repository = self._build()
+        await self._seed_session("session-1")
+        binding = await service.resolve(_agent("master"), self._context())
+        await repository.update_profile(binding.spec.profile_id, {"enabled": False})
+
+        with self.assertRaises(ConflictError) as ctx:
+            await service.resolve(_agent("master"), self._context())
+        assert "disabled" in str(ctx.exception)
+
+        # Re-enabling permits recreation from the saved snapshot.
+        await repository.update_profile(binding.spec.profile_id, {"enabled": True})
+        rebound = await service.resolve(_agent("master"), self._context())
+        assert rebound.target.sandbox_instance_id == binding.target.sandbox_instance_id
+
 
 def _backend_of(service: SandboxBindingService) -> _FakeBackend:
     return service._execution_backend  # type: ignore[return-value]

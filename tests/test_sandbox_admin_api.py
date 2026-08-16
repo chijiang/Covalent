@@ -380,5 +380,66 @@ class _SessionRecord:
                 "messages": [], "activity": []}
 
 
+class _FakeBindingService:
+    """Stands in for the application SandboxBindingService at the HTTP layer."""
+
+    def __init__(self, *, known: set[str] | None = None) -> None:
+        self._known = known or set()
+        self.stopped: list[str] = []
+        self.reset: list[str] = []
+
+    async def stop_instance(self, sandbox_instance_id: str) -> bool:
+        if sandbox_instance_id not in self._known:
+            return False
+        self.stopped.append(sandbox_instance_id)
+        return True
+
+    async def reset_instance(self, sandbox_instance_id: str) -> bool:
+        if sandbox_instance_id not in self._known:
+            return False
+        self.reset.append(sandbox_instance_id)
+        return True
+
+
+class SandboxInstanceApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.settings = AppSettings(console_auth_mode="local", workspace_root_dir="/tmp")
+        self.binding_service = _FakeBindingService(known={"sbx-1"})
+        self.app, self.client = _build_app(settings=self.settings)
+        self.app.state.sandbox_binding_service = self.binding_service
+
+    def test_stop_instance_admin_ok(self) -> None:
+        resp = self.client.delete(
+            "/sandbox/instances/sbx-1", headers={"Cookie": _admin_cookie(self.settings)}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.binding_service.stopped, ["sbx-1"])
+
+    def test_stop_instance_member_403(self) -> None:
+        resp = self.client.delete(
+            "/sandbox/instances/sbx-1", headers={"Cookie": _member_cookie(self.settings)}
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_stop_unknown_instance_404(self) -> None:
+        resp = self.client.delete(
+            "/sandbox/instances/no-such", headers={"Cookie": _admin_cookie(self.settings)}
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_reset_instance_admin_ok(self) -> None:
+        resp = self.client.post(
+            "/sandbox/instances/sbx-1/reset", headers={"Cookie": _admin_cookie(self.settings)}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.binding_service.reset, ["sbx-1"])
+
+    def test_reset_unknown_instance_404(self) -> None:
+        resp = self.client.post(
+            "/sandbox/instances/no-such/reset", headers={"Cookie": _admin_cookie(self.settings)}
+        )
+        self.assertEqual(resp.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

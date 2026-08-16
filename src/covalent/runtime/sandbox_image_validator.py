@@ -31,16 +31,19 @@ _RUNNER_FILES = {"python": "/runners/python_runner.py", "nodejs": "/runners/node
 _VALIDATION_LABEL = "covalent.sandbox.validation"
 _MESSAGE_MAX = 500
 # Best-effort scrub of anything that looks like a credential in a docker error.
+# Every pattern MUST have exactly one capture group (the label kept in place).
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(password|secret|token|authorization|api[_-]?key)\s*[=:]\s*\S+"),
-    re.compile(r"(?i)bearer\s+\S+"),
+    re.compile(r"(?i)((?:password|secret|token|authorization|api[_-]?key)\s*[=:]\s*)\S+"),
+    re.compile(r"(?i)(bearer\s+)\S+"),
 )
 
 
-def _sanitize_message(message: str) -> str:
+def sanitize_error_message(message: str) -> str:
+    """Redact credential-shaped substrings and cap length before a docker-layer
+    error reaches a response or log."""
     cleaned = message
     for pattern in _SECRET_PATTERNS:
-        cleaned = pattern.sub(lambda m: f"{m.group(1)}: <redacted>", cleaned)
+        cleaned = pattern.sub(lambda m: f"{m.group(1)}<redacted>", cleaned)
     return cleaned[:_MESSAGE_MAX]
 
 
@@ -71,11 +74,13 @@ class DockerImageValidator:
         try:
             self._ensure_image(image, pull_policy)
         except docker.errors.ImageNotFound as exc:
-            return {"status": "invalid", "image_id": None, "digest": None, "message": _sanitize_message(str(exc))}
+            return {"status": "invalid", "image_id": None, "digest": None, "message": sanitize_error_message(str(exc))}
         except docker.errors.NotFound as exc:
-            return {"status": "invalid", "image_id": None, "digest": None, "message": _sanitize_message(str(exc))}
+            return {"status": "invalid", "image_id": None, "digest": None, "message": sanitize_error_message(str(exc))}
         except (docker.errors.APIError, docker.errors.DockerException, ConnectionError, OSError) as exc:
-            raise BackendUnavailable(f"image validation unavailable: {exc}", cause=exc) from exc
+            raise BackendUnavailable(
+                f"image validation unavailable: {sanitize_error_message(str(exc))}", cause=exc
+            ) from exc
 
         image_id, digest = self._image_identity(image)
 
@@ -112,9 +117,11 @@ class DockerImageValidator:
         except BackendUnavailable:
             raise
         except (docker.errors.APIError, docker.errors.DockerException, ConnectionError, OSError) as exc:
-            raise BackendUnavailable(f"image validation unavailable: {exc}", cause=exc) from exc
+            raise BackendUnavailable(
+                f"image validation unavailable: {sanitize_error_message(str(exc))}", cause=exc
+            ) from exc
         except Exception as exc:
-            return self._invalid(image_id, digest, _sanitize_message(str(exc)))
+            return self._invalid(image_id, digest, sanitize_error_message(str(exc)))
         finally:
             if container is not None:
                 self._remove_validation_container(container)

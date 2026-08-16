@@ -463,6 +463,38 @@ class SandboxProfileServiceTestCase(unittest.IsolatedAsyncioTestCase):
         validated = await self._service(validator=_FakeImageValidator()).validate_profile(seeded["id"])
         assert validated["validation_status"] == "valid"
 
+    async def test_disable_profile_stops_its_instances(self) -> None:
+        stopped_profiles: list[str] = []
+        service = SandboxProfileService(
+            SandboxRepository(self.session_factory),
+            AppSettings(),
+            image_validator=_FakeImageValidator(),
+            on_profile_disabled=stopped_profiles.append,
+        )
+        created = await service.create_profile(_create_request())
+        await service.validate_profile(created["id"])
+        await service.enable_profile(created["id"])
+
+        await service.disable_profile(created["id"])
+
+        assert stopped_profiles == [created["id"]]
+
+    async def test_disable_profile_via_update_also_stops_instances(self) -> None:
+        stopped_profiles: list[str] = []
+        service = SandboxProfileService(
+            SandboxRepository(self.session_factory),
+            AppSettings(),
+            image_validator=_FakeImageValidator(),
+            on_profile_disabled=stopped_profiles.append,
+        )
+        created = await service.create_profile(_create_request())
+        await service.validate_profile(created["id"])
+        await service.enable_profile(created["id"])
+
+        await service.update_profile(created["id"], SandboxProfileUpdateRequest(enabled=False))
+
+        assert stopped_profiles == [created["id"]]
+
     async def test_validator_daemon_down_maps_to_unavailable(self) -> None:
         service = self._service(validator=_DownImageValidator())
         created = await service.create_profile(_create_request())

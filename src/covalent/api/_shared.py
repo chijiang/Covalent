@@ -218,6 +218,7 @@ def to_agent_summary(agent: AgentSpec) -> AgentSummaryResponse:
         skills=agent.skills,
         local_tools=agent.local_tools,
         allowed_outbound=getattr(agent, "allowed_outbound", []) or [],
+        sandbox_profile_id=getattr(agent, "sandbox_profile_id", None),
         delegate_agents=agent.delegate_agents,
         capabilities=agent.capabilities,
         max_iterations=agent.max_iterations,

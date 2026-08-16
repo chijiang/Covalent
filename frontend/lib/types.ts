@@ -63,6 +63,7 @@ export type AgentConfig = {
   skills: string[];
   local_tools?: string[];
   allowed_outbound?: string[];
+  sandbox_profile_id?: string | null;
   delegate_agents: string[];
   mcp_servers?: string[];
   mcp_tools?: McpToolReference[];
@@ -86,6 +87,7 @@ export type AgentDetail = {
   skills: string[];
   local_tools: string[];
   allowed_outbound: string[];
+  sandbox_profile_id?: string | null;
   delegate_agents: string[];
   capabilities: Capability[];
   max_iterations: number;
@@ -232,6 +234,54 @@ export type SandboxStatus = {
   metrics?: Record<string, number>;
   config?: Record<string, unknown>;
   sessions?: SandboxSessionSummary[];
+};
+
+export type SandboxRuntimeCapability = "python" | "nodejs" | "shell";
+export type SandboxPullPolicy = "never" | "if_not_present" | "always";
+export type SandboxValidationStatus = "pending" | "valid" | "invalid" | "legacy_unverified";
+
+export type SandboxProfile = {
+  id: string;
+  name: string;
+  description: string;
+  workspace_id: string | null;
+  image: string;
+  pull_policy: SandboxPullPolicy;
+  keepalive_command: string[];
+  runtime_capabilities: SandboxRuntimeCapability[];
+  contract_version: number;
+  memory_limit: string;
+  pids_limit: number;
+  cpus: number;
+  tmpfs_size: string;
+  enabled: boolean;
+  is_default: boolean;
+  revision: number;
+  validation_status: SandboxValidationStatus;
+  validated_image_id: string | null;
+  validated_image_digest: string | null;
+  validated_at: string | null;
+  validation_message: string | null;
+  created_at: string;
+  reference_counts?: { agents: number; instances: number };
+};
+
+export type SandboxProfileCreateRequest = {
+  name: string;
+  description?: string;
+  image: string;
+  pull_policy?: SandboxPullPolicy;
+  keepalive_command: string[];
+  runtime_capabilities: SandboxRuntimeCapability[];
+  memory_limit: string;
+  pids_limit: number;
+  cpus: number;
+  tmpfs_size: string;
+};
+
+export type SandboxProfileUpdateRequest = Partial<SandboxProfileCreateRequest> & {
+  is_default?: boolean;
+  enabled?: boolean;
 };
 
 export type ConfigDocument = {

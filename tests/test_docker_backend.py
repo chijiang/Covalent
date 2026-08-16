@@ -496,6 +496,23 @@ class SandboxInstanceKeyedTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(call["nano_cpus"], 2_000_000_000)
             self.assertEqual(call["tmpfs"], {"/tmp": "size=128m"})
 
+    async def test_snapshot_reports_per_instance_resources(self) -> None:
+        """Profiles with different limits must not report the backend defaults."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _FakeDockerClient()
+            backend = self._make_backend(Path(tmp), client=fake)
+            backend.configure(_binding("sbx-py", image="img-python:3"))
+            backend.configure(_binding("sbx-node", agent="delegate", image="img-node:22", mem_limit="1g", cpus=2.0))
+            await backend.ensure("sbx-py")
+            await backend.ensure("sbx-node")
+
+            snapshot = await backend.sandbox_snapshot()
+            by_instance = {s["sandbox_instance_id"]: s for s in snapshot["sessions"]}
+            self.assertEqual(by_instance["sbx-py"]["resources"]["memory_limit_config"], "512m")
+            self.assertEqual(by_instance["sbx-py"]["resources"]["cpu_limit"], 1.0)
+            self.assertEqual(by_instance["sbx-node"]["resources"]["memory_limit_config"], "1g")
+            self.assertEqual(by_instance["sbx-node"]["resources"]["cpu_limit"], 2.0)
+
     async def test_concurrent_ensure_creates_one_container(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             fake = _FakeDockerClient()

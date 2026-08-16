@@ -75,15 +75,55 @@ async def sandbox_status(request: Request) -> dict[str, Any]:
     return await _augment_sandbox_snapshot(snapshot, session_store)
 
 @router.delete("/sandbox/sessions/{session_id}")
-async def stop_sandbox_session(request: Request, session_id: str) -> dict[str, str]:
+async def stop_sandbox_session(request: Request, session_id: str) -> dict[str, Any]:
     principal = await _resolve_console_principal(request, request.app.state.db_manager)
     if not principal.is_admin:
         raise HTTPException(status_code=403, detail="Only admins can stop sandbox sessions")
+    binding_service = getattr(request.app.state, "sandbox_binding_service", None)
+    if binding_service is not None:
+        # Full binding lifecycle: stop every instance of the session, evict its
+        # warm skill processes, and remove instance-private state.
+        await binding_service.stop_session(session_id)
+        return {"status": "stopped", "session_id": session_id}
     backend = getattr(request.app.state, "execution_backend", None)
     if backend is None:
         raise HTTPException(status_code=404, detail="No execution backend configured")
     await backend.stop(session_id)
     return {"status": "stopped", "session_id": session_id}
+
+
+def _binding_service(request: Request):
+    service = getattr(request.app.state, "sandbox_binding_service", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="sandbox binding service is unavailable")
+    return service
+
+
+@router.delete("/sandbox/instances/{sandbox_instance_id}")
+async def stop_sandbox_instance(request: Request, sandbox_instance_id: str) -> dict[str, Any]:
+    """Stop a live instance's container but keep its logical binding, so the
+    next run recreates it from the saved spec."""
+    principal = await _resolve_console_principal(request, request.app.state.db_manager)
+    if not principal.is_admin:
+        raise HTTPException(status_code=403, detail="Only admins can stop sandbox instances")
+    stopped = await _binding_service(request).stop_instance(sandbox_instance_id)
+    if not stopped:
+        raise HTTPException(status_code=404, detail=f"Unknown sandbox instance: {sandbox_instance_id}")
+    return {"status": "stopped", "sandbox_instance_id": sandbox_instance_id}
+
+
+@router.post("/sandbox/instances/{sandbox_instance_id}/reset")
+async def reset_sandbox_instance(request: Request, sandbox_instance_id: str) -> dict[str, Any]:
+    """Stop the container, evict warm processes, remove private state, and
+    delete the logical binding — the next run re-resolves the agent's current
+    profile. Conversation history and the shared workspace are untouched."""
+    principal = await _resolve_console_principal(request, request.app.state.db_manager)
+    if not principal.is_admin:
+        raise HTTPException(status_code=403, detail="Only admins can reset sandbox instances")
+    reset = await _binding_service(request).reset_instance(sandbox_instance_id)
+    if not reset:
+        raise HTTPException(status_code=404, detail=f"Unknown sandbox instance: {sandbox_instance_id}")
+    return {"status": "reset", "sandbox_instance_id": sandbox_instance_id}
 
 @router.get("/audit-logs")
 async def list_audit_logs(

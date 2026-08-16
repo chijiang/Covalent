@@ -417,19 +417,24 @@ class DockerBackend(ExecutionBackend):
             "network_mode": network_mode,
             "network_policy": network_policy,
             "allowed_outbound": outbound,
-            "resources": self._container_resource_snapshot(container),
+            "resources": self._container_resource_snapshot(container, spec=binding.spec if binding is not None else None),
         }
 
     def _container_attrs(self, container) -> dict[str, object]:
         attrs = getattr(container, "attrs", None)
         return attrs if isinstance(attrs, dict) else {}
 
-    def _container_resource_snapshot(self, container) -> dict[str, object]:
+    def _container_resource_snapshot(
+        self, container, spec: SandboxSpec | None = None
+    ) -> dict[str, object]:
+        # Configured limits come from the instance's pinned spec (profiles may
+        # differ per agent); fall back to backend defaults for legacy
+        # session-keyed containers.
         resources: dict[str, object] = {
-            "cpu_limit": self._nano_cpus / 1e9,
-            "memory_limit_config": self._mem_limit,
-            "pids_limit": self._pids_limit,
-            "tmpfs_size": self._tmpfs_size,
+            "cpu_limit": spec.cpus if spec is not None else self._nano_cpus / 1e9,
+            "memory_limit_config": spec.memory_limit if spec is not None else self._mem_limit,
+            "pids_limit": spec.pids_limit if spec is not None else self._pids_limit,
+            "tmpfs_size": spec.tmpfs_size if spec is not None else self._tmpfs_size,
         }
         stats_fn = getattr(container, "stats", None)
         if not callable(stats_fn):

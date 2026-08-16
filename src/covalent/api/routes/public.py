@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
+import anyio
 from fastapi import APIRouter
 
 from datetime import UTC
@@ -12,7 +14,6 @@ from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 from time import perf_counter
-from typing import Any
 
 from covalent.api._auth_helpers import _request_metadata
 from covalent.api._shared import _new_chat_item_id
@@ -189,6 +190,32 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
                 yield _encode_public_sse("run.failed", {"run_id": run_id, "error": error_payload})
             finally:
                 latency_ms = int((perf_counter() - started) * 1000)
+                # Critical cleanup completes BEFORE the terminal event and is
+                # shielded from client-disconnect cancellation: a cancelled
+                # yield/await inside this finally would otherwise leak the
+                # stateless sandbox, its bindings, and the concurrency slot.
+                async with anyio.CancelScope(shield=True):
+                    try:
+                        await _record_public_agent_run(
+                            db_manager,
+                            principal=principal,
+                            run_id=run_id,
+                            agent_name=agent.name,
+                            memory_mode=memory_mode,
+                            session_id=session_id,
+                            status=status,
+                            latency_ms=latency_ms,
+                            provider=agent.provider.provider,
+                            model=agent.provider.model,
+                            usage=_usage_payload(final_payload),
+                            error=error_payload,
+                            metadata=invoke_request.metadata,
+                        )
+                    finally:
+                        # Resource cleanup must run even if run-log recording fails.
+                        await _cleanup_stateless_scope()
+                        if limiter is not None:
+                            await limiter.release(principal.token_id)
                 if final_payload is not None:
                     yield _encode_public_sse(
                         "run.completed",
@@ -200,28 +227,6 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
                             final_payload=final_payload,
                         ),
                     )
-                try:
-                    await _record_public_agent_run(
-                        db_manager,
-                        principal=principal,
-                        run_id=run_id,
-                        agent_name=agent.name,
-                        memory_mode=memory_mode,
-                        session_id=session_id,
-                        status=status,
-                        latency_ms=latency_ms,
-                        provider=agent.provider.provider,
-                        model=agent.provider.model,
-                        usage=_usage_payload(final_payload),
-                        error=error_payload,
-                        metadata=invoke_request.metadata,
-                    )
-                finally:
-                    # Resource cleanup must run even if run-log recording fails,
-                    # otherwise a stateless sandbox + its concurrency slot leak.
-                    await _cleanup_stateless_scope()
-                    if limiter is not None:
-                        await limiter.release(principal.token_id)
 
         return StreamingResponse(
             event_stream(),

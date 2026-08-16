@@ -325,6 +325,7 @@ class AgentSummaryResponse(BaseModel):
     skills: list[str]
     local_tools: list[str]
     allowed_outbound: list[str] = Field(default_factory=list)
+    sandbox_profile_id: str | None = None
     delegate_agents: list[str]
     capabilities: set[Capability]
     max_iterations: int

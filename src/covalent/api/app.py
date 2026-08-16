@@ -123,6 +123,10 @@ async def lifespan(app: FastAPI):
         skill_runtime_lookup=_skill_runtime_lookup,
         process_manager=getattr(registry, "skill_process_manager", None),
     )
+    # Emergency revocation: disabling a profile stops its live instances.
+    sandbox_profile_service._on_profile_disabled = (  # noqa: SLF001 — wiring seam
+        sandbox_binding_service.stop_instances_for_profile
+    )
     # First boot with an empty profile table seeds the compatibility default
     # from the deployment's Docker settings (legacy_unverified, executable).
     try:
@@ -192,7 +196,7 @@ def create_app() -> FastAPI:
 
     app.add_exception_handler(ApplicationError, _application_error_handler)
 
-    from covalent.api.routes import agents, auth, config, mcp, ops, providers, public, sessions, skills, tokens, users
+    from covalent.api.routes import agents, auth, config, mcp, ops, providers, public, sandbox_profiles, sessions, skills, tokens, users
     app.include_router(ops.router)
     app.include_router(auth.router)
     app.include_router(users.router)
@@ -204,5 +208,6 @@ def create_app() -> FastAPI:
     app.include_router(mcp.router)
     app.include_router(skills.router)
     app.include_router(public.router)
+    app.include_router(sandbox_profiles.router)
 
     return app

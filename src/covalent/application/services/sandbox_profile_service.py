@@ -105,10 +105,15 @@ class SandboxProfileService:
         settings: AppSettings,
         *,
         image_validator: SandboxImageValidationPort | None = None,
+        on_profile_disabled: Any | None = None,
     ) -> None:
         self._repository = repository
         self._settings = settings
         self._image_validator = image_validator
+        # Emergency-revocation hook: invoked with the profile id whenever a
+        # profile becomes disabled; app wiring connects it to the binding
+        # service so the profile's live containers stop immediately.
+        self._on_profile_disabled = on_profile_disabled
 
     # --- seeding -----------------------------------------------------------
 
@@ -155,6 +160,24 @@ class SandboxProfileService:
         if profile is None or not self._is_visible(profile, workspace_id):
             raise NotFoundError(f"sandbox profile '{profile_id}' not found")
         return profile
+
+    async def profile_response(
+        self, profile_id: str, workspace_id: str | None = None
+    ) -> dict[str, Any]:
+        """API-facing profile detail: profile fields + reference counts."""
+        profile = await self.get_profile(profile_id, workspace_id)
+        profile["reference_counts"] = await self._repository.count_profile_references(profile_id)
+        return profile
+
+    async def profile_responses(
+        self, workspace_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """API-facing profile list: profile fields + reference counts."""
+        responses: list[dict[str, Any]] = []
+        for profile in await self.list_profiles(workspace_id):
+            profile["reference_counts"] = await self._repository.count_profile_references(profile["id"])
+            responses.append(profile)
+        return responses
 
     @staticmethod
     def _is_visible(profile: dict[str, Any], workspace_id: str | None) -> bool:
@@ -236,8 +259,13 @@ class SandboxProfileService:
             if isinstance(exc, ServiceUnavailableError):
                 raise
             # The validator raises BackendUnavailable when the daemon/registry
-            # is unreachable — surface as a clean 503 rather than a raw error.
-            raise ServiceUnavailableError(f"image validation is unavailable: {exc}") from exc
+            # is unreachable — surface as a clean 503 (with the message
+            # sanitized) rather than a raw, potentially credential-bearing error.
+            from covalent.runtime.sandbox_image_validator import sanitize_error_message
+
+            raise ServiceUnavailableError(
+                f"image validation is unavailable: {sanitize_error_message(str(exc))}"
+            ) from exc
         status = result.get("status")
         if status not in ("valid", "invalid"):
             raise ServiceUnavailableError(f"image validator returned an unusable status: {status!r}")
@@ -300,6 +328,7 @@ class SandboxProfileService:
             for field in _RUNTIME_AFFECTING_FIELDS
         )
         updates: dict[str, Any] = {}
+        disabled_via_update = False
         if runtime_changed:
             if current["enabled"]:
                 result = await self._validate_candidate(candidate)
@@ -349,6 +378,7 @@ class SandboxProfileService:
             updates["enabled"] = True
         elif changes.get("enabled") is False:
             updates["enabled"] = False
+            disabled_via_update = True
 
         if changes.get("is_default"):
             if updates.get("validation_status", current["validation_status"]) not in EXECUTABLE_STATUSES:
@@ -367,6 +397,8 @@ class SandboxProfileService:
 
         updated = await self._repository.update_profile(profile_id, updates)
         assert updated is not None
+        if disabled_via_update and current["enabled"]:
+            await self._notify_profile_disabled(profile_id)
         return updated
 
     async def _validate_candidate(self, candidate: dict[str, Any]) -> dict[str, Any]:
@@ -388,10 +420,29 @@ class SandboxProfileService:
         )
 
     async def disable_profile(self, profile_id: str, workspace_id: str | None = None) -> dict[str, Any]:
+        """Disable a profile. Disabling is emergency revocation: after the flag
+        flips, the wiring's hook stops every live instance pinned to the profile
+        and binding resolution blocks lazy container recreation."""
         await self.get_profile(profile_id, workspace_id)
         updated = await self._repository.update_profile(profile_id, {"enabled": False})
         assert updated is not None
+        await self._notify_profile_disabled(profile_id)
         return updated
+
+    async def _notify_profile_disabled(self, profile_id: str) -> None:
+        if self._on_profile_disabled is None:
+            return
+        try:
+            result = self._on_profile_disabled(profile_id)
+            if result is not None and hasattr(result, "__await__"):
+                await result
+        except Exception:
+            # The flag flip already committed; revocation hook failures must
+            # surface without rolling the disable back.
+            raise ConflictError(
+                f"profile '{profile_id}' was disabled but stopping its live instances failed; "
+                "stop them from the sandbox monitor before re-enabling"
+            )
 
     async def delete_profile(self, profile_id: str, workspace_id: str | None = None) -> bool:
         await self.get_profile(profile_id, workspace_id)
