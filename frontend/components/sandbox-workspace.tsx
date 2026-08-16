@@ -23,7 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { buildChatHref } from "@/lib/chat-session-routing";
-import { getSandboxStatus, stopSandboxSession } from "@/lib/client-api";
+import { getSandboxStatus, resetSandboxInstance, stopSandboxInstance, stopSandboxSession } from "@/lib/client-api";
 import type { SandboxSessionSummary, SandboxStatus } from "@/lib/types";
 
 const EMPTY_SANDBOX_SESSIONS: SandboxSessionSummary[] = [];
@@ -216,7 +216,7 @@ export function SandboxWorkspace() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
-  const [stoppingIds, setStoppingIds] = useState<Set<string>>(() => new Set());
+  const [instanceBusyIds, setInstanceBusyIds] = useState<Set<string>>(() => new Set());
   const isMountedRef = useRef(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
@@ -278,20 +278,36 @@ export function SandboxWorkspace() {
 
   const handleStop = useCallback(
     async (sessionId: string) => {
-      const confirmed = window.confirm(`Stop sandbox session ${shortId(sessionId)}?`);
+      const confirmed = window.confirm(`Stop every sandbox instance for session ${shortId(sessionId)}?`);
       if (!confirmed) {
         return;
       }
-      setStoppingIds((current) => new Set(current).add(sessionId));
       try {
         await stopSandboxSession(sessionId);
         await refresh();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to stop session");
+      }
+    },
+    [refresh],
+  );
+
+  const runInstanceAction = useCallback(
+    async (instanceId: string, action: (id: string) => Promise<unknown>, confirmText: string) => {
+      if (!window.confirm(confirmText)) {
+        return;
+      }
+      setInstanceBusyIds((current) => new Set(current).add(instanceId));
+      try {
+        setError(null);
+        await action(instanceId);
+        await refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Instance action failed");
       } finally {
-        setStoppingIds((current) => {
+        setInstanceBusyIds((current) => {
           const next = new Set(current);
-          next.delete(sessionId);
+          next.delete(instanceId);
           return next;
         });
       }
@@ -310,10 +326,39 @@ export function SandboxWorkspace() {
   }, []);
 
   const sessions = status?.sessions ?? EMPTY_SANDBOX_SESSIONS;
+  const instanceGroups = useMemo(() => {
+    const groups: {
+      key: string;
+      sessionId: string | null;
+      title: string;
+      chatMissing: boolean;
+      instances: SandboxSessionSummary[];
+    }[] = [];
+    for (const instance of sessions) {
+      const sessionId = instance.session_id || null;
+      const key = sessionId || `scope:${instance.execution_scope_id || instance.sandbox_instance_id || ""}`;
+      let group = groups.find((entry) => entry.key === key);
+      if (!group) {
+        group = {
+          key,
+          sessionId,
+          title: instance.chat_title || "",
+          chatMissing: Boolean(instance.session_missing),
+          instances: [],
+        };
+        groups.push(group);
+      }
+      if (!group.title && instance.chat_title) {
+        group.title = instance.chat_title;
+      }
+      group.instances.push(instance);
+    }
+    return groups;
+  }, [sessions]);
   const metrics = status?.metrics ?? {};
   const config = status?.config ?? {};
   const live = status?.live ?? sessions.filter((session) => session.status === "running").length;
-  const maxSessions = numberValue(config.max_sessions);
+  const maxSessions = numberValue(config.max_instances) ?? numberValue(config.max_sessions);
   const capacityDetail = maxSessions && maxSessions > 0 ? `${live}/${maxSessions} slots used` : "unlimited capacity";
   const networkDefault = stringValue(config.network) ?? "unknown";
   const shellEnabled = booleanValue(config.shell_tool_enabled);
@@ -419,8 +464,8 @@ export function SandboxWorkspace() {
               <table className="w-full text-sm">
                 <thead className="border-b text-left">
                   <tr>
-                    <th className="p-3 font-medium">Session</th>
-                    <th className="p-3 font-medium">Agent & Chat</th>
+                    <th className="p-3 font-medium">Instance</th>
+                    <th className="p-3 font-medium">Agent & Profile</th>
                     <th className="p-3 font-medium">Status & Age</th>
                     <th className="p-3 font-medium">Resources</th>
                     <th className="p-3 font-medium">Network</th>
@@ -428,132 +473,175 @@ export function SandboxWorkspace() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sessions.map((session) => {
-                    const isRunning = session.status === "running";
-                    const isStopping = stoppingIds.has(session.session_id);
-                    const expanded = expandedSessionId === session.session_id;
-                    return (
-                      <Fragment key={session.session_id}>
-                        <tr className="border-b last:border-0">
-                          <td className="p-3 align-top">
-                            <div className="flex min-w-[190px] flex-col gap-1">
-                              <span className="font-mono text-xs" title={session.session_id}>{shortId(session.session_id)}</span>
-                              <span className="text-muted-foreground font-mono text-[0.7rem]" title={session.container_id}>
-                                {shortId(session.container_id, 10, 6)}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="p-3 align-top">
-                            <div className="flex min-w-[220px] flex-col gap-1">
-                              <span className="font-medium">{session.agent_name || "Unknown agent"}</span>
-                              <span className="text-muted-foreground truncate text-xs" title={session.chat_title || undefined}>
-                                {session.chat_title || (session.session_missing ? "Session record missing" : "No chat title")}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="p-3 align-top">
-                            <div className="flex min-w-[170px] flex-col gap-1">
-                              <Badge variant={statusVariant(session.status)}>{session.status}</Badge>
-                              <span className="text-muted-foreground flex items-center gap-1 text-xs">
-                                <Clock className="size-3" aria-hidden="true" />
-                                {formatRelativeTime(session.started_at)} / idle {formatDuration(session.idle_seconds)}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="p-3 align-top">
-                            <ResourceCell session={session} />
-                          </td>
-                          <td className="p-3 align-top">
-                            <div className="flex min-w-[210px] flex-col gap-2">
-                              <div className="flex items-center gap-2">
-                                <Network className="text-muted-foreground size-3.5" aria-hidden="true" />
-                                <Badge variant={session.network_policy === "allowlist" ? "outline" : "secondary"}>
-                                  {policyLabel(session.network_policy)}
-                                </Badge>
-                                <code className="text-muted-foreground text-xs">{session.network_mode}</code>
-                              </div>
-                              {session.allowed_outbound.length > 0 ? (
-                                <div className="flex flex-wrap gap-1">
-                                  {session.allowed_outbound.map((host) => (
-                                    <Badge key={host} variant="outline" className="text-xs">
-                                      {host}
-                                    </Badge>
-                                  ))}
+                  {instanceGroups.map((group) => (
+                    <Fragment key={group.key}>
+                      <tr className="bg-muted/30 border-b">
+                        <td className="p-3" colSpan={5}>
+                          <div className="flex min-w-0 flex-col gap-0.5">
+                            {group.sessionId ? (
+                              <span className="font-mono text-xs" title={group.sessionId}>{shortId(group.sessionId)}</span>
+                            ) : (
+                              <span className="text-muted-foreground font-mono text-xs">stateless scope {shortId(group.key.replace("scope:", ""))}</span>
+                            )}
+                            <span className="text-muted-foreground truncate text-xs" title={group.title || undefined}>
+                              {group.title || (group.chatMissing ? "Session record missing" : "No chat title")}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="p-3 text-right">
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => group.sessionId && void handleStop(group.sessionId)}
+                            disabled={!group.sessionId}
+                            title={group.sessionId ? "Stop every instance in this session" : "Stateless scopes clean up with the run"}
+                          >
+                            <Square className="mr-1 size-3" /> Stop all
+                          </Button>
+                        </td>
+                      </tr>
+                      {group.instances.map((instance) => {
+                        const instanceId = instance.sandbox_instance_id || instance.session_id || "";
+                        const isRunning = instance.status === "running";
+                        const busy = instanceBusyIds.has(instanceId);
+                        const expanded = expandedSessionId === instanceId;
+                        return (
+                          <Fragment key={instanceId || Math.random()}>
+                            <tr className="border-b last:border-0">
+                              <td className="p-3 align-top">
+                                <div className="flex min-w-[190px] flex-col gap-1">
+                                  <span className="font-mono text-xs" title={instanceId}>{shortId(instanceId)}</span>
+                                  <span className="text-muted-foreground font-mono text-[0.7rem]" title={instance.container_id}>
+                                    {shortId(instance.container_id, 10, 6)}
+                                  </span>
                                 </div>
-                              ) : (
-                                <span className="text-muted-foreground text-xs">No outbound hosts</span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="p-3 align-top">
-                            <div className="flex justify-end gap-1">
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon-sm"
-                                title={expanded ? "Hide details" : "Inspect session"}
-                                aria-label={expanded ? "Hide details" : "Inspect session"}
-                                onClick={() => setExpandedSessionId(expanded ? null : session.session_id)}
-                              >
-                                <Info className="size-4" />
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon-sm"
-                                title={copiedId === session.session_id ? "Copied" : "Copy session id"}
-                                aria-label={copiedId === session.session_id ? "Copied" : "Copy session id"}
-                                onClick={() => void handleCopy(session.session_id)}
-                              >
-                                {copiedId === session.session_id ? <Check className="size-4" /> : <Copy className="size-4" />}
-                              </Button>
-                              {session.session_missing ? (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  title="Session record missing"
-                                  aria-label="Session record missing"
-                                  disabled
-                                >
-                                  <ExternalLink className="size-4" />
-                                </Button>
-                              ) : (
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  title="Open chat"
-                                  aria-label="Open chat"
-                                  nativeButton={false}
-                                  render={<Link href={buildChatHref(session.session_id)} />}
-                                >
-                                  <ExternalLink className="size-4" />
-                                </Button>
-                              )}
-                              <Button
-                                type="button"
-                                variant="destructive"
-                                size="sm"
-                                onClick={() => void handleStop(session.session_id)}
-                                disabled={!isRunning || isStopping}
-                              >
-                                <Square className="mr-1 size-3" /> {isStopping ? "Stopping" : "Stop"}
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                        {expanded ? (
-                          <tr className="border-b bg-muted/10">
-                            <td className="p-3" colSpan={6}>
-                              <SessionDetails session={session} />
-                            </td>
-                          </tr>
-                        ) : null}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
+                              </td>
+                              <td className="p-3 align-top">
+                                <div className="flex min-w-[220px] flex-col gap-1">
+                                  <span className="font-medium">{instance.agent_name || "Unknown agent"}</span>
+                                  {instance.profile_id ? (
+                                    <span className="text-muted-foreground font-mono text-[0.7rem]" title={instance.image_name || undefined}>
+                                      {instance.profile_id}@r{instance.profile_revision ?? "-"}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </td>
+                              <td className="p-3 align-top">
+                                <div className="flex min-w-[170px] flex-col gap-1">
+                                  <Badge variant={statusVariant(instance.status)}>{instance.status}</Badge>
+                                  <span className="text-muted-foreground flex items-center gap-1 text-xs">
+                                    <Clock className="size-3" aria-hidden="true" />
+                                    {formatRelativeTime(instance.started_at)} / idle {formatDuration(instance.idle_seconds)}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="p-3 align-top">
+                                <ResourceCell session={instance} />
+                              </td>
+                              <td className="p-3 align-top">
+                                <div className="flex min-w-[210px] flex-col gap-2">
+                                  <div className="flex items-center gap-2">
+                                    <Network className="text-muted-foreground size-3.5" aria-hidden="true" />
+                                    <Badge variant={instance.network_policy === "allowlist" ? "outline" : "secondary"}>
+                                      {policyLabel(instance.network_policy)}
+                                    </Badge>
+                                    <code className="text-muted-foreground text-xs">{instance.network_mode}</code>
+                                  </div>
+                                  {instance.allowed_outbound.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {instance.allowed_outbound.map((host) => (
+                                        <Badge key={host} variant="outline" className="text-xs">
+                                          {host}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span className="text-muted-foreground text-xs">No outbound hosts</span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="p-3 align-top">
+                                <div className="flex justify-end gap-1">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    title={expanded ? "Hide details" : "Inspect instance"}
+                                    aria-label={expanded ? "Hide details" : "Inspect instance"}
+                                    onClick={() => setExpandedSessionId(expanded ? null : instanceId)}
+                                  >
+                                    <Info className="size-4" />
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    title={copiedId === instanceId ? "Copied" : "Copy instance id"}
+                                    aria-label={copiedId === instanceId ? "Copied" : "Copy instance id"}
+                                    onClick={() => void handleCopy(instanceId)}
+                                  >
+                                    {copiedId === instanceId ? <Check className="size-4" /> : <Copy className="size-4" />}
+                                  </Button>
+                                  {instance.session_id && !instance.session_missing ? (
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-sm"
+                                      title="Open chat"
+                                      aria-label="Open chat"
+                                      nativeButton={false}
+                                      render={<Link href={buildChatHref(instance.session_id)} />}
+                                    >
+                                      <ExternalLink className="size-4" />
+                                    </Button>
+                                  ) : null}
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={!isRunning || busy}
+                                    title="Stop this instance's container (the binding is kept)"
+                                    onClick={() =>
+                                      void runInstanceAction(
+                                        instanceId,
+                                        stopSandboxInstance,
+                                        `Stop sandbox instance ${shortId(instanceId)}?`,
+                                      )
+                                    }
+                                  >
+                                    <Square className="mr-1 size-3" /> {busy ? "Working" : "Stop"}
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="destructive"
+                                    size="sm"
+                                    disabled={busy}
+                                    title="Stop the container and delete the logical binding (next run re-resolves the profile)"
+                                    onClick={() =>
+                                      void runInstanceAction(
+                                        instanceId,
+                                        resetSandboxInstance,
+                                        `Reset sandbox instance ${shortId(instanceId)}? The next run re-resolves the agent's current profile.`,
+                                      )
+                                    }
+                                  >
+                                    Reset
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                            {expanded ? (
+                              <tr className="border-b bg-muted/10">
+                                <td className="p-3" colSpan={6}>
+                                  <SessionDetails session={instance} />
+                                </td>
+                              </tr>
+                            ) : null}
+                          </Fragment>
+                        );
+                      })}
+                    </Fragment>
+                  ))}
+                </tbody>              </table>
             </div>
           ) : (
             <div className="py-10 text-center">

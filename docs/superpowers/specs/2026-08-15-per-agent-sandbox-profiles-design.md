@@ -1,7 +1,8 @@
 # Design: Per-agent sandbox profiles and multi-sandbox sessions
 
 **Date:** 2026-08-15
-**Status:** Proposed (pre-implementation)
+**Status:** Implemented (delivered on `codex/per-agent-sandbox-profiles`; real-Docker
+acceptance via `scripts/sandbox_acceptance.py`)
 **Scope:** Add administrator-managed Docker sandbox profiles, allow each agent to
 select a profile, and allow a master agent and its delegated agents to run in
 different containers while sharing the same session workspace.

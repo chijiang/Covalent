@@ -14,8 +14,8 @@ import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { downloadTextFile } from "@/lib/download";
 import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
-import { exportManagementConfig, fetchProviderModels, getAgentLocalTools, getAgents, getConfig, getSkills, importManagementConfig, inspectMcpServer, saveConfig, sortAgentsForPicker } from "@/lib/client-api";
-import type { AgentConfig, AgentDetail, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, ResourceVisibility, SkillSummary } from "@/lib/types";
+import { exportManagementConfig, fetchProviderModels, getAgentLocalTools, getAgents, getConfig, getHealth, getSkills, importManagementConfig, inspectMcpServer, listSandboxProfiles, saveConfig, sortAgentsForPicker } from "@/lib/client-api";
+import type { AgentConfig, AgentDetail, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, ResourceVisibility, SandboxProfile, SkillSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -35,6 +35,7 @@ type AgentFormState = {
   skills: string[];
   localTools: string[];
   allowedOutbound: string[];
+  sandboxProfileId: string | null;
   delegates: string[];
   mcpServers: string[];
   mcpToolKeys: string[];
@@ -249,6 +250,7 @@ function toAgentForm(
     skills: agent?.skills || [],
     localTools: agent?.local_tools || [],
     allowedOutbound: agent?.allowed_outbound || [],
+    sandboxProfileId: agent?.sandbox_profile_id ?? null,
     delegates: agent?.delegate_agents || [],
     mcpServers: agent?.mcp_servers || [],
     mcpToolKeys: (agent?.mcp_tools || []).map((tool) => encodeMcpToolKey(tool.server_name, tool.tool_name)),
@@ -322,6 +324,8 @@ export function AgentsWorkspace() {
   const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
   const [availableMcpServers, setAvailableMcpServers] = useState<McpServerConfig[]>([]);
   const [mcpConfigLoadError, setMcpConfigLoadError] = useState<string | null>(null);
+  const [sandboxProfiles, setSandboxProfiles] = useState<SandboxProfile[]>([]);
+  const [executionBackendName, setExecutionBackendName] = useState<string | null>(null);
   const [inspectionByServer, setInspectionByServer] = useState<Record<string, McpInspectResponse>>({});
   const [inspectionErrors, setInspectionErrors] = useState<Record<string, string>>({});
   const [inspectingServers, setInspectingServers] = useState<string[]>([]);
@@ -380,6 +384,18 @@ export function AgentsWorkspace() {
       }
       setProviders(Array.isArray(nextProvidersDoc?.data) ? (nextProvidersDoc.data as ProviderEntry[]) : []);
 
+      // Best-effort sandbox context for the profile selector; neither failing
+      // should block the agent form itself.
+      void listSandboxProfiles()
+        .then((profiles) => setSandboxProfiles(profiles))
+        .catch(() => setSandboxProfiles([]));
+      void getHealth()
+        .then((health) => {
+          const backend = (health as { sandbox?: { backend?: string } }).sandbox?.backend;
+          setExecutionBackendName(typeof backend === "string" ? backend : null);
+        })
+        .catch(() => setExecutionBackendName(null));
+
       const persistedNames = Array.isArray(nextDocument.data)
         ? nextDocument.data.map((item) => (typeof item === "object" && item !== null ? String((item as { name?: string }).name || "") : ""))
         : [];
@@ -395,7 +411,23 @@ export function AgentsWorkspace() {
     void refresh();
   }, []);
 
-  const draftAgents = useMemo(() => {
+const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === form.sandboxProfileId) || null;
+  const profileCapabilityWarnings = useMemo(() => {
+    if (!selectedSandboxProfile) {
+      return [];
+    }
+    const capabilities = new Set(selectedSandboxProfile.runtime_capabilities || []);
+    const warnings: string[] = [];
+    for (const skillName of form.skills) {
+      const skill = availableSkills.find((entry) => entry.name === skillName);
+      if (skill?.runtime_type && !capabilities.has(skill.runtime_type)) {
+        warnings.push(`Skill '${skillName}' requires ${skill.runtime_type}`);
+      }
+    }
+    return warnings;
+  }, [selectedSandboxProfile, form.skills, availableSkills]);
+
+    const draftAgents = useMemo(() => {
     try {
       const parsed = JSON.parse(editor) as unknown;
       return Array.isArray(parsed) ? (parsed as AgentConfig[]) : [];
@@ -817,6 +849,7 @@ export function AgentsWorkspace() {
       skills: dedupeStrings(form.skills),
       local_tools: dedupeStrings(form.localTools),
       allowed_outbound: dedupeStrings(form.allowedOutbound),
+      sandbox_profile_id: form.sandboxProfileId || null,
       delegate_agents: dedupeStrings(form.delegates),
       mcp_servers: dedupeStrings(form.mcpServers),
       mcp_tools: dedupeMcpToolReferences(form.mcpToolKeys),
@@ -1293,7 +1326,7 @@ export function AgentsWorkspace() {
                         <div className="space-y-2">
                           <FieldLabel
                             htmlFor="allowed-outbound"
-                            help="Comma-separated fnmatch host patterns. When non-empty, the agent's sandbox container switches to bridge networking and the skill SDK enforces these patterns. Leave empty for no outbound (network_mode=none)."
+                            help="Comma-separated fnmatch host patterns. When non-empty, the agent's sandbox container switches to bridge networking and the skill SDK enforces these patterns cooperatively — this is NOT a hard egress firewall for arbitrary shell commands. Leave empty for no outbound (network_mode=none)."
                           >
                             Allowed outbound hosts
                           </FieldLabel>
@@ -1311,6 +1344,52 @@ export function AgentsWorkspace() {
                               }))
                             }
                           />
+                        </div>
+                        <div className="space-y-2">
+                          <FieldLabel
+                            htmlFor="agent-sandbox-profile"
+                            help="Administrator-approved sandbox environment for this agent. Unset uses the default profile."
+                          >
+                            Sandbox profile
+                          </FieldLabel>
+                          <ShadcnSelect
+                            value={form.sandboxProfileId ?? ""}
+                            onValueChange={(value) => setForm((current) => ({ ...current, sandboxProfileId: value || null }))}
+                          >
+                            <SelectTrigger className="console-select-trigger w-full" id="agent-sandbox-profile">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent align="start">
+                              <SelectItem value="">Default profile</SelectItem>
+                              {sandboxProfiles
+                                .filter((profile) => profile.enabled)
+                                .map((profile) => (
+                                  <SelectItem key={profile.id} value={profile.id}>
+                                    {profile.name}
+                                    {profile.is_default ? " (default)" : ""} — {(profile.runtime_capabilities || []).join("/") || "no capabilities"}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </ShadcnSelect>
+                          {selectedSandboxProfile ? (
+                            <div className="flex flex-wrap gap-1">
+                              {(selectedSandboxProfile.runtime_capabilities || []).map((capability) => (
+                                <Badge key={capability} variant="outline" className="text-xs">
+                                  {capability}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : null}
+                          {profileCapabilityWarnings.length > 0 ? (
+                            <p className="text-destructive text-xs">
+                              {profileCapabilityWarnings.join("; ")} — the backend rejects this combination on save.
+                            </p>
+                          ) : null}
+                          {executionBackendName && executionBackendName !== "docker" ? (
+                            <p className="text-muted-foreground text-xs">
+                              Saved but not enforced: the active execution backend is {executionBackendName}.
+                            </p>
+                          ) : null}
                         </div>
                         <MultiSelectField
                           label="Sub-agents"

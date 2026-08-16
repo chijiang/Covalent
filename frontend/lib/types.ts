@@ -188,6 +188,10 @@ export type HealthResponse = {
 
 export type SandboxSessionSummary = {
   session_id: string;
+  execution_scope_id?: string | null;
+  sandbox_instance_id?: string | null;
+  profile_id?: string | null;
+  profile_revision?: number | null;
   agent_name?: string | null;
   chat_title?: string | null;
   chat_message_count?: number | null;

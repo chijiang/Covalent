@@ -163,35 +163,36 @@ The **execution backend** decides where a session's skill code and ad-hoc script
 | Backend | Where code runs | Isolation | Status |
 |---------|-----------------|-----------|--------|
 | `filesystem` (default) | Local host subprocesses | None | Stable |
-| `docker` | One container per session | Container: resource limits + no network by default | Stable |
+| `docker` | One container per agent per session | Container: per-profile resource limits + no network by default | Stable |
 | `kubernetes` | One Pod per session | Pod + cluster network policy | Planned |
 
 Under `filesystem` (the default) skills run as host subprocesses with the backend process's permissions — fine for trusted local/development use.
 
-Under `docker`, each session gets an isolated container: skill runners and scripts are exec'd into it over a hijacked socket, the session workspace and skill source directories are bind-mounted, and the container is created with resource ceilings (`mem` / `pids` / `cpu`), a sized `tmpfs /tmp`, and **no outbound network by default** (`network_mode=none` — the model provider runs on the host, so skill runners don't need network). Containers are torn down when the session is deleted, swept on startup, and reclaimed by a periodic reaper.
+Under `docker`, every agent gets its own logical sandbox instance — a master agent and its delegates run in **separate containers** while sharing the session workspace (cooperative read/write): a Python master can write a file a Node delegate immediately reads. Skill runners and scripts are exec'd into the instance over a hijacked socket; the session workspace is bind-mounted read/write, skill sources read-only, and each instance gets private `HOME`/caches plus a sized `tmpfs /tmp`. Containers are created with per-profile resource ceilings (`mem` / `pids` / `cpu`) and **no outbound network by default** (`network_mode=none` — the model provider runs on the host, so skill runners don't need network). Containers are torn down when the session is deleted, swept on startup, and reclaimed by a per-instance reaper.
 
 To use Docker:
 
 ```bash
-# 1. Build the sandbox image (Python + Node + the framework runners):
+# 1. Build the sandbox images (compatibility Python image + Node variant):
 docker build -t covalent-sandbox:dev -f Dockerfile.sandbox .
+docker build -t covalent-sandbox-node:dev -f Dockerfile.sandbox.node .
 
 # 2. Select the backend and (optionally) tune:
 AGENT_FRAMEWORK_EXECUTION_BACKEND_KIND=docker
-# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_IMAGE=covalent-sandbox:dev
-# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_MEM_LIMIT=512m
-# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_NETWORK=none   # or "bridge" to allow outbound
-# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_MAX_SESSIONS=0  # 0=unlimited; >0 = queue when full
+# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_IMAGE=covalent-sandbox:dev   # seeds the default profile
+# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_MAX_INSTANCES=0  # 0=unlimited; >0 = queue when full
 # AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_IDLE_TIMEOUT_SECONDS=1800  # 0=never auto-stop
 ```
+
+**Sandbox profiles.** Administrators manage environment templates (**Service Console → Sandbox profiles**): image reference, runtime capabilities (`python`/`nodejs`/`shell`), resource limits, and pull policy. A profile must pass image validation (probed in a short-lived, network-disabled container) before it can be enabled or made default; the first boot seeds a compatibility `default` profile from the Docker settings above (marked *unverified* until validated). Agents select a profile in agent settings (unset = the workspace default), so a Python master can delegate to a Node agent running its native runtime. Editing a profile only affects new bindings — existing sessions keep their pinned revision snapshot. Disabling a profile is emergency revocation: its live containers stop and lazy recreation is blocked until re-enabled. Optional operator hard maximums (`..._MAX_MEMORY`/`..._MAX_CPUS`/`..._MAX_PIDS`) and an image registry allowlist (`..._ALLOWED_IMAGE_REGISTRIES`) constrain what profiles may request.
 
 **Per-agent outbound whitelist.** Configure `allowed_outbound` on any agent (agent settings → "Allowed outbound hosts", e.g. `api.example.com, *.openai.com`). When non-empty, that agent's session containers switch to `bridge` networking and the skill SDK enforces the patterns via `SKILL_NET_ALLOW`. Leave empty for `network_mode=none` (no outbound). The container is automatically recreated if the outbound config changes mid-session.
 
 **Sandbox shell tool (opt-in).** Under the Docker backend, set `AGENT_FRAMEWORK_EXECUTION_BACKEND_SHELL_TOOL_ENABLED=true` to give agents a `run_shell` tool that runs a shell command inside the session container. It inherits the resource limits and network policy, and is the same trust boundary as the skill code already running there. It is never registered on the `filesystem` backend. Tune the binary (`sh`/`bash`), timeout, and output cap with the other `EXECUTION_BACKEND_SHELL_TOOL_*` vars.
 
-**Sandbox management.** The Service Console includes a **Sandbox** admin page (Administration section in the sidebar) for monitoring live containers: per-session status (running/idle), agent name, started time, network mode, outbound tags, resource usage, and a stop button. Metrics (containers started/stopped/swept/errors) are also exposed via `GET /healthz` under `checks.sandbox`.
+**Sandbox management.** The Service Console's **Sandbox** admin page groups live containers by session with one nested row per instance: agent, profile + revision, status/idle, per-profile resources, network policy, and stop (keep the binding) / reset (re-resolve the profile next run) actions, plus a session-level stop-all. Metrics (containers started/stopped/swept, image pulls, recreations, capacity waits) are exposed via `GET /healthz` under `checks.sandbox`.
 
-**Lifecycle.** Containers are created lazily (first skill/script/shell call), stopped on session delete, swept on startup, and reclaimed by a periodic reaper. Idle containers are auto-stopped after `IDLE_TIMEOUT_SECONDS` (default 30 min). New sessions queue when `MAX_SESSIONS` is reached (instead of being rejected).
+**Lifecycle.** Containers are created lazily (first skill/script/shell call — model-only agents consume no Docker capacity), stopped on session delete, swept on startup, and reclaimed by a per-instance reaper. Idle containers are auto-stopped after `IDLE_TIMEOUT_SECONDS` (default 30 min) while their logical bindings survive, so the next run recreates them from the pinned spec. New instances queue when `MAX_INSTANCES` is reached (instead of being rejected). Stateless `memory.mode=none` invocations use a run-scoped sandbox that is always cleaned up on completion, failure, or client disconnect. A real-Docker acceptance script covering the multi-profile scenarios lives at `scripts/sandbox_acceptance.py`.
 
 Full design — the pluggable `ExecutionBackend` interface, lifecycle, security model, and phase roadmap — is in [`docs/execution-backend-design.md`](docs/execution-backend-design.md).
 

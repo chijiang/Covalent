@@ -5,8 +5,11 @@ import fnmatch
 import hashlib
 import json
 import mimetypes
+import os
 import re
 import shutil
+import threading
+import uuid
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -626,7 +629,8 @@ def _edit_workspace_file(settings: Any, context: Any, args: dict[str, Any]) -> s
     else:
         raise ValueError("mode must be 'replace_text' or 'replace_range'")
 
-    target.write_text(updated, encoding="utf-8")
+    with _WorkspacePathLock(target):
+        _atomic_write_bytes(target, updated.encode("utf-8"))
     return json.dumps(
         {
             "path": _relative_path(root, target),
@@ -663,8 +667,11 @@ def _write_workspace_file(settings: Any, context: Any, args: dict[str, Any]) -> 
     else:
         raise ValueError(f"Unsupported encoding: {encoding}")
 
-    existed = target.exists()
-    target.write_bytes(data)
+    with _WorkspacePathLock(target):
+        existed = target.exists()
+        if target.exists() and not overwrite:
+            raise ValueError(f"Workspace file already exists: {_relative_path(root, target)}")
+        _atomic_write_bytes(target, data)
     return json.dumps(
         {
             "path": _relative_path(root, target),
@@ -856,6 +863,56 @@ def _unzip_workspace_archive(settings: Any, context: Any, args: dict[str, Any]) 
         ensure_ascii=False,
         indent=2,
     )
+
+
+_PATH_LOCKS_GUARD = threading.Lock()
+_PATH_LOCKS: dict[str, threading.Lock] = {}
+
+
+class _WorkspacePathLock:
+    """Cooperative in-process lock per absolute workspace path.
+
+    Sibling agents in one execution scope share the workspace and may write the
+    same path concurrently. Built-in write tools take this lock so two
+    cooperative file operations do not interleave; shell/third-party writes
+    remain non-transactional (documented limitation)."""
+
+    def __init__(self, path: Path) -> None:
+        self._key = str(path)
+
+    def __enter__(self) -> "_WorkspacePathLock":
+        with _PATH_LOCKS_GUARD:
+            lock = _PATH_LOCKS.get(self._key)
+            if lock is None:
+                lock = threading.Lock()
+                _PATH_LOCKS[self._key] = lock
+        lock.acquire()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        with _PATH_LOCKS_GUARD:
+            lock = _PATH_LOCKS.get(self._key)
+        if lock is not None:
+            lock.release()
+
+
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    """Write via a sibling temp file + atomic rename, so a concurrent reader
+    (in this process or a sibling container's bind mount) never observes a
+    partially written file."""
+    temp_path = target.parent / f".{target.name}.tmp-{uuid.uuid4().hex[:12]}"
+    try:
+        with open(temp_path, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, target)
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
 
 
 def _publish_downloadable_file(settings: Any, context: Any, download_base_path: str, args: dict[str, Any]) -> str:

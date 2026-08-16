@@ -136,6 +136,10 @@ class SandboxMetrics:
     containers_stopped: int = 0
     containers_swept_startup: int = 0
     unavailable_errors: int = 0
+    image_pulls_succeeded: int = 0
+    image_pulls_failed: int = 0
+    instances_recreated: int = 0
+    capacity_waits: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -143,6 +147,10 @@ class SandboxMetrics:
             "containers_stopped": self.containers_stopped,
             "containers_swept_startup": self.containers_swept_startup,
             "unavailable_errors": self.unavailable_errors,
+            "image_pulls_succeeded": self.image_pulls_succeeded,
+            "image_pulls_failed": self.image_pulls_failed,
+            "instances_recreated": self.instances_recreated,
+            "capacity_waits": self.capacity_waits,
         }
 
 
@@ -538,6 +546,7 @@ class DockerBackend(ExecutionBackend):
                     meta.pop("needs_recreate", None)
                     await asyncio.to_thread(self._remove_container, existing)
                     self._metrics.containers_stopped += 1
+                    self._metrics.instances_recreated += 1
                     self._release_capacity()
                     # Fall through to create a fresh container.
                 else:
@@ -550,6 +559,7 @@ class DockerBackend(ExecutionBackend):
                 # the container is discoverable for stop/snapshot/reaper.
                 self.configure(binding)
             if self._capacity_semaphore is not None:
+                self._metrics.capacity_waits += 1
                 await self._capacity_semaphore.acquire()
             try:
                 container = await asyncio.to_thread(
@@ -658,9 +668,11 @@ class DockerBackend(ExecutionBackend):
         for raw in source_dirs:
             # Absolute, matching resolved_entry_point()/resolved_working_dir() (both
             # os.path.abspath) so the bind-mounted path equals what the runner imports.
-            # Docker rejects relative bind paths.
+            # Docker rejects relative bind paths. Read-only: executable skills
+            # must write outputs to their workspace or temp paths, never mutate
+            # installed skill source.
             host_path = os.path.abspath(str(Path(str(raw)).expanduser()))
-            volumes[host_path] = {"bind": host_path, "mode": "rw"}
+            volumes[host_path] = {"bind": host_path, "mode": "ro"}
         return volumes
 
     def _instance_state_dir_by_target(self, target: ExecutionTarget) -> Path:
@@ -681,12 +693,20 @@ class DockerBackend(ExecutionBackend):
             client.images.get(image)
             return
         if pull_policy == "always":
-            client.images.pull(image)
+            self._pull_image_counted(client, image)
             return
         try:
             client.images.get(image)
         except (docker.errors.ImageNotFound, docker.errors.NotFound):
+            self._pull_image_counted(client, image)
+
+    def _pull_image_counted(self, client, image: str) -> None:
+        try:
             client.images.pull(image)
+        except Exception:
+            self._metrics.image_pulls_failed += 1
+            raise
+        self._metrics.image_pulls_succeeded += 1
 
     async def is_alive(self, sandbox_instance_id: str) -> bool:
         container = self._containers.get(sandbox_instance_id)

@@ -199,6 +199,14 @@ export function deleteSandboxProfile(profileId: string): Promise<{ status: strin
   return apiFetchJson<{ status: string; id: string }>(`sandbox/profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
 }
 
+export function stopSandboxInstance(instanceId: string): Promise<{ status: string; sandbox_instance_id: string }> {
+  return apiFetchJson(`sandbox/instances/${encodeURIComponent(instanceId)}`, { method: "DELETE" });
+}
+
+export function resetSandboxInstance(instanceId: string): Promise<{ status: string; sandbox_instance_id: string }> {
+  return apiFetchJson(`sandbox/instances/${encodeURIComponent(instanceId)}/reset`, { method: "POST" });
+}
+
 export function listChatSessions(): Promise<ChatSessionSummary[]> {
   return apiFetchJson<ChatSessionSummary[]>("sessions", { method: "GET" });
 }
