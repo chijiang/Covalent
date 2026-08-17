@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
@@ -34,10 +35,13 @@ class _ApiTokenRunLimiter:
     token_id (never per request) and reused across the token's lifetime. When
     the configured cap is 0 the limiter is a no-op (back-compat).
 
-    Excess concurrent calls block on ``acquire`` (queue, not reject) so a
-    burst from one token serializes rather than exhausting provider quota or
-    sandbox containers. Intended to live on ``app.state`` so all workers in
-    this process share it.
+    Excess concurrent calls QUEUE on ``acquire`` (serialize, never reject) so
+    a burst from one token is paced rather than exhausting provider quota or
+    sandbox containers. The cap is per PROCESS: the limiter lives on
+    ``app.state``, so multiple API workers each enforce the cap independently
+    and the effective global concurrency for a token is
+    ``max_concurrent_runs * worker_count``. Callers that need a hard global
+    rejection at the limit should negotiate an explicit policy instead.
     """
 
     def __init__(self, max_per_token: int) -> None:
@@ -309,6 +313,13 @@ async def public_invoke_stream(
         yield _encode_public_sse("run.failed", {"run_id": run_id, "error": error_payload})
     finally:
         latency_ms = int((perf_counter() - started) * 1000)
+        # A client disconnect surfaces as GeneratorExit/CancelledError — a
+        # BaseException, so the except clauses above never run. A run that
+        # ended without producing a final answer must not be recorded as a
+        # success (it would inflate success-rate and audit as completed); a
+        # disconnect AFTER the final answer was generated stays completed.
+        if status == "completed" and final_payload is None and sys.exc_info()[0] is not None:
+            status = "aborted"
         # Shielded from client-disconnect cancellation: a cancelled yield or
         # await must not leak the run record or the concurrency slot.
         # (CancelScope is a sync context manager; the awaits inside it are

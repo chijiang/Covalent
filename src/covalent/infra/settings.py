@@ -46,7 +46,10 @@ class AppSettings(BaseSettings):
     mcp_servers_json: str | None = None
     max_upload_bytes: int = 100 * 1024 * 1024  # 100 MB
     # Max simultaneous in-flight public agent runs (streaming + non-streaming)
-    # per API token. 0 = unlimited (back-compat). Excess requests get 429.
+    # per API token, enforced by an in-process semaphore PER WORKER PROCESS
+    # (multi-worker deployments should size this per worker, not globally).
+    # 0 = unlimited (back-compat). Excess concurrent calls QUEUE (serialize)
+    # rather than being rejected — they do not return 429.
     api_token_max_concurrent_runs: int = 4
     api_token_hash_pepper: str = DEFAULT_API_TOKEN_HASH_PEPPER
     console_auth_mode: str = "local"

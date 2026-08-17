@@ -53,7 +53,8 @@ def _stream(events, limiter, **overrides):
 class PublicStreamLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_disconnect_after_first_event_releases_slot(self) -> None:
         """Consume run.created, then aclose() — exactly what a client
-        disconnect does. The limiter slot must be released."""
+        disconnect does. The limiter slot must be released AND the run must
+        not be recorded as a success (no final answer was produced)."""
         limiter = _RecordingLimiter()
         summaries: list[dict[str, Any]] = []
 
@@ -72,9 +73,35 @@ class PublicStreamLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(limiter.calls, ["acquired", "released"])
         self.assertEqual(len(summaries), 1)
-        # Finalization saw the run end without a final answer.
-        self.assertEqual(summaries[0]["status"], "completed")
+        # A client disconnect is not a successful run: it produced no final
+        # answer, so it must not count toward success-rate/audit as completed.
+        self.assertEqual(summaries[0]["status"], "aborted")
         self.assertIsNone(summaries[0]["final_payload"])
+
+    async def test_disconnect_after_final_answer_stays_completed(self) -> None:
+        """A disconnect AFTER the final answer was generated is a genuine
+        success: the run produced its answer, the connection just dropped."""
+        limiter = _RecordingLimiter()
+        summaries: list[dict[str, Any]] = []
+
+        async def record(summary: dict[str, Any]) -> None:
+            summaries.append(summary)
+
+        stream = _stream(
+            _events({"event": "final", "payload": {"output_text": "done"}}),
+            limiter,
+            record_run=record,
+        )
+        # Consume created + the mapped final event, then disconnect before
+        # run.completed is reached.
+        await stream.__anext__()
+        second = await stream.__anext__()
+        self.assertTrue(any(key in second for key in ("final", "output_text")))
+
+        await stream.aclose()
+
+        self.assertEqual(summaries[0]["status"], "completed")
+        self.assertEqual(summaries[0]["final_payload"]["output_text"], "done")
 
     async def test_full_stream_yields_created_events_completed(self) -> None:
         limiter = _RecordingLimiter()
