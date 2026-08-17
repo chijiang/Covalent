@@ -8,8 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from typing import Any, Literal
+
+import anyio
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +24,10 @@ from covalent.application.audit import RequestMetadata, record_audit
 from covalent.application.errors import ConflictError, InvalidInputError, NotFoundError, QuotaExceededError
 from covalent.application.principal import ApiPrincipal
 from covalent.infra.db import AgentRunLogRow, AuditLogRow, ChatSessionRow, DatabaseManager
+from covalent.model.base import ModelProviderError
+
+logger = logging.getLogger(__name__)
+
 
 class _ApiTokenRunLimiter:
     """Per-token in-flight run cap. A bounded semaphore is created lazily per
@@ -235,6 +244,100 @@ def _summarize_public_tool_result(content: Any, *, max_chars: int = 600) -> str:
     if len(text) <= max_chars:
         return text
     return f"{text[: max_chars - 3].rstrip()}..."
+
+async def public_invoke_stream(
+    *,
+    events: AsyncIterator[dict[str, Any]],
+    run_id: str,
+    agent_name: str,
+    memory_mode: str,
+    session_id: str | None,
+    created_at_iso: str,
+    trace_level: str,
+    limiter: _ApiTokenRunLimiter | None,
+    token_id: str,
+    record_run: Callable[[dict[str, Any]], Awaitable[None]],
+) -> AsyncIterator[str]:
+    """SSE generator for a streaming public invoke.
+
+    This generator owns the stream lifecycle: the per-token slot is acquired
+    at the top and the try/finally spans the FIRST yield (``run.created``)
+    onward, so a client that disconnects immediately after the first event
+    still releases the slot and runs finalization — GeneratorExit is raised at
+    the suspended yield, inside the try. ``record_run`` receives the run
+    summary (status / final payload / error payload / latency) and runs
+    shielded before the slot is released; the caller's callback sequences
+    run-log recording before scope cleanup. The terminal ``run.completed`` is
+    yielded only on normal exhaustion (after finalization) — never during
+    GeneratorExit unwinding.
+    """
+    if limiter is not None:
+        await limiter.acquire(token_id)
+    started = perf_counter()
+    final_payload: dict[str, Any] | None = None
+    error_payload: dict[str, Any] = {}
+    status = "completed"
+    try:
+        yield _encode_public_sse(
+            "run.created",
+            {
+                "run_id": run_id,
+                "agent": agent_name,
+                "memory_mode": memory_mode,
+                "session_id": session_id,
+                "created_at": created_at_iso,
+            },
+        )
+        async for event in events:
+            event_name = str(event.get("event") or "")
+            payload = event.get("payload")
+            if event_name == "final" and isinstance(payload, dict):
+                final_payload = payload
+            for public_event in _public_stream_events(event_name, payload, trace_level=trace_level):
+                yield public_event
+    except ModelProviderError as exc:
+        status = "failed"
+        status_code = 502 if exc.status_code is None else min(max(exc.status_code, 400), 599)
+        error_payload = {"code": "model_error", "status_code": status_code, "message": exc.detail}
+        yield _encode_public_sse("run.failed", {"run_id": run_id, "error": error_payload})
+    except Exception as exc:
+        logger.exception(
+            "Public agent invoke stream failed", extra={"agent_name": agent_name, "run_id": run_id}
+        )
+        status = "failed"
+        error_payload = {"code": "internal_error", "message": str(exc) or "Agent run failed unexpectedly."}
+        yield _encode_public_sse("run.failed", {"run_id": run_id, "error": error_payload})
+    finally:
+        latency_ms = int((perf_counter() - started) * 1000)
+        # Shielded from client-disconnect cancellation: a cancelled yield or
+        # await must not leak the run record or the concurrency slot.
+        # (CancelScope is a sync context manager; the awaits inside it are
+        # what the shield protects.)
+        with anyio.CancelScope(shield=True):
+            try:
+                await record_run(
+                    {
+                        "status": status,
+                        "final_payload": final_payload,
+                        "error_payload": error_payload,
+                        "latency_ms": latency_ms,
+                    }
+                )
+            finally:
+                if limiter is not None:
+                    await limiter.release(token_id)
+    if final_payload is not None:
+        yield _encode_public_sse(
+            "run.completed",
+            _public_run_completed_payload(
+                run_id=run_id,
+                agent_name=agent_name,
+                memory_mode=memory_mode,
+                session_id=session_id,
+                final_payload=final_payload,
+            ),
+        )
+
 
 async def _record_public_agent_run(
     db_manager: DatabaseManager,

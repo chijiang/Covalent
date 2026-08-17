@@ -25,15 +25,15 @@ from covalent.api.auth import require_trace_level_allowed
 from covalent.application.errors import ApplicationError
 from covalent.application.schemas import PublicAgentInvokeRequest
 from covalent.application.schemas import PublicAgentInvokeResponse
-from covalent.application.services.invoke_service import _ApiTokenRunLimiter
-from covalent.application.services.invoke_service import _encode_public_sse
-from covalent.application.services.invoke_service import _enforce_api_token_policy_limits
-from covalent.application.services.invoke_service import _public_run_completed_payload
-from covalent.application.services.invoke_service import _public_stream_events
-from covalent.application.services.invoke_service import _record_denied_public_agent_invoke
-from covalent.application.services.invoke_service import _record_public_agent_run
-from covalent.application.services.invoke_service import _resolve_public_invoke_session_id
-from covalent.application.services.invoke_service import _usage_payload
+from covalent.application.services.invoke_service import (
+    _ApiTokenRunLimiter,
+    _enforce_api_token_policy_limits,
+    _record_denied_public_agent_invoke,
+    _record_public_agent_run,
+    _resolve_public_invoke_session_id,
+    _usage_payload,
+    public_invoke_stream,
+)
 from covalent.application.services.management_service import _ensure_api_principal_can_invoke_agent
 from covalent.application.services.management_service import _resolve_api_agent_name
 from covalent.core.types import RunContext
@@ -150,88 +150,44 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
     if invoke_request.stream:
         limiter: _ApiTokenRunLimiter | None = getattr(request.app.state, "api_token_run_limiter", None)
 
-        async def event_stream():
-            # Acquire the per-token slot inside the generator so the slot is
-            # held only while the stream is actually consuming resources, and
-            # released in finally even if the client disconnects mid-stream.
-            if limiter is not None:
-                await limiter.acquire(principal.token_id)
-            started = perf_counter()
-            final_payload: dict[str, Any] | None = None
-            error_payload: dict[str, Any] = {}
-            status = "completed"
-            yield _encode_public_sse(
-                "run.created",
-                {
-                    "run_id": run_id,
-                    "agent": agent.name,
-                    "memory_mode": memory_mode,
-                    "session_id": session_id,
-                    "created_at": created_at.isoformat(),
-                },
-            )
+        async def _record_stream_run(summary: dict[str, Any]) -> None:
+            # Sequenced inside the generator's shielded finally: run-log first,
+            # stateless-scope cleanup even if recording fails, slot release last.
             try:
-                async for event in runtime.stream_events(agent, invoke_request.input, context):
-                    event_name = str(event.get("event") or "")
-                    payload = event.get("payload")
-                    if event_name == "final" and isinstance(payload, dict):
-                        final_payload = payload
-                    for public_event in _public_stream_events(event_name, payload, trace_level=trace_level):
-                        yield public_event
-            except ModelProviderError as exc:
-                status = "failed"
-                status_code = 502 if exc.status_code is None else min(max(exc.status_code, 400), 599)
-                error_payload = {"code": "model_error", "status_code": status_code, "message": exc.detail}
-                yield _encode_public_sse("run.failed", {"run_id": run_id, "error": error_payload})
-            except Exception as exc:
-                logger.exception("Public agent invoke stream failed", extra={"agent_name": agent.name, "run_id": run_id})
-                status = "failed"
-                error_payload = {"code": "internal_error", "message": str(exc) or "Agent run failed unexpectedly."}
-                yield _encode_public_sse("run.failed", {"run_id": run_id, "error": error_payload})
+                await _record_public_agent_run(
+                    db_manager,
+                    principal=principal,
+                    run_id=run_id,
+                    agent_name=agent.name,
+                    memory_mode=memory_mode,
+                    session_id=session_id,
+                    status=str(summary["status"]),
+                    latency_ms=int(summary["latency_ms"]),
+                    provider=agent.provider.provider,
+                    model=agent.provider.model,
+                    usage=_usage_payload(summary["final_payload"]),
+                    error=dict(summary["error_payload"]),
+                    metadata=invoke_request.metadata,
+                )
             finally:
-                latency_ms = int((perf_counter() - started) * 1000)
-                # Critical cleanup completes BEFORE the terminal event and is
-                # shielded from client-disconnect cancellation: a cancelled
-                # yield/await inside this finally would otherwise leak the
-                # stateless sandbox, its bindings, and the concurrency slot.
-                # (CancelScope is a sync context manager; awaits inside the
-                # shielded scope are what it protects.)
-                with anyio.CancelScope(shield=True):
-                    try:
-                        await _record_public_agent_run(
-                            db_manager,
-                            principal=principal,
-                            run_id=run_id,
-                            agent_name=agent.name,
-                            memory_mode=memory_mode,
-                            session_id=session_id,
-                            status=status,
-                            latency_ms=latency_ms,
-                            provider=agent.provider.provider,
-                            model=agent.provider.model,
-                            usage=_usage_payload(final_payload),
-                            error=error_payload,
-                            metadata=invoke_request.metadata,
-                        )
-                    finally:
-                        # Resource cleanup must run even if run-log recording fails.
-                        await _cleanup_stateless_scope()
-                        if limiter is not None:
-                            await limiter.release(principal.token_id)
-                if final_payload is not None:
-                    yield _encode_public_sse(
-                        "run.completed",
-                        _public_run_completed_payload(
-                            run_id=run_id,
-                            agent_name=agent.name,
-                            memory_mode=memory_mode,
-                            session_id=session_id,
-                            final_payload=final_payload,
-                        ),
-                    )
+                await _cleanup_stateless_scope()
 
+        # The generator owns acquire/release and the try/finally spanning its
+        # whole lifetime (first yield onward) — a client disconnecting right
+        # after run.created still releases the concurrency slot.
         return StreamingResponse(
-            event_stream(),
+            public_invoke_stream(
+                events=runtime.stream_events(agent, invoke_request.input, context),
+                run_id=run_id,
+                agent_name=agent.name,
+                memory_mode=memory_mode,
+                session_id=session_id,
+                created_at_iso=created_at.isoformat(),
+                trace_level=trace_level,
+                limiter=limiter,
+                token_id=principal.token_id,
+                record_run=_record_stream_run,
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
