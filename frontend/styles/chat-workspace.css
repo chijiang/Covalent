@@ -1626,6 +1626,29 @@
   box-shadow: none;
 }
 
+/* Editing is a focused task, so let the field use a predictable desktop width
+   instead of inheriting the original message's fit-content bubble width. */
+.chat-bubble.outbound.chat-bubble-editing {
+  box-sizing: border-box;
+  width: min(720px, 86%);
+}
+
+.chat-bubble-edit,
+.chat-bubble-edit-input {
+  width: 100%;
+}
+
+.chat-bubble-edit-input {
+  display: block;
+}
+
+@media (max-width: 640px) {
+  .chat-bubble.outbound.chat-bubble-editing {
+    width: 100%;
+    max-width: 100%;
+  }
+}
+
 .chat-bubble.inbound {
   background: var(--surface-secondary);
   color: var(--fg-primary);

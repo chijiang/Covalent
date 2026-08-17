@@ -2,6 +2,7 @@
 
 import {
   isValidElement,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -693,7 +694,13 @@ function ChatMessageBubble({
 
   return (
     <article className={message.role === "user" ? "chat-message-row outbound" : "chat-message-row inbound"}>
-      <div className={message.role === "user" ? "chat-bubble outbound" : "chat-bubble inbound"}>
+      <div
+        className={
+          message.role === "user"
+            ? `chat-bubble outbound${isEditing ? " chat-bubble-editing" : ""}`
+            : "chat-bubble inbound"
+        }
+      >
         <ChatBubbleCopy content={displayContent || ""} tone={tone} />
         {canEdit ? (
           <button
@@ -1941,6 +1948,7 @@ export function ChatWorkspace() {
   // Tracks the in-flight agent run. A new run (or unmount) aborts the previous
   // one so its stream can no longer mutate thread state.
   const activeRunRef = useRef<{ id: number; controller: AbortController } | null>(null);
+  const undoInProgressRef = useRef(false);
 
   // Snapshot used by Task 8's undo toast: the original edited message and the
   // tail that was discarded when the user resent an edited message. Cleared on
@@ -1952,20 +1960,30 @@ export function ChatWorkspace() {
     removedTail: Message[];
     prefix: Message[];
   } | null>(null);
+  const editUndoToastRef = useRef<string | number | null>(null);
+
+  const clearEditUndo = useCallback(() => {
+    editUndoRef.current = null;
+    if (editUndoToastRef.current !== null) {
+      toast.dismiss(editUndoToastRef.current);
+      editUndoToastRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     return () => {
       // Abort any in-flight stream when the component unmounts.
       activeRunRef.current?.controller.abort();
       activeRunRef.current = null;
+      clearEditUndo();
     };
-  }, []);
+  }, [clearEditUndo]);
 
   // Clear the undo slot when the active thread changes so a stale snapshot
   // from one thread can't be restored into another.
   useEffect(() => {
-    editUndoRef.current = null;
-  }, [activeThreadId]);
+    clearEditUndo();
+  }, [activeThreadId, clearEditUndo]);
 
   useEffect(() => {
     const traceStored = window.localStorage.getItem(TRACE_PANEL_VISIBLE_STORAGE_KEY);
@@ -2365,12 +2383,23 @@ export function ChatWorkspace() {
     attachments?: ComposerAttachment[];
     metadata?: Record<string, unknown>;
     clearPendingQuestion?: boolean;
+    preserveEditUndo?: boolean;
   }) {
+    if (undoInProgressRef.current) {
+      return;
+    }
     const attachments = params.attachments || [];
     const threadId = params.thread.id;
     const userMessageId = uid("user");
     const assistantId = uid("assistant");
     const userMessage: Message = { id: userMessageId, role: "user", content: params.userContent, attachments };
+
+    // Any normal follow-up makes an older edit snapshot unsafe: Undo would
+    // otherwise replace the transcript and discard this newer turn. The
+    // edit-and-resend run is the sole caller allowed to keep its new snapshot.
+    if (!params.preserveEditUndo) {
+      clearEditUndo();
+    }
 
     setError(null);
     setSending(true);
@@ -2584,12 +2613,19 @@ export function ChatWorkspace() {
   // edited message plus the tail that was discarded. Server-side replace then
   // local update; clears the undo slot on success.
   async function handleUndoEdit() {
+    if (sending || undoInProgressRef.current) {
+      return;
+    }
     const snapshot = editUndoRef.current;
     if (!snapshot) {
       return;
     }
     const { threadId, sessionId, originalMessage, removedTail, prefix } = snapshot;
     const restored = [...prefix, originalMessage, ...removedTail];
+    // Consume first so rapid double-clicks cannot issue competing replacements.
+    undoInProgressRef.current = true;
+    setSending(true);
+    clearEditUndo();
     try {
       await replaceChatTranscript(sessionId, {
         messages: restored.map((m) => ({
@@ -2599,20 +2635,30 @@ export function ChatWorkspace() {
           attachments: (m.attachments ?? []) as unknown[],
         })),
       });
+      updateThread(threadId, (t) => ({
+        ...t,
+        messages: restored as unknown as ChatThread["messages"],
+        updatedAt: Date.now(),
+      }));
     } catch (undoError) {
       setError(undoError instanceof Error ? undoError.message : "Failed to undo edit.");
+      editUndoRef.current = snapshot;
+      showEditUndoToast();
       return;
+    } finally {
+      undoInProgressRef.current = false;
+      setSending(false);
     }
-    updateThread(threadId, (t) => ({
-      ...t,
-      messages: restored as unknown as ChatThread["messages"],
-      updatedAt: Date.now(),
-    }));
-    editUndoRef.current = null;
   }
 
   function showEditUndoToast() {
-    toast("Edited message and resent.", {
+    if (!editUndoRef.current) {
+      return;
+    }
+    if (editUndoToastRef.current !== null) {
+      toast.dismiss(editUndoToastRef.current);
+    }
+    editUndoToastRef.current = toast("Edited message and resent.", {
       action: {
         label: "Undo",
         onClick: () => {
@@ -2639,6 +2685,7 @@ export function ChatWorkspace() {
     }
 
     // Snapshot for undo: original message + everything strictly after it.
+    clearEditUndo();
     const originalMessage = message;
     const removedTail = thread.messages.slice(messageIndex + 1) as Message[];
     const prefix = thread.messages.slice(0, messageIndex) as Message[];
@@ -2661,7 +2708,7 @@ export function ChatWorkspace() {
         });
       } catch (truncateError) {
         setError(truncateError instanceof Error ? truncateError.message : "Failed to edit message.");
-        editUndoRef.current = null;
+        clearEditUndo();
         return;
       }
     }
@@ -2682,6 +2729,7 @@ export function ChatWorkspace() {
       userContent: newContent,
       attachments,
       clearPendingQuestion: true,
+      preserveEditUndo: true,
     });
 
     // 4. Offer undo (Task 8 surfaces the toast; here we just flag completion).

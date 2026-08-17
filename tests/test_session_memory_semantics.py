@@ -144,6 +144,150 @@ class TranscriptEditDrivesModelContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("stale question" not in item and "corrected question" in item for item in seen))
         self.assertFalse(any("stale question" in item or "stale answer" in item for item in seen))
 
+    async def test_truncate_keeps_attachment_and_tool_context_in_matching_prefix(self) -> None:
+        """A compact transcript must not erase the surviving turn's hidden
+        attachment metadata, tool call, or tool result from model memory."""
+        from datetime import UTC, datetime
+        from types import SimpleNamespace
+
+        from starlette.testclient import TestClient
+
+        from covalent.api.app import create_app
+        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent.infra.settings import AppSettings
+        from tests.test_session_transcript_replace_api import _FakeDbSession, _admin_cookie
+
+        attachment = {
+            "id": "file-1",
+            "name": "brief.pdf",
+            "kind": "pdf",
+            "summary": "Project brief",
+            "workspacePath": "/workspace/brief.pdf",
+        }
+        retained_memory = [
+            _message(
+                "user",
+                "Review the brief.\n\nUploaded attachments summary:\n"
+                "- brief.pdf (pdf): Project brief [/workspace/brief.pdf]",
+            ),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[{"id": "call-1", "type": "function", "function": {"name": "read_file"}}],
+            ),
+            Message(role="tool", content="The brief says launch in October.", name="read_file", tool_call_id="call-1"),
+            _message("assistant", "The brief sets an October launch."),
+        ]
+        store = InMemorySessionStore()
+        await store.save_session(
+            ChatSessionRecord(
+                id="sess-tool-prefix",
+                title="t",
+                title_source="auto",
+                agent_name="default",
+                owner_user_id=None,
+                workspace_id=None,
+                preview_text="",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                memory_messages=[
+                    *retained_memory,
+                    _message("user", "discard this question"),
+                    _message("assistant", "discard this answer"),
+                ],
+                messages=[
+                    ChatTranscriptMessage(id="um-1", role="user", content="Review the brief.", attachments=[attachment]),
+                    ChatTranscriptMessage(id="am-1", role="assistant", content="The brief sets an October launch."),
+                    ChatTranscriptMessage(id="um-2", role="user", content="discard this question"),
+                    ChatTranscriptMessage(id="am-2", role="assistant", content="discard this answer"),
+                ],
+                activity=[],
+            )
+        )
+        app = create_app()
+        app.state.settings = AppSettings(console_auth_mode="local", workspace_root_dir="/tmp")
+        app.state.db_manager = SimpleNamespace(session_factory=lambda: _FakeDbSession())
+        app.state.session_store = store
+        response = TestClient(app).put(
+            "/sessions/sess-tool-prefix/transcript",
+            json={"truncate_before_message_id": "um-2"},
+            headers={"Cookie": _admin_cookie(app)},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [message.model_dump() for message in await store.load_messages("sess-tool-prefix")],
+            [message.model_dump() for message in retained_memory],
+        )
+
+    async def test_undo_rebuilds_attachment_context_for_restored_branch(self) -> None:
+        """Undo restores an older branch that no longer exists in memory, so
+        its attachment summary must be rebuilt instead of silently disappearing."""
+        from datetime import UTC, datetime
+        from types import SimpleNamespace
+
+        from starlette.testclient import TestClient
+
+        from covalent.api.app import create_app
+        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent.infra.settings import AppSettings
+        from tests.test_session_transcript_replace_api import _FakeDbSession, _admin_cookie
+
+        store = InMemorySessionStore()
+        await store.save_session(
+            ChatSessionRecord(
+                id="sess-undo-attachment",
+                title="t",
+                title_source="auto",
+                agent_name="default",
+                owner_user_id=None,
+                workspace_id=None,
+                preview_text="",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                memory_messages=[_message("user", "edited request"), _message("assistant", "edited answer")],
+                messages=[
+                    ChatTranscriptMessage(id="um-edited", role="user", content="edited request"),
+                    ChatTranscriptMessage(id="am-edited", role="assistant", content="edited answer"),
+                ],
+                activity=[],
+            )
+        )
+        app = create_app()
+        app.state.settings = AppSettings(console_auth_mode="local", workspace_root_dir="/tmp")
+        app.state.db_manager = SimpleNamespace(session_factory=lambda: _FakeDbSession())
+        app.state.session_store = store
+        response = TestClient(app).put(
+            "/sessions/sess-undo-attachment/transcript",
+            json={
+                "messages": [
+                    {
+                        "id": "um-original",
+                        "role": "user",
+                        "content": "Summarize the quarterly report.",
+                        "attachments": [
+                            {
+                                "id": "file-2",
+                                "name": "quarterly.pdf",
+                                "kind": "pdf",
+                                "summary": "Q4 results",
+                                "workspacePath": "/workspace/quarterly.pdf",
+                            }
+                        ],
+                    },
+                    {"id": "am-original", "role": "assistant", "content": "The report was profitable."},
+                ]
+            },
+            headers={"Cookie": _admin_cookie(app)},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        rebuilt = await store.load_messages("sess-undo-attachment")
+        self.assertIn("quarterly.pdf", str(rebuilt[0].content))
+        self.assertIn("/workspace/quarterly.pdf", str(rebuilt[0].content))
+        self.assertIn("Q4 results", str(rebuilt[0].content))
+        self.assertNotIn("edited request", " | ".join(str(message.content) for message in rebuilt))
+
 
 class ConcurrentDelegatePersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_delegates_never_persist_their_context(self) -> None:

@@ -36,10 +36,9 @@ from covalent.application.schemas import ChatSessionSummaryResponse
 from covalent.application.schemas import ChatSessionUpdateRequest
 from covalent.application.schemas import TranscriptReplaceRequest
 from covalent.application.services.management_service import _ensure_console_principal_can_access_session
-from covalent.application.services.session_service import _build_session_preview
+from covalent.application.services.session_service import _build_session_preview, _memory_for_replaced_transcript
 from covalent.core.attachment_processing import process_attachment_bytes
 from covalent.infra.db import DatabaseManager
-from covalent.core.types import Message
 from covalent.infra.memory import ChatSessionRecord
 from covalent.infra.memory import ChatTranscriptMessage
 from covalent.infra.memory import SessionStore
@@ -137,13 +136,10 @@ async def replace_transcript(
         preview_text=_build_session_preview(new_messages),
         created_at=existing.created_at,
         updated_at=datetime.now(UTC),
-        # Model memory is rebuilt from the surviving visible messages: the
-        # user believes an edit/resend removed those turns, so the next model
-        # request must not still see them (previously only the visible
-        # transcript changed and memory kept the removed tail).
-        memory_messages=[
-            Message(role=m.role, content=m.content) for m in new_messages
-        ],
+        # Keep the exact model-memory prefix for surviving turns so attachment
+        # and tool context remain available after an edit. An Undo branch that
+        # no longer exists in memory is rebuilt only for its restored suffix.
+        memory_messages=_memory_for_replaced_transcript(existing.memory_messages, new_messages),
         messages=new_messages,
         activity=existing.activity,
     )

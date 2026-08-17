@@ -188,6 +188,106 @@ def _build_session_preview(messages: list[ChatTranscriptMessage]) -> str:
             return preview[:200]
     return ""
 
+
+def _memory_for_replaced_transcript(
+    memory_messages: list[Message],
+    transcript_messages: list[ChatTranscriptMessage],
+) -> list[Message]:
+    """Return model memory that matches a replacement transcript.
+
+    A transcript is deliberately a compact user/assistant view, while model
+    memory also contains tool calls and tool results.  On an edit we retain the
+    exact matching memory prefix, rather than recreating that prefix from the
+    compact view and silently dropping its tool or attachment context.  Undo
+    can restore an older branch which is no longer present in memory; rebuild
+    only that unmatched suffix from the transcript in that case.
+    """
+    cursor = 0
+    matched_memory_end = 0
+    matched_transcript_count = 0
+
+    for transcript_message in transcript_messages:
+        match_index = next(
+            (
+                index
+                for index in range(cursor, len(memory_messages))
+                if _memory_message_matches_transcript(memory_messages[index], transcript_message)
+            ),
+            None,
+        )
+        if match_index is None:
+            break
+        cursor = match_index + 1
+        matched_memory_end = cursor
+        matched_transcript_count += 1
+
+    retained = [message.model_copy(deep=True) for message in memory_messages[:matched_memory_end]]
+    rebuilt_suffix = [
+        _transcript_message_to_memory(message)
+        for message in transcript_messages[matched_transcript_count:]
+    ]
+    return [*retained, *rebuilt_suffix]
+
+
+def _memory_message_matches_transcript(
+    memory_message: Message,
+    transcript_message: ChatTranscriptMessage,
+) -> bool:
+    if memory_message.role != transcript_message.role:
+        return False
+    if not isinstance(memory_message.content, str):
+        return False
+
+    memory_content = memory_message.content.strip()
+    transcript_content = transcript_message.content.strip()
+    if memory_message.role == "assistant":
+        # An empty assistant tool-call message is not a visible assistant turn.
+        return not memory_message.tool_calls and memory_content == transcript_content
+
+    if memory_content == transcript_content:
+        return True
+    if transcript_content and memory_content.startswith(f"{transcript_content}\n\n"):
+        return True
+
+    attachment_identifiers = _attachment_identifiers(transcript_message.attachments)
+    return bool(attachment_identifiers) and all(identifier in memory_content for identifier in attachment_identifiers)
+
+
+def _transcript_message_to_memory(message: ChatTranscriptMessage) -> Message:
+    content = message.content.strip()
+    if message.role == "user":
+        attachment_summary = _attachment_memory_summary(message.attachments)
+        if attachment_summary:
+            content = f"{content}\n\n{attachment_summary}" if content else attachment_summary
+    return Message(role=message.role, content=content)
+
+
+def _attachment_identifiers(attachments: list[dict[str, Any]]) -> list[str]:
+    identifiers: list[str] = []
+    for attachment in attachments:
+        for key in ("name", "workspace_path", "workspacePath"):
+            value = attachment.get(key)
+            if isinstance(value, str) and value.strip():
+                identifiers.append(value.strip())
+                break
+    return identifiers
+
+
+def _attachment_memory_summary(attachments: list[dict[str, Any]]) -> str:
+    if not attachments:
+        return ""
+
+    lines = ["Uploaded attachments summary:"]
+    for attachment in attachments:
+        name = str(attachment.get("name") or "attachment").strip() or "attachment"
+        kind = str(attachment.get("kind") or attachment.get("type") or "binary").strip() or "binary"
+        summary = str(attachment.get("summary") or "").strip()
+        workspace_path = attachment.get("workspace_path") or attachment.get("workspacePath")
+        suffix = f" [{workspace_path}]" if isinstance(workspace_path, str) and workspace_path.strip() else ""
+        summary_suffix = f": {summary}" if summary else ""
+        lines.append(f"- {name} ({kind}){summary_suffix}{suffix}")
+    return "\n".join(lines)
+
 def _fallback_session_title(messages: list[ChatTranscriptMessage]) -> str:
     seed = next((message.content for message in messages if message.role == "user" and message.content.strip()), "")
     normalized = " ".join(seed.replace("\n", " ").split()).strip(" -:,.\t")
@@ -282,4 +382,3 @@ def _build_resume_tool_result(
         answers=normalized_answers,
         summary=summary,
     )
-
