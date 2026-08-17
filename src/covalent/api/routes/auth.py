@@ -25,7 +25,7 @@ from covalent.application.services.user_service import _update_current_password
 from covalent.infra.db import DatabaseManager
 from covalent.infra.settings import AppSettings
 
-router = APIRouter()
+router = APIRouter(tags=["Auth"])
 
 
 @router.post("/auth/register")

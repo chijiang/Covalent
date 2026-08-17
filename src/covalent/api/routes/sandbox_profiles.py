@@ -17,7 +17,7 @@ from covalent.api._shared import _record_audit_log
 from covalent.application.schemas import SandboxProfileCreateRequest, SandboxProfileUpdateRequest
 from covalent.infra.db import DatabaseManager
 
-router = APIRouter()
+router = APIRouter(tags=["Sandbox Profiles"])
 
 
 def _profile_service(request: Request):

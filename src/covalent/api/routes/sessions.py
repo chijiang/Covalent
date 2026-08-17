@@ -44,7 +44,7 @@ from covalent.infra.memory import ChatTranscriptMessage
 from covalent.infra.memory import SessionStore
 from covalent.infra.settings import AppSettings
 
-router = APIRouter()
+router = APIRouter(tags=["Sessions"])
 
 
 @router.get("/sessions")

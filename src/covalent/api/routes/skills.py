@@ -54,7 +54,7 @@ from covalent.registry.registry import FrameworkRegistry
 from covalent.skills.loader import SkillLoader
 from covalent.skills.loader import normalize_git_source_payload
 
-router = APIRouter()
+router = APIRouter(tags=["Skills"])
 
 
 @router.get("/skills")

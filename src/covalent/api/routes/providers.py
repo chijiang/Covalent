@@ -12,7 +12,7 @@ from covalent.infra.config_store import ConfigStore
 from covalent.infra.db import DatabaseManager
 from covalent.infra.settings import AppSettings
 
-router = APIRouter()
+router = APIRouter(tags=["Providers"])
 
 
 @router.get("/providers/{provider_name}/models")

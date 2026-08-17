@@ -17,7 +17,7 @@ from covalent.infra.db import DatabaseManager
 from covalent.infra.memory import SessionStore
 from covalent.registry.registry import FrameworkRegistry
 
-router = APIRouter()
+router = APIRouter(tags=["Ops"])
 
 
 def _audit_dto(e: AuditLogEntry) -> AuditLogResponse:

@@ -17,7 +17,7 @@ from covalent.application.services.management_service import _ensure_console_pri
 from covalent.infra.db import DatabaseManager
 from covalent.mcp.client import McpSdkClient
 
-router = APIRouter()
+router = APIRouter(tags=["MCP"])
 
 
 @router.post("/mcp/inspect")

@@ -43,7 +43,7 @@ from covalent.model.base import ModelProviderError
 from covalent.registry.registry import FrameworkRegistry
 from covalent.runtime.react import ReactAgentRuntime
 
-router = APIRouter()
+router = APIRouter(tags=["Public"])
 
 logger = logging.getLogger(__name__)
 

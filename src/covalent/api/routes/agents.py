@@ -53,7 +53,7 @@ from covalent.infra.settings import AppSettings
 from covalent.model.base import ModelProviderError
 from covalent.registry.registry import FrameworkRegistry
 
-router = APIRouter()
+router = APIRouter(tags=["Agents"])
 
 
 def _agent_run_input(run_request):

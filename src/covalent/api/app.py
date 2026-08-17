@@ -184,7 +184,25 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Covalent", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Covalent",
+        version="0.3.0",
+        lifespan=lifespan,
+        openapi_tags=[
+            {"name": "Auth"},
+            {"name": "Users"},
+            {"name": "API Tokens"},
+            {"name": "Agents"},
+            {"name": "Sessions"},
+            {"name": "Providers"},
+            {"name": "MCP"},
+            {"name": "Skills"},
+            {"name": "Sandbox Profiles"},
+            {"name": "Config"},
+            {"name": "Ops"},
+            {"name": "Public"},
+        ],
+    )
     app.add_middleware(ConsoleAuthGuardMiddleware)
     app.add_middleware(
         CORSMiddleware,

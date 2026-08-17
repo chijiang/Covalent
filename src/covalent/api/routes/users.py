@@ -14,7 +14,7 @@ from covalent.application.services.user_service import _list_console_users
 from covalent.application.services.user_service import _update_console_user
 from covalent.infra.db import DatabaseManager
 
-router = APIRouter()
+router = APIRouter(tags=["Users"])
 
 
 @router.get("/users")

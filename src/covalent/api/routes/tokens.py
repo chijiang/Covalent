@@ -20,7 +20,7 @@ from covalent.application.services import token_service
 from covalent.infra.db import DatabaseManager
 from covalent.infra.settings import AppSettings
 
-router = APIRouter()
+router = APIRouter(tags=["API Tokens"])
 
 
 def _request_metadata(request: Request) -> RequestMetadata:
