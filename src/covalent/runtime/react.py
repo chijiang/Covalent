@@ -688,6 +688,13 @@ class ReactAgentRuntime(AgentRuntime):
             return
         if not self.session_store or not context or not context.session_id:
             return
+        if context is not None and context.metadata.get("delegated_by"):
+            # Delegates share the parent conversation READ-ONLY. Their answers
+            # reach the session through the parent's tool-result transcript;
+            # persisting here would let concurrent delegates overwrite each
+            # other and the parent's turn, and a failed parent run would leave
+            # delegate internals behind as session memory.
+            return
         messages = self._context_window._recent_message_window(messages, self.session_history_limit)
         messages, _ = self._context_window._sanitize_tool_message_sequence(messages)
         await self.session_store.save_messages(context.session_id, messages)

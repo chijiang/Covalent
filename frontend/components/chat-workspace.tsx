@@ -2611,7 +2611,7 @@ export function ChatWorkspace() {
     editUndoRef.current = null;
   }
 
-  function showEditUndoToast(_threadId: string, _editedContent: string) {
+  function showEditUndoToast() {
     toast("Edited message and resent.", {
       action: {
         label: "Undo",
@@ -2685,7 +2685,7 @@ export function ChatWorkspace() {
     });
 
     // 4. Offer undo (Task 8 surfaces the toast; here we just flag completion).
-    showEditUndoToast(thread.id, newContent);
+    showEditUndoToast();
   }
 
   async function handleSend() {

@@ -39,6 +39,7 @@ from covalent.application.services.management_service import _ensure_console_pri
 from covalent.application.services.session_service import _build_session_preview
 from covalent.core.attachment_processing import process_attachment_bytes
 from covalent.infra.db import DatabaseManager
+from covalent.core.types import Message
 from covalent.infra.memory import ChatSessionRecord
 from covalent.infra.memory import ChatTranscriptMessage
 from covalent.infra.memory import SessionStore
@@ -136,7 +137,13 @@ async def replace_transcript(
         preview_text=_build_session_preview(new_messages),
         created_at=existing.created_at,
         updated_at=datetime.now(UTC),
-        memory_messages=existing.memory_messages,
+        # Model memory is rebuilt from the surviving visible messages: the
+        # user believes an edit/resend removed those turns, so the next model
+        # request must not still see them (previously only the visible
+        # transcript changed and memory kept the removed tail).
+        memory_messages=[
+            Message(role=m.role, content=m.content) for m in new_messages
+        ],
         messages=new_messages,
         activity=existing.activity,
     )

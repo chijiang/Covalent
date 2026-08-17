@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/no-require-imports -- plain CommonJS Node runner executed directly by `pnpm start`; not bundled app code. */
 /**
  * Local runner for the Next.js standalone production server.
  *
