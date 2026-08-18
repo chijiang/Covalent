@@ -337,7 +337,10 @@ class DelegateHitlEscalationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         # The delegate mailbox ends with the ask_parent tool call + matching
-        # answer + the child's final assistant output.
+        # answer + the child's final assistant output. Exactly ONE tool result
+        # exists for the ask_parent call: the placeholder at pause time is not
+        # persisted (two tool messages sharing one tool_call_id would violate
+        # the tool-call protocol).
         child_messages = await fixture.run_store.load_messages(run_id)
         ask_calls = [
             m
@@ -350,12 +353,11 @@ class DelegateHitlEscalationTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(ask_calls), 1)
         self.assertEqual(ask_calls[0].tool_calls[0]["id"], "ask-1")
-        self.assertTrue(
-            any(
-                m.role == "tool" and m.tool_call_id == "ask-1" and "Use Docker" in str(m.content)
-                for m in child_messages
-            )
-        )
+        ask_answers = [
+            m for m in child_messages if m.role == "tool" and m.tool_call_id == "ask-1"
+        ]
+        self.assertEqual(len(ask_answers), 1)
+        self.assertIn("Use Docker", str(ask_answers[0].content))
         self.assertEqual(child_messages[-1].role, "assistant")
         self.assertIn("Resolved with Docker", str(child_messages[-1].content))
 

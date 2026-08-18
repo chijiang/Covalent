@@ -1457,7 +1457,19 @@ class ReactAgentRuntime(AgentRuntime):
                     for result in tool_results
                 ]
                 blocking_input = None
-            persisted_results = [result for result in tool_results if result.input_request is None]
+            persisted_results = [
+                result
+                for result in tool_results
+                if result.input_request is None
+                # The run's own ask_parent placeholder never persists: the
+                # pause saves through the assistant tool call, and the resumed
+                # run appends the real answer as the single tool result for
+                # that call (two tool messages sharing one tool_call_id would
+                # violate the tool-call protocol).
+                and not (
+                    result.parent_request is not None and result.name == ASK_PARENT_TOOL
+                )
+            ]
             tool_messages = [result.to_message() for result in persisted_results]
             messages.extend(tool_messages)
             generation_messages.extend(message.model_copy(deep=True) for message in tool_messages)
