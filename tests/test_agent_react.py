@@ -13,7 +13,12 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from covalent.application.services.delegate_service import DelegateService, register_ask_parent_tool
+from covalent.application.services.delegate_service import (
+    DelegateService,
+    register_ask_parent_tool,
+    register_delegate_lifecycle_tools,
+)
+from covalent.core.agent import AgentSpec
 from covalent.core.types import (
     DelegateRunResult,
     DelegateRunStatus,
@@ -31,7 +36,7 @@ from covalent.infra.delegate_repository import DelegateRunRecord, InMemoryDelega
 from covalent.infra.memory import InMemorySessionStore
 from covalent.infra.settings import AppSettings
 from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.delegation import DelegateActor
+from covalent.runtime.delegation import DelegateActor, DelegateTurnOutcome
 from covalent.runtime.memory_port import RuntimeMemoryAdapter
 from covalent.runtime.react import ReactAgentRuntime
 from covalent.skills.meta_tools import (
@@ -669,6 +674,39 @@ def _fake_ask_user_handler(_args, _ctx):
     )
 
 
+def _latest_delegate_run_id(messages: list[Message]) -> str | None:
+    """The newest delegate run id visible in the conversation's tool-result
+    envelopes, so scripted lifecycle calls can target runs whose ids are only
+    generated at runtime."""
+    for message in reversed(messages):
+        if message.role != "tool":
+            continue
+        try:
+            payload = json.loads(str(message.content))
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("delegate_run_id"), str):
+            return payload["delegate_run_id"]
+    return None
+
+
+class _EnvelopeRunIdAdapter(ScriptedModelAdapter):
+    """Fills an empty ``delegate_run_id`` argument on scripted delegate_send /
+    delegate_release calls with the newest run id found in the conversation."""
+
+    async def generate(self, request: GenerationRequest) -> GenerationResponse:
+        response = await super().generate(request)
+        run_id = _latest_delegate_run_id(request.messages)
+        if run_id is None:
+            return response
+        for tool_call in response.tool_calls:
+            if tool_call.name not in ("delegate_send", "delegate_release"):
+                continue
+            if not str(tool_call.arguments.get("delegate_run_id") or "").strip():
+                tool_call.arguments = {**tool_call.arguments, "delegate_run_id": run_id}
+        return response
+
+
 class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
     """Stateful delegate path: the runtime drives DelegateService-backed runs.
 
@@ -688,6 +726,9 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         register_ask_user: bool = False,
         child_model: ScriptedModelAdapter | None = None,
         settings: AppSettings | None = None,
+        child_delegate_agents: list[str] | None = None,
+        extra_agents: dict[str, ScriptedModelAdapter] | None = None,
+        parent_model: ScriptedModelAdapter | None = None,
     ) -> SimpleNamespace:
         session_store = InMemorySessionStore()
         run_store = InMemoryDelegateRunStore()
@@ -695,11 +736,17 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
             name="parent", model="m-parent", local_tools=parent_local_tools
         ).model_copy(update={"delegate_agents": ["child"]})
         child = make_test_agent(name="child", model="m-child", local_tools=child_local_tools)
-        parent_model = ScriptedModelAdapter(parent_responses)
+        if child_delegate_agents:
+            child = child.model_copy(update={"delegate_agents": child_delegate_agents})
+        parent_adapter = parent_model or ScriptedModelAdapter(parent_responses)
         child_adapter = child_model or ScriptedModelAdapter(child_responses)
-        registry = make_test_registry(parent, model=parent_model)
+        registry = make_test_registry(parent, model=parent_adapter)
         registry.register_agent(child)
         registry.model_providers[child.provider.cache_key()] = child_adapter
+        for agent_name, adapter in (extra_agents or {}).items():
+            extra = make_test_agent(name=agent_name, model=f"m-{agent_name}")
+            registry.register_agent(extra)
+            registry.model_providers[extra.provider.cache_key()] = adapter
         register_ask_parent_tool(registry)
         if register_ask_user:
             registry.register_local_tool(
@@ -708,6 +755,7 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         service = DelegateService(
             registry=registry, run_store=run_store, settings=settings or AppSettings()
         )
+        register_delegate_lifecycle_tools(registry, service)
         runtime = ReactAgentRuntime(
             registry,
             session_store=session_store,
@@ -723,7 +771,7 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
             registry=registry,
             session_store=session_store,
             run_store=run_store,
-            parent_model=parent_model,
+            parent_model=parent_adapter,
             child_model=child_adapter,
         )
 
@@ -739,6 +787,16 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
             for result in event["payload"]["results"]:
                 if result.get("tool_call_id") == tool_call_id:
                     return str(result["content"])
+        raise AssertionError(f"no tool result for {tool_call_id!r} in stream")
+
+    @staticmethod
+    def _tool_result(events: list[dict], tool_call_id: str) -> dict:
+        for event in reversed(events):
+            if event["event"] != "tool_results":
+                continue
+            for result in event["payload"]["results"]:
+                if result.get("tool_call_id") == tool_call_id:
+                    return result
         raise AssertionError(f"no tool result for {tool_call_id!r} in stream")
 
     async def test_final_answer_returns_idle_envelope_and_persists_private_memory(self) -> None:
@@ -1054,6 +1112,324 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(envelope.status, DelegateRunStatus.IDLE)
         self.assertEqual(envelope.output, "Child done")
+
+    async def test_fresh_start_task_appears_once_in_child_memory(self) -> None:
+        """The service persists capsule+task into the run's memory before the
+        first turn, so the runtime must stream the fresh leg with a blank
+        user_input — the child's first model call sees the task exactly once."""
+        fixture = self._build(
+            parent_responses=[
+                tool_call_response(
+                    "agent__child", arguments={"input": "Summarize the quarterly report"}, call_id="pc-1"
+                ),
+                text_response("Parent done"),
+            ],
+            child_responses=[text_response("Child answer")],
+        )
+
+        await self._collect(
+            fixture.runtime, fixture.parent, "Please delegate",
+            RunContext(agent_name="parent", session_id="s1"),
+        )
+
+        first_messages = fixture.child_model.received_requests[0].messages
+        user_messages = [m for m in first_messages if m.role == "user"]
+        self.assertEqual(
+            len(user_messages), 1,
+            f"task must reach the child exactly once, saw {[str(m.content)[:60] for m in user_messages]}",
+        )
+        self.assertEqual(first_messages[-1].role, "user")
+        self.assertIn("Summarize the quarterly report", str(first_messages[-1].content))
+        self.assertIn("[delegation]", str(first_messages[-1].content))
+
+    async def test_delegate_send_answers_waiting_child_and_child_continues(self) -> None:
+        fixture = self._build(
+            parent_responses=[],
+            child_responses=[
+                tool_call_response(
+                    "ask_parent",
+                    arguments={
+                        "title": "Need target",
+                        "questions": [{"header": "Target", "question": "Which target?"}],
+                    },
+                    call_id="ask-1",
+                ),
+                text_response("Resolved with Docker"),
+            ],
+            parent_model=_EnvelopeRunIdAdapter([
+                tool_call_response(
+                    "agent__child", arguments={"input": "Deploy the service"}, call_id="pc-1"
+                ),
+                tool_call_response(
+                    "delegate_send",
+                    arguments={"delegate_run_id": "", "input": "Use Docker"},
+                    call_id="ps-1",
+                ),
+                text_response("Parent done"),
+            ]),
+        )
+        parent_context = RunContext(
+            agent_name="parent", session_id="s1", execution_scope_id="scope-1"
+        )
+
+        # Turn 1: the child pauses on ask_parent and the parent stream ends at
+        # its own parent_input_required boundary.
+        first = await self._collect(fixture.runtime, fixture.parent, "Deploy it", parent_context)
+        self.assertEqual(len([e for e in first if e["event"] == "parent_input_required"]), 1)
+
+        # Turn 2: the parent answers via delegate_send; the child resumes from
+        # its saved memory and finishes the turn.
+        second = await self._collect(fixture.runtime, fixture.parent, "", parent_context)
+
+        # The lifecycle tools are exposed to the root agent.
+        exposed = {
+            t["function"]["name"] for t in fixture.parent_model.received_requests[1].tools
+        }
+        self.assertIn("delegate_send", exposed)
+        self.assertIn("delegate_list", exposed)
+        self.assertIn("delegate_release", exposed)
+
+        # The child's second generation request resumes right after its saved
+        # ask_parent tool call, answered with tool_call_id "ask-1".
+        second_messages = fixture.child_model.received_requests[-1].messages
+        last = second_messages[-1]
+        self.assertEqual(last.role, "tool")
+        self.assertEqual(last.tool_call_id, "ask-1")
+        self.assertIn("Use Docker", str(last.content))
+        ask_assistant = next(
+            m for m in second_messages
+            if m.role == "assistant" and any(
+                isinstance(c, dict) and (
+                    c.get("id") == "ask-1"
+                    or (c.get("function") or {}).get("name") == "ask_parent"
+                )
+                for c in m.tool_calls
+            )
+        )
+        self.assertLess(
+            second_messages.index(ask_assistant), len(second_messages) - 1,
+            "the ask_parent assistant tool_call must precede its tool answer",
+        )
+
+        envelope = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(second, "ps-1"))
+        )
+        self.assertEqual(envelope.status, DelegateRunStatus.IDLE)
+        self.assertEqual(envelope.output, "Resolved with Docker")
+        row = await fixture.run_store.get_run(envelope.delegate_run_id)
+        self.assertEqual(row.status, DelegateRunStatus.IDLE)
+
+        # The send turn's child events flowed through the parent stream.
+        send_finals = [
+            e["payload"] for e in second
+            if e["event"] == "delegate_final"
+            and e["payload"].get("delegate_tool_call_id") == "ps-1"
+        ]
+        self.assertTrue(send_finals, "the resumed child turn must forward its final event")
+
+    async def test_delegate_send_followup_to_idle_appends_parent_user_message(self) -> None:
+        fixture = self._build(
+            parent_responses=[],
+            child_responses=[text_response("First answer"), text_response("Follow-up handled")],
+            parent_model=_EnvelopeRunIdAdapter([
+                tool_call_response(
+                    "agent__child", arguments={"input": "Prepare the release"}, call_id="pc-1"
+                ),
+                tool_call_response(
+                    "delegate_send",
+                    arguments={"delegate_run_id": "", "input": "Now also run the tests"},
+                    call_id="ps-1",
+                ),
+                text_response("All set"),
+            ]),
+        )
+
+        events = await self._collect(
+            fixture.runtime, fixture.parent, "Ship it",
+            RunContext(agent_name="parent", session_id="s1", execution_scope_id="scope-1"),
+        )
+
+        started = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pc-1"))
+        )
+        followup = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "ps-1"))
+        )
+        self.assertEqual(followup.delegate_run_id, started.delegate_run_id)
+        self.assertEqual(followup.status, DelegateRunStatus.IDLE)
+        self.assertEqual(followup.output, "Follow-up handled")
+
+        # The follow-up landed as a parent-authored user message in the
+        # child's mailbox and reached its second model call.
+        second_messages = fixture.child_model.received_requests[1].messages
+        followup_message = next(
+            m for m in second_messages
+            if m.role == "user" and "Now also run the tests" in str(m.content)
+        )
+        self.assertEqual(
+            str(followup_message.content),
+            "[message from parent agent 'parent']\n\nNow also run the tests",
+        )
+        row = await fixture.run_store.get_run(started.delegate_run_id)
+        self.assertEqual(row.status, DelegateRunStatus.IDLE)
+
+    async def test_delegate_list_returns_only_direct_children_compact(self) -> None:
+        fixture = self._build(
+            parent_responses=[],
+            child_responses=[
+                tool_call_response(
+                    "agent__grand", arguments={"input": "nested job"}, call_id="cc-1"
+                ),
+                text_response("Child done"),
+            ],
+            parent_model=_EnvelopeRunIdAdapter([
+                tool_call_response("agent__child", arguments={"input": "Build it"}, call_id="pc-1"),
+                tool_call_response("delegate_list", arguments={}, call_id="pl-1"),
+                text_response("Listed"),
+            ]),
+            child_delegate_agents=["grand"],
+            extra_agents={"grand": ScriptedModelAdapter([text_response("Grand done")])},
+        )
+        parent_context = RunContext(
+            agent_name="parent", session_id="s1", execution_scope_id="scope-1"
+        )
+
+        events = await self._collect(fixture.runtime, fixture.parent, "Build", parent_context)
+
+        child_envelope = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pc-1"))
+        )
+        self.assertEqual(child_envelope.status, DelegateRunStatus.IDLE)
+
+        listed = json.loads(self._tool_result_content(events, "pl-1"))
+        self.assertEqual(len(listed), 1)
+        entry = listed[0]
+        self.assertEqual(
+            set(entry),
+            {"delegate_run_id", "agent_name", "status", "last_activity_at", "summary"},
+        )
+        self.assertEqual(entry["agent_name"], "child")
+        self.assertEqual(entry["delegate_run_id"], child_envelope.delegate_run_id)
+        self.assertEqual(entry["status"], "idle")
+
+        # The grandchild run exists (the child delegated on its own) but is
+        # not among the parent's direct children.
+        grandchildren = await fixture.run_store.list_children(
+            execution_scope_id="scope-1",
+            parent_agent_name="child",
+            parent_delegate_run_id=child_envelope.delegate_run_id,
+        )
+        self.assertEqual(len(grandchildren), 1)
+        self.assertEqual(grandchildren[0].delegate_agent_name, "grand")
+        self.assertNotIn(grandchildren[0].id, {e["delegate_run_id"] for e in listed})
+
+    async def test_delegate_release_then_send_gone(self) -> None:
+        fixture = self._build(
+            parent_responses=[],
+            child_responses=[text_response("Child answer")],
+            parent_model=_EnvelopeRunIdAdapter([
+                tool_call_response("agent__child", arguments={"input": "One job"}, call_id="pc-1"),
+                tool_call_response(
+                    "delegate_release",
+                    arguments={"delegate_run_id": "", "reason": "finished"},
+                    call_id="pr-1",
+                ),
+                tool_call_response(
+                    "delegate_send",
+                    arguments={"delegate_run_id": "", "input": "one more"},
+                    call_id="ps-1",
+                ),
+                text_response("Cleaned up"),
+            ]),
+        )
+
+        events = await self._collect(
+            fixture.runtime, fixture.parent, "Run and clean up",
+            RunContext(agent_name="parent", session_id="s1", execution_scope_id="scope-1"),
+        )
+
+        released = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pr-1"))
+        )
+        self.assertEqual(released.status, DelegateRunStatus.RELEASED)
+        self.assertFalse(self._tool_result(events, "pr-1")["is_error"])
+        row = await fixture.run_store.get_run(released.delegate_run_id)
+        self.assertEqual(row.status, DelegateRunStatus.RELEASED)
+
+        gone = self._tool_result(events, "ps-1")
+        self.assertTrue(gone["is_error"])
+        self.assertIn("released", str(gone["content"]).lower())
+
+    async def test_sibling_cannot_send_via_tool(self) -> None:
+        fixture = self._build(
+            parent_responses=[
+                tool_call_response("agent__child", arguments={"input": "Owned job"}, call_id="pc-1"),
+                text_response("Started"),
+            ],
+            child_responses=[text_response("Child answer")],
+        )
+        owner_context = RunContext(
+            agent_name="parent", session_id="s1", execution_scope_id="scope-1"
+        )
+        await self._collect(fixture.runtime, fixture.parent, "Delegate", owner_context)
+        children = await fixture.service.list_children(actor=DelegateActor.from_context(owner_context))
+        self.assertEqual(len(children), 1)
+        run_id = children[0]["delegate_run_id"]
+
+        stranger = make_test_agent(name="stranger", model="m-stranger")
+        fixture.registry.register_agent(stranger)
+        stranger_model = ScriptedModelAdapter([
+            tool_call_response(
+                "delegate_send",
+                arguments={"delegate_run_id": run_id, "input": "hijack"},
+                call_id="sp-1",
+            ),
+            text_response("Stranger done"),
+        ])
+        fixture.registry.model_providers[stranger.provider.cache_key()] = stranger_model
+
+        events = await self._collect(
+            fixture.runtime, stranger, "Try to reach it",
+            RunContext(agent_name="stranger", session_id="s2", execution_scope_id="scope-2"),
+        )
+
+        rejected = self._tool_result(events, "sp-1")
+        self.assertTrue(rejected["is_error"])
+        self.assertIn("not owned", str(rejected["content"]))
+
+    async def test_delegate_send_child_context_propagates_execution_backend(self) -> None:
+        """Both context-building legs (start and send) share one builder that
+        inherits the parent's execution_backend, so workspace tools resolve
+        identically inside the child."""
+        fixture = self._build(
+            parent_responses=[text_response("unused")],
+            child_responses=[text_response("Child answer")],
+        )
+        backend = object()
+        parent_context = RunContext(
+            agent_name="parent",
+            session_id="s1",
+            execution_scope_id="scope-1",
+            execution_backend=backend,
+        )
+        actor = DelegateActor.from_context(parent_context)
+
+        started = await fixture.service.start(
+            actor=actor,
+            delegate_agent_name="child",
+            input_text="first task",
+            origin_tool_call_id=None,
+            parent_context=parent_context,
+        )
+        self.assertIs(started.context.execution_backend, backend)
+        await fixture.service.report_outcome(
+            started.run.id, DelegateTurnOutcome(status="idle", output="done")
+        )
+
+        resumed = await fixture.service.send(
+            actor=actor, delegate_run_id=started.run.id, input_text="again"
+        )
+        self.assertIs(resumed.context.execution_backend, backend)
 
 
 if __name__ == "__main__":

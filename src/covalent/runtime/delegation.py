@@ -36,6 +36,10 @@ class DelegateActor:
     session_id: str | None
     workspace_id: str | None
     memory_mode: str  # propagated to children
+    # Execution backend inherited from the acting context so child contexts
+    # can propagate it to workspace tools. Deliberately NOT part of any
+    # ownership tuple.
+    execution_backend: Any = None
 
     @classmethod
     def from_context(cls, context: RunContext) -> "DelegateActor":
@@ -47,6 +51,7 @@ class DelegateActor:
             session_id=context.session_id,
             workspace_id=context.workspace_id,
             memory_mode=context.memory_mode,
+            execution_backend=context.execution_backend,
         )
 
 
@@ -56,7 +61,10 @@ class DelegateRunHandle:
 
     ``run`` is in ``RUNNING`` state (the coordinator owns admission), and
     ``initial_input`` is ``""`` when resuming — the resume payload has already
-    been appended to the run's memory by the coordinator.
+    been appended to the run's memory by the coordinator. The runtime never
+    replays ``initial_input`` as user input on either leg (the fresh leg's
+    capsule+task is likewise already persisted); the field exists for event
+    summaries.
     """
 
     run: "DelegateRunRecord"  # in RUNNING state

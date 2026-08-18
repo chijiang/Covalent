@@ -224,6 +224,14 @@ class ReactAgentRuntime(AgentRuntime):
                     parent_iteration=iteration,
                     event_sink=event_sink,
                 )
+            if tc.name in DELEGATE_LIFECYCLE_TOOLS and self.delegate_coordinator is not None:
+                return await self._execute_lifecycle_tool_call(
+                    agent,
+                    tc,
+                    context,
+                    parent_iteration=iteration,
+                    event_sink=event_sink,
+                )
             return await self.registry.execute_tool_call(agent, tc, context)
 
         # Delegate subagents run concurrently: events from each are tagged with
@@ -264,6 +272,18 @@ class ReactAgentRuntime(AgentRuntime):
 
     def _is_delegate_tool_name(self, agent: AgentSpec, tool_name: str) -> bool:
         return tool_name.startswith(DELEGATE_TOOL_PREFIX) or tool_name in agent.delegate_agents
+
+    def _batch_streams_delegate_events(self, agent: AgentSpec, tool_calls: list[ToolCall]) -> bool:
+        """Whether this tool batch must execute through the queue-based
+        streaming path. Both agent__ starts and coordinator-driven lifecycle
+        sends run child turns whose events must flow while the parent
+        iteration is still open; the plain path executes without an event
+        sink and would silently drop them."""
+        if any(self._is_delegate_tool_name(agent, tool_call.name) for tool_call in tool_calls):
+            return True
+        return self.delegate_coordinator is not None and any(
+            tool_call.name in DELEGATE_LIFECYCLE_TOOLS for tool_call in tool_calls
+        )
 
     def _normalize_delegate_tool_name(self, agent: AgentSpec, tool_name: str) -> str:
         if tool_name.startswith(DELEGATE_TOOL_PREFIX):
@@ -634,6 +654,59 @@ class ReactAgentRuntime(AgentRuntime):
             parent_request=result.request,
         )
 
+    async def _execute_lifecycle_tool_call(
+        self,
+        agent: AgentSpec,
+        tool_call: ToolCall,
+        context: RunContext | None,
+        parent_iteration: int,
+        event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> ToolResult:
+        """Run one delegate lifecycle tool call (send / list / release).
+
+        The registered handler does the persistence work; delegate_send's
+        handler returns the resumed ``DelegateRunHandle`` as its content, which
+        this method detects to drive the child turn and swap in the run's JSON
+        envelope — mirroring ``_execute_stateful_delegate_call`` so child
+        events keep flowing through the parent stream. list/release handlers
+        already return JSON strings and pass through unchanged.
+        """
+        coordinator = self.delegate_coordinator
+        if coordinator is None:  # pragma: no cover - caller-checked branch
+            raise RuntimeError("delegate lifecycle tools require a coordinator")
+        handled = await self.registry.execute_tool_call(agent, tool_call, context)
+        if not isinstance(handled.content, DelegateRunHandle):
+            return handled
+        handle = handled.content
+        parent_context = context if context is not None else RunContext(agent_name=agent.name)
+        try:
+            outcome = await self._execute_delegate_turn(
+                handle,
+                parent_agent=agent,
+                tool_call=tool_call,
+                parent_context=parent_context,
+                parent_iteration=parent_iteration,
+                event_sink=event_sink,
+            )
+            result = await coordinator.report_outcome(handle.run.id, outcome)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return ToolResult(
+                name=tool_call.name,
+                content=str(exc),
+                tool_call_id=tool_call.id,
+                is_error=True,
+            )
+        return ToolResult(
+            name=tool_call.name,
+            content=result.model_dump_json(),
+            tool_call_id=tool_call.id,
+            # A waiting_parent envelope carries the pending request so the
+            # parent stream can surface its own parent_input_required boundary.
+            parent_request=result.request,
+        )
+
     async def _execute_delegate_turn(
         self,
         handle: DelegateRunHandle,
@@ -673,7 +746,12 @@ class ReactAgentRuntime(AgentRuntime):
                     ),
                     delegate_context=handle.context,
                 ))
-            async for event in self.stream_events(handle.agent, handle.initial_input, handle.context):
+            # The coordinator has already persisted this turn's input into the
+            # run's memory (capsule+task on a fresh start, the resume payload
+            # on a send leg), so the child always streams with a blank
+            # user_input — the blank-input guard appends nothing and the task
+            # text reaches the model exactly once.
+            async for event in self.stream_events(handle.agent, "", handle.context):
                 event_name = str(event.get("event") or "")
                 if event_name == "parent_input_required":
                     waiting_request = ParentInputRequest.model_validate(event["payload"])
@@ -1308,7 +1386,7 @@ class ReactAgentRuntime(AgentRuntime):
                     tool_call_count=len(response.tool_calls),
                     max_iterations=agent.max_iterations,
                 )
-            elif any(self._is_delegate_tool_name(agent, tool_call.name) for tool_call in response.tool_calls):
+            elif self._batch_streams_delegate_events(agent, response.tool_calls):
                 tool_event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
                 async def _enqueue_tool_event(event: dict[str, Any]) -> None:

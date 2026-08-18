@@ -144,6 +144,139 @@ def _ask_parent_handler(args: dict[str, Any], ctx: RunContext | None) -> ParentI
     )
 
 
+#: Local tool names for the stateful delegate lifecycle (mirrored by the
+#: runtime's DELEGATE_LIFECYCLE_TOOLS tuple). Exposed to root agents only.
+DELEGATE_SEND_TOOL = "delegate_send"
+DELEGATE_LIST_TOOL = "delegate_list"
+DELEGATE_RELEASE_TOOL = "delegate_release"
+
+_DELEGATE_SEND_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": DELEGATE_SEND_TOOL,
+        "description": (
+            "Send input to one of your own delegate runs: answer a delegate that is "
+            "waiting_parent on ask_parent (its request is in the envelope you received) "
+            "or give follow-up work to an idle delegate. The run executes one turn and "
+            "returns its JSON envelope. Operates only on delegate runs you created."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "delegate_run_id": {
+                    "type": "string",
+                    "description": "The delegate_run_id from a previous delegate envelope.",
+                },
+                "input": {
+                    "type": "string",
+                    "description": "Your answer or follow-up instruction for the delegate.",
+                },
+            },
+            "required": ["delegate_run_id", "input"],
+        },
+    },
+}
+
+_DELEGATE_LIST_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": DELEGATE_LIST_TOOL,
+        "description": (
+            "List your own delegate runs (delegate_run_id, agent_name, status, "
+            "last_activity_at, summary) so you can recover run ids before sending "
+            "input or releasing them. Operates only on delegate runs you created."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+_DELEGATE_RELEASE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": DELEGATE_RELEASE_TOOL,
+        "description": (
+            "Release one of your own delegate runs you no longer need. Idle runs stay "
+            "alive (holding storage) until released, cancelled, or expired. Returns the "
+            "run's final JSON envelope. Operates only on delegate runs you created."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "delegate_run_id": {
+                    "type": "string",
+                    "description": "The delegate_run_id from a previous delegate envelope.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional short reason recorded on the release.",
+                },
+            },
+            "required": ["delegate_run_id"],
+        },
+    },
+}
+
+
+def register_delegate_lifecycle_tools(
+    registry: FrameworkRegistry, service: DelegateService
+) -> None:
+    """Register the delegate_send / delegate_list / delegate_release local tools.
+
+    Handlers build :meth:`DelegateActor.from_context` from the calling context
+    (never from model arguments), so every operation is scoped to the caller's
+    own delegates; typed application errors surface as error tool results via
+    the registry. ``delegate_send`` returns the resumed
+    :class:`~covalent.runtime.delegation.DelegateRunHandle` itself — a
+    non-string marker the runtime detects to drive the child turn and replace
+    the result with the run's JSON envelope (the service stays runtime-free);
+    ``list``/``release`` return plain JSON strings.
+    """
+
+    def _actor(ctx: RunContext | None) -> DelegateActor:
+        if ctx is None:
+            raise InvalidInputError(
+                "delegate lifecycle tools require a run context; they operate "
+                "on the caller's own delegate runs"
+            )
+        return DelegateActor.from_context(ctx)
+
+    def _run_id(args: dict[str, Any]) -> str:
+        run_id = str(args.get("delegate_run_id") or "").strip()
+        if not run_id:
+            raise InvalidInputError("a non-empty 'delegate_run_id' is required")
+        return run_id
+
+    async def _send_handler(args: dict[str, Any], ctx: RunContext | None) -> DelegateRunHandle:
+        input_text = str(args.get("input") or "").strip()
+        if not input_text:
+            raise InvalidInputError("delegate_send requires a non-empty 'input'")
+        return await service.send(
+            actor=_actor(ctx), delegate_run_id=_run_id(args), input_text=input_text
+        )
+
+    async def _list_handler(args: dict[str, Any], ctx: RunContext | None) -> str:
+        children = await service.list_children(actor=_actor(ctx))
+        return json.dumps(children, ensure_ascii=False)
+
+    async def _release_handler(args: dict[str, Any], ctx: RunContext | None) -> str:
+        result = await service.release(
+            actor=_actor(ctx),
+            delegate_run_id=_run_id(args),
+            reason=str(args.get("reason") or ""),
+        )
+        return result.model_dump_json()
+
+    registry.register_local_tool(
+        DELEGATE_SEND_TOOL, _DELEGATE_SEND_SCHEMA, handler=_send_handler
+    )
+    registry.register_local_tool(
+        DELEGATE_LIST_TOOL, _DELEGATE_LIST_SCHEMA, handler=_list_handler
+    )
+    registry.register_local_tool(
+        DELEGATE_RELEASE_TOOL, _DELEGATE_RELEASE_SCHEMA, handler=_release_handler
+    )
+
+
 class DelegateService:
     """Coordinator for stateful delegate runs, backed by a ``DelegateRunStore``.
 
@@ -260,7 +393,16 @@ class DelegateService:
         chain: list[str],
         delegated_by: str,
         memory_mode: str,
+        execution_backend: Any = None,
     ) -> RunContext:
+        """The single child-context builder for both the start and send legs.
+
+        Scope identity comes from the run record (resolved, and exactly what
+        ownership checks compare against); the execution backend is inherited
+        from the acting parent context so workspace tools resolve identically
+        inside the child. ``sandbox_instance_id`` is deliberately NOT set —
+        each agent resolves its own logical sandbox on its first run.
+        """
         return RunContext(
             agent_name=run.delegate_agent_name,
             session_id=run.session_id,
@@ -271,6 +413,7 @@ class DelegateService:
             execution_scope_id=run.execution_scope_id,
             workspace_scope_id=run.workspace_scope_id,
             workspace_id=run.workspace_id,
+            execution_backend=execution_backend,
             metadata={
                 "delegation_chain": list(chain),
                 "delegated_by": delegated_by,
@@ -385,22 +528,12 @@ class DelegateService:
             created, "created->running", status=DelegateRunStatus.RUNNING
         )
 
-        child_context = RunContext(
-            agent_name=delegate_agent_name,
-            session_id=parent_context.session_id,
-            memory_scope_kind="delegate",
-            memory_scope_id=running.id,
-            delegate_run_id=running.id,
-            parent_delegate_run_id=actor.delegate_run_id,
-            execution_scope_id=getattr(parent_context, "execution_scope_id", None),
-            workspace_scope_id=getattr(parent_context, "workspace_scope_id", None),
-            workspace_id=getattr(parent_context, "workspace_id", None),
+        child_context = self._child_context(
+            running,
+            chain=[*chain, actor.agent_name],
+            delegated_by=actor.agent_name,
+            memory_mode=actor.memory_mode,
             execution_backend=getattr(parent_context, "execution_backend", None),
-            metadata={
-                "delegation_chain": [*chain, actor.agent_name],
-                "delegated_by": actor.agent_name,
-                "memory_mode": actor.memory_mode,
-            },
         )
         return DelegateRunHandle(
             run=running, agent=delegate_spec, context=child_context, initial_input=input_text
@@ -511,7 +644,11 @@ class DelegateService:
         await self._store.save_messages(run.id, messages)
         chain = await self._chain_for_run(resumed)
         context = self._child_context(
-            resumed, chain=chain, delegated_by=actor.agent_name, memory_mode=actor.memory_mode
+            resumed,
+            chain=chain,
+            delegated_by=actor.agent_name,
+            memory_mode=actor.memory_mode,
+            execution_backend=actor.execution_backend,
         )
         try:
             agent = self._registry.get_agent(resumed.delegate_agent_name)
