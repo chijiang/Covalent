@@ -11,6 +11,12 @@ from fastapi.responses import JSONResponse
 
 from covalent.application.errors import ApplicationError
 from covalent.application.services.agent_invocation import AgentInvocationService
+from covalent.application.services.delegate_service import (
+    DelegateService,
+    register_ask_parent_tool,
+    register_delegate_lifecycle_tools,
+    run_startup_sweeps,
+)
 from covalent.api._auth_helpers import ConsoleAuthGuardMiddleware
 from covalent.api._shared import _sandbox_reaper_loop
 from covalent.application.services.invoke_service import _ApiTokenRunLimiter
@@ -24,6 +30,7 @@ from covalent.application.services.skill_service import (
 from covalent.application.services.user_service import _seed_initial_admin_user
 from covalent.infra.config_store import ConfigStore
 from covalent.infra.db import DatabaseManager
+from covalent.infra.delegate_repository import PostgresDelegateRunStore
 from covalent.infra.memory import PersistentSessionStore
 from covalent.infra.sandbox_repository import SandboxRepository
 from covalent.infra.settings import AppSettings
@@ -160,6 +167,22 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    # Stateful delegates (flag-gated): construct the delegate run store and
+    # service, hand the service to the runtime as its delegate coordinator,
+    # and only THEN register the delegate tools — the marker-protocol tools
+    # (delegate_send returns a raw handle) must never exist on a runtime
+    # without a coordinator, or a mis-wired assembly would leak handles into
+    # model-visible tool results. Flag off: nothing is constructed and the
+    # runtime keeps its default no-coordinator behavior.
+    delegate_service: DelegateService | None = None
+    if settings.stateful_delegates_enabled:
+        delegate_run_store = PostgresDelegateRunStore(db_manager.session_factory)
+        delegate_service = DelegateService(
+            registry=registry, run_store=delegate_run_store, settings=settings
+        )
+        app.state.delegate_service = delegate_service
+        app.state.delegate_run_store = delegate_run_store
+
     app.state.runtime = ReactAgentRuntime(
         registry,
         session_store=app.state.session_store,
@@ -169,7 +192,23 @@ async def lifespan(app: FastAPI):
         context_summary_model=settings.context_summary_model,
         enable_llm_summarization=settings.enable_llm_summarization,
         binding_resolver=sandbox_binding_service,
+        delegate_coordinator=delegate_service,
     )
+    if delegate_service is not None:
+        register_ask_parent_tool(registry)
+        register_delegate_lifecycle_tools(registry, delegate_service)
+        # Reconcile runs orphaned by a previous process crash and TTL-expired
+        # rows before the first request. Failure logs and never blocks startup.
+        try:
+            counts = await run_startup_sweeps(delegate_service)
+            if counts["recovered"] or counts["expired"]:
+                logger.info(
+                    "Delegate startup sweeps: %s runs recovered, %s expired",
+                    counts["recovered"],
+                    counts["expired"],
+                )
+        except Exception:
+            logger.warning("Delegate startup sweeps failed", exc_info=True)
     app.state.agent_invocation = AgentInvocationService(registry, app.state.runtime)
 
     yield

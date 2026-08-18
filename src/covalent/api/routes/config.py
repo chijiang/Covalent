@@ -13,6 +13,7 @@ import json
 
 from covalent.api._auth_helpers import _request_metadata
 from covalent.api._auth_helpers import _resolve_console_principal
+from covalent.application.errors import ConflictError
 from covalent.application.schemas import ConfigDocumentResponse
 from covalent.application.schemas import ConfigDocumentUpdateRequest
 from covalent.application.schemas import ManagementExportResponse
@@ -34,9 +35,37 @@ from covalent.application.services.sandbox_profile_service import skill_runtime_
 from covalent.application.services.runtime_apply import _apply_runtime_config
 from covalent.infra.config_store import ConfigStore
 from covalent.infra.db import DatabaseManager
+from covalent.infra.delegate_repository import DelegateRunStore
 from covalent.infra.settings import AppSettings
 
 router = APIRouter(tags=["Config"])
+
+
+async def _enforce_agent_delegate_run_checks(
+    run_store: DelegateRunStore,
+    *,
+    payload_names: set[str],
+    current_names: set[str],
+    renamed_from: set[str],
+) -> None:
+    """Reject agent removals/renames that would strand active delegate runs.
+
+    Spec v1 choice: conflict, not migrate. A name being removed (present in
+    the current document but absent from the payload) or renamed away (an
+    ``agent_renames`` old_name) with any ACTIVE delegate run raises a
+    ConflictError listing each run id and status compactly; terminal runs are
+    audit rows only and never block the save.
+    """
+    affected = (current_names - payload_names) | renamed_from
+    for name in sorted(affected):
+        active = await run_store.list_active_for_agent(name)
+        if not active:
+            continue
+        listing = ", ".join(f"{record.id}({record.status.value})" for record in active)
+        raise ConflictError(
+            f"Agent '{name}' has active delegate runs: {listing}. "
+            "Release them before renaming or removing the agent."
+        )
 
 
 @router.get("/config/{kind}")
@@ -77,6 +106,24 @@ async def put_config(request: Request, kind: str, update_request: ConfigDocument
                 skill_runtime_lookup=skill_runtime_lookup_from_registry(request.app.state.registry),
             )
     agent_renames = _extract_agent_renames(update_request.metadata) if normalized == "agents" else None
+    if normalized == "agents":
+        delegate_run_store = getattr(request.app.state, "delegate_run_store", None)
+        if delegate_run_store is not None:
+            current_document = await config_store.get_document(normalized, principal.config)
+            await _enforce_agent_delegate_run_checks(
+                delegate_run_store,
+                payload_names={
+                    str(item.get("name") or "").strip()
+                    for item in validated
+                    if str(item.get("name") or "").strip()
+                },
+                current_names={
+                    str(item.get("name") or "").strip()
+                    for item in current_document
+                    if str(item.get("name") or "").strip()
+                },
+                renamed_from=set(agent_renames or {}),
+            )
     payload = await config_store.save_document(normalized, validated, principal=principal.config, agent_renames=agent_renames)
     global_payload = await config_store.get_document(normalized)
     await _apply_runtime_config(request.app.state.registry, request.app.state.config_store, request.app.state.settings, request.app.state.skill_loader, request.app.state.execution_backend, normalized, global_payload)

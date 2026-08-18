@@ -49,6 +49,35 @@ router = APIRouter(tags=["Public"])
 logger = logging.getLogger(__name__)
 
 
+async def _teardown_stateless_run_scope(request: Request, run_id: str) -> None:
+    """Full run-scope teardown for a memory.mode=none run.
+
+    For stateless runs the execution scope id IS the run id. Sandbox binding
+    cleanup runs first, then the delegate service finalizes the scope (which
+    releases any session-attached runs sharing it and deletes the stateless
+    rows outright). Each stage is independently exception-tolerant — one
+    failing logs a warning and never blocks the other. The caller invokes
+    this inside a cancellation shield so it runs on success, failure,
+    timeout, and client disconnect. No-op when neither service is wired.
+    """
+    binding_service = getattr(request.app.state, "sandbox_binding_service", None)
+    if binding_service is not None:
+        try:
+            await binding_service.cleanup_stateless_run(run_id)
+        except Exception:
+            logger.warning(
+                "Stateless run scope cleanup failed for %s", run_id, exc_info=True
+            )
+    delegate_service = getattr(request.app.state, "delegate_service", None)
+    if delegate_service is not None:
+        try:
+            await delegate_service.finalize_scope(run_id, reason="stateless_run_finalized")
+        except Exception:
+            logger.warning(
+                "Stateless delegate scope finalize failed for %s", run_id, exc_info=True
+            )
+
+
 @router.post("/v1/agent/invoke", response_model=None)
 async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvokeRequest) -> PublicAgentInvokeResponse | StreamingResponse:
     settings: AppSettings = request.app.state.settings
@@ -138,15 +167,7 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
         on success, failure, timeout, and client disconnect."""
         if memory_mode != "none":
             return
-        binding_service = getattr(request.app.state, "sandbox_binding_service", None)
-        if binding_service is None:
-            return
-        try:
-            await binding_service.cleanup_stateless_run(run_id)
-        except Exception:
-            logger.warning(
-                "Stateless run scope cleanup failed for %s", run_id, exc_info=True
-            )
+        await _teardown_stateless_run_scope(request, run_id)
 
     if invoke_request.stream:
         limiter: _ApiTokenRunLimiter | None = getattr(request.app.state, "api_token_run_limiter", None)

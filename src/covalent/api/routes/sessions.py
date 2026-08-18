@@ -143,6 +143,12 @@ async def replace_transcript(
         messages=new_messages,
         activity=existing.activity,
     )
+    # Conservative v1: releasing ALL active delegate runs for the session
+    # before the replacement lands — a rewritten transcript can strand runs
+    # whose parent turns no longer exist. No-op when delegates are disabled.
+    delegate_service = getattr(request.app.state, "delegate_service", None)
+    if delegate_service is not None:
+        await delegate_service.release_for_session(session_id, reason="transcript_replaced")
     saved = await session_store.save_session(record)
     return to_chat_session_response(saved)
 
@@ -156,6 +162,12 @@ async def delete_session(request: Request, session_id: str) -> dict[str, str]:
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
     _ensure_console_principal_can_access_session(principal, existing)
+    # Release the session's active delegate runs FIRST — explicit release
+    # records each run's terminal state + release events before any rows go.
+    # No-op when stateful delegates are disabled (no service wired).
+    delegate_service = getattr(request.app.state, "delegate_service", None)
+    if delegate_service is not None:
+        await delegate_service.release_for_session(session_id, reason="session_deleted")
     # Stop the session's sandbox instances BEFORE deleting the session row —
     # the row delete cascades the logical binding rows the stop needs. The
     # binding service also evicts warm skill processes and instance-private
