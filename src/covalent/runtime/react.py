@@ -15,6 +15,7 @@ from covalent.registry.registry import FrameworkRegistry
 from covalent.runtime.base import AgentRuntime
 from covalent.runtime.backend import ExecutionBindingResolver
 from covalent.runtime.context_window_manager import ContextWindowManager
+from covalent.runtime.memory_port import RuntimeMemoryAdapter, RuntimeMemoryStore
 from covalent.skills.bundle import SkillBundle
 
 DELEGATE_TOOL_PREFIX = "agent__"
@@ -60,6 +61,7 @@ class ReactAgentRuntime(AgentRuntime):
         self,
         registry: FrameworkRegistry,
         session_store: SessionStore | None = None,
+        memory_store: RuntimeMemoryStore | None = None,
         session_history_limit: int = 40,
         context_token_budget: int | None = None,
         context_compact_threshold: float = 0.75,
@@ -73,6 +75,10 @@ class ReactAgentRuntime(AgentRuntime):
     ) -> None:
         self.registry = registry
         self.session_store = session_store
+        # Memory routing: scope kind 'session' → session_store, 'delegate' →
+        # delegate store (wired by callers), 'none' → no-op. The default
+        # adapter reproduces the legacy session-store-only behavior.
+        self.memory_store = memory_store or RuntimeMemoryAdapter(session_store, None)
         self.session_history_limit = session_history_limit
         self.binding_resolver = binding_resolver
         self.context_token_budget = context_token_budget
@@ -676,12 +682,21 @@ class ReactAgentRuntime(AgentRuntime):
             execution_backend=getattr(context, "execution_backend", None) if context is not None else None,
         )
 
-    async def _load_session_messages(self, agent: AgentSpec, context: RunContext | None) -> list[Message]:
+    def _memory_scope(self, context: RunContext | None) -> tuple[str, str | None]:
+        """Resolve this run's memory scope: an explicit scope (stateful
+        delegates) wins over ``memory_mode=none``, which wins over the shared
+        session conversation."""
+        if context is not None and (context.memory_scope_kind != "session" or context.memory_scope_id):
+            return context.memory_scope_kind, context.memory_scope_id
         if context is not None and context.memory_mode == "none":
+            return "none", None
+        return "session", context.session_id if context is not None else None
+
+    async def _load_session_messages(self, agent: AgentSpec, context: RunContext | None) -> list[Message]:
+        kind, scope_id = self._memory_scope(context)
+        if kind == "none" or not scope_id:
             return []
-        if not self.session_store or not context or not context.session_id:
-            return []
-        messages = await self.session_store.load_messages(context.session_id)
+        messages = await self.memory_store.load(kind, scope_id)
         recent_messages = self._context_window._recent_message_window(messages, self.session_history_limit)
         sanitized_messages, _ = self._context_window._sanitize_tool_message_sequence(recent_messages)
         return sanitized_messages
@@ -692,20 +707,21 @@ class ReactAgentRuntime(AgentRuntime):
         messages: list[Message],
         context: RunContext | None,
     ) -> None:
-        if context is not None and context.memory_mode == "none":
+        kind, scope_id = self._memory_scope(context)
+        if kind == "none" or not scope_id:
             return
-        if not self.session_store or not context or not context.session_id:
-            return
-        if context is not None and context.metadata.get("delegated_by"):
+        if kind != "delegate" and context is not None and context.metadata.get("delegated_by"):
             # Delegates share the parent conversation READ-ONLY. Their answers
             # reach the session through the parent's tool-result transcript;
             # persisting here would let concurrent delegates overwrite each
             # other and the parent's turn, and a failed parent run would leave
-            # delegate internals behind as session memory.
+            # delegate internals behind as session memory. Delegates with an
+            # explicit 'delegate' scope are exempt: they persist to their own
+            # isolated store, not the parent conversation.
             return
         messages = self._context_window._recent_message_window(messages, self.session_history_limit)
         messages, _ = self._context_window._sanitize_tool_message_sequence(messages)
-        await self.session_store.save_messages(context.session_id, messages)
+        await self.memory_store.save(kind, scope_id, messages)
 
     @staticmethod
     def _safe_json_dumps(value: Any) -> str:

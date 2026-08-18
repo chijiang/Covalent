@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from datetime import datetime, timezone
 
 from covalent.core.types import GenerationRequest, GenerationResponse, Message, RunContext, TokenUsage, ToolCall
+from covalent.infra.delegate_repository import DelegateRunRecord, InMemoryDelegateRunStore
+from covalent.infra.memory import InMemorySessionStore
 from covalent.registry.registry import FrameworkRegistry
+from covalent.runtime.memory_port import RuntimeMemoryAdapter
+from covalent.runtime.react import ReactAgentRuntime
 from covalent.skills.meta_tools import (
     READ_SKILL_INSTRUCTIONS_TOOL,
     READ_SKILL_RESOURCE_TOOL,
@@ -498,6 +503,97 @@ class DelegateSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         delegate_context = runtime._build_delegate_context(parent, child, RunContext(agent_name="parent"))
         self.assertIsNone(delegate_context.session_id)
+
+
+class StatefulDelegateMemoryTests(unittest.IsolatedAsyncioTestCase):
+    """Explicit memory scopes: a delegate whose context carries
+    memory_scope_kind='delegate' persists its transcript to its own delegate
+    run store (root session memory untouched), while legacy flag-off
+    delegates (delegated_by metadata only, no memory_scope) keep today's
+    behavior exactly — they read the parent conversation but never write
+    anywhere.
+    """
+
+    _NOW = datetime(2026, 8, 18, 12, 0, 0, tzinfo=timezone.utc)
+
+    @staticmethod
+    def _runtime(
+        registry: FrameworkRegistry,
+        session_store: InMemorySessionStore,
+        delegate_store: InMemoryDelegateRunStore,
+    ) -> ReactAgentRuntime:
+        return ReactAgentRuntime(
+            registry,
+            session_store=session_store,
+            memory_store=RuntimeMemoryAdapter(session_store, delegate_store),
+            enable_llm_summarization=False,
+        )
+
+    async def test_delegate_with_memory_scope_persists_to_own_store_not_session(self) -> None:
+        delegate_store = InMemoryDelegateRunStore()
+        await delegate_store.create_run(DelegateRunRecord(
+            id="delegate-1",
+            session_id="s1",
+            execution_scope_id="scope-1",
+            workspace_scope_id="ws-1",
+            root_agent_name="root",
+            parent_agent_name="root",
+            delegate_agent_name="child",
+            created_at=self._NOW,
+            last_activity_at=self._NOW,
+        ))
+        session_store = InMemorySessionStore()
+        child = make_test_agent(name="child", model="m-child")
+        model = ScriptedModelAdapter([text_response("Child done.")])
+        registry = make_test_registry(child, model=model)
+        runtime = self._runtime(registry, session_store, delegate_store)
+        delegate_context = RunContext(
+            agent_name="child",
+            session_id="s1",
+            memory_scope_kind="delegate",
+            memory_scope_id="delegate-1",
+            delegate_run_id="delegate-1",
+            metadata={"delegated_by": "parent"},
+        )
+
+        response = await runtime.run(child, "task", delegate_context)
+
+        self.assertEqual(response.output_text, "Child done.")
+        saved = await delegate_store.load_messages("delegate-1")
+        self.assertTrue(any(m.role == "assistant" for m in saved),
+                        "delegate transcript should be persisted to its own store")
+        self.assertIn("task", [str(m.content) for m in saved if m.role == "user"])
+        self.assertEqual(await session_store.load_messages("s1"), [],
+                         "the root session memory must stay untouched")
+
+    async def test_flag_off_delegates_still_never_persist(self) -> None:
+        delegate_store = InMemoryDelegateRunStore()
+        session_store = InMemorySessionStore()
+        await session_store.save_messages("s1", [Message(role="user", content="prior context")])
+        child = make_test_agent(name="child", model="m-child")
+        model = ScriptedModelAdapter([text_response("Legacy answer.")])
+        registry = make_test_registry(child, model=model)
+        runtime = self._runtime(registry, session_store, delegate_store)
+        # Legacy delegate context: delegated_by metadata only, no memory_scope.
+        delegate_context = RunContext(
+            agent_name="child",
+            session_id="s1",
+            metadata={"delegated_by": "parent", "memory_mode": "session"},
+        )
+
+        response = await runtime.run(child, "legacy task", delegate_context)
+
+        self.assertEqual(response.output_text, "Legacy answer.")
+        # Read-only on the parent conversation is preserved: the delegate
+        # still SEES prior session memory...
+        seen = " ".join(str(m.content) for m in model.received_requests[0].messages)
+        self.assertIn("prior context", seen)
+        # ...but writes nothing anywhere.
+        self.assertEqual([str(m.content) for m in await session_store.load_messages("s1")],
+                         ["prior context"],
+                         "legacy delegate must not write to the session store")
+        self.assertEqual(await delegate_store.count_messages("delegate-1"), 0,
+                         "legacy delegate must not write to the delegate store")
 
 
 if __name__ == "__main__":
