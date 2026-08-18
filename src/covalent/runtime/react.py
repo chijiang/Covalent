@@ -38,6 +38,13 @@ DOWNLOAD_PUBLICATION_POLICY = (
     "unless publish_downloadable_file succeeded in the current run. If publication fails, explain "
     "the failure instead of implying success."
 )
+WORKSPACE_CONFINEMENT_POLICY = (
+    "Keep every file you create inside the session workspace. Files written outside the "
+    "workspace (for example /tmp) are ephemeral: they are not shared with the user, cannot be "
+    "published with publish_downloadable_file, and may disappear when the sandbox restarts. "
+    "When you need temporary or scratch files, create a tmp folder inside the workspace "
+    "and use that instead."
+)
 TOOL_CALL_LIMIT_EXCEEDED_MESSAGE = (
     "Tool call limit exceeded. Do not call any more tools. "
     "Use the observations already collected to answer the user directly. "
@@ -151,6 +158,7 @@ class ReactAgentRuntime(AgentRuntime):
         if agent.reasoning_prompt.strip():
             prompt_sections.append(agent.reasoning_prompt.strip())
         prompt_sections.append(DOWNLOAD_PUBLICATION_POLICY)
+        prompt_sections.append(WORKSPACE_CONFINEMENT_POLICY)
         if skill_blocks:
             prompt_sections.append(
                 "Available skills (progressive disclosure): detailed instruction bodies are not preloaded. "

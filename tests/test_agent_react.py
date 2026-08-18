@@ -147,6 +147,20 @@ class ReactLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(READ_SKILL_INSTRUCTIONS_TOOL, tool_names)
         self.assertIn(READ_SKILL_RESOURCE_TOOL, tool_names)
 
+    async def test_system_prompt_includes_workspace_confinement_policy(self) -> None:
+        """Workspace confinement policy is appended even when the agent has a custom system prompt."""
+        model = ScriptedModelAdapter([text_response("Done.")])
+        agent = make_test_agent(system_prompt="Custom agent prompt.")
+        registry = make_test_registry(agent, model=model)
+        runtime = make_test_runtime(registry)
+
+        await runtime.run(agent, "Hi", RunContext(agent_name="test", session_id="s1"))
+
+        system_prompt = model.received_requests[0].system_prompt or ""
+        self.assertIn("Custom agent prompt.", system_prompt)
+        self.assertIn("inside the session workspace", system_prompt)
+        self.assertIn("tmp folder inside the workspace", system_prompt)
+
     async def test_model_call_trace_includes_raw_request_and_response(self) -> None:
         """Model call trace events include inspectable raw request/response details."""
         response = text_response("Done.").model_copy(

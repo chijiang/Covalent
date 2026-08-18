@@ -332,7 +332,7 @@ def register_workspace_tools(registry: Any, settings: Any, *, download_base_path
             "function": {
                 "name": "publish_downloadable_file",
                 "description": (
-                    "Copy an existing workspace file or system temporary file into the session download area "
+                    "Copy an existing workspace file into the session download area "
                     "and return a user-downloadable link. Use this after generating a file that the user should download. "
                     "Pass the generated file location as file_path."
                 ),
@@ -341,7 +341,7 @@ def register_workspace_tools(registry: Any, settings: Any, *, download_base_path
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "Path to the existing generated file inside the workspace or system temporary directory.",
+                            "description": "Path to the existing generated file inside the workspace.",
                         },
                         "download_name": {
                             "type": "string",

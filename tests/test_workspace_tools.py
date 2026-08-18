@@ -16,7 +16,9 @@ from covalent.core.workspace_tools import (
     _search_workspace_files,
     _unzip_workspace_archive,
     _zip_workspace_entries,
+    register_workspace_tools,
 )
+from covalent.registry.registry import FrameworkRegistry
 
 
 class DummySettings:
@@ -323,6 +325,18 @@ class WorkspaceToolTests(unittest.TestCase):
         )
         self.assertEqual(result["download_url"], "/api/backend/downloads/run-42/report.csv")
         self.assertTrue((self.root / ".covalent" / "downloads" / "run-42" / "report.csv").is_file())
+
+    def test_publish_downloadable_file_description_advertises_workspace_only(self) -> None:
+        """The publish tool only accepts workspace files — its description must
+        not lure agents into writing to the system temp directory first."""
+        registry = FrameworkRegistry()
+        register_workspace_tools(registry, self.settings)
+
+        function = registry.local_tools["publish_downloadable_file"].schema["function"]
+        self.assertIn("workspace", function["description"])
+        self.assertNotIn("temporary", function["description"].lower())
+        file_path_description = function["parameters"]["properties"]["file_path"]["description"]
+        self.assertNotIn("temporary", file_path_description.lower())
 
 
 if __name__ == "__main__":

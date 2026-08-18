@@ -1,5 +1,0 @@
-- generic [active] [ref=f1e1]:
-  - generic [ref=f1e2]: Checking session...
-  - region "Notifications alt+T"
-  - button "Open Next.js Dev Tools" [ref=f1e9] [cursor=pointer]
-  - alert [ref=f1e13]
