@@ -47,6 +47,35 @@ class UserInputRequest(BaseModel):
     questions: list[UserQuestion] = Field(default_factory=list)
 
 
+class ParentInputRequest(BaseModel):
+    id: str
+    delegate_run_id: str
+    tool_call_id: str | None = None
+    tool_name: Literal["ask_parent"] = "ask_parent"
+    title: str
+    questions: list[UserQuestion] = Field(default_factory=list)
+
+
+class DelegateRunStatus(str, Enum):
+    CREATED = "created"
+    RUNNING = "running"
+    WAITING_PARENT = "waiting_parent"
+    IDLE = "idle"
+    RELEASED = "released"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+    EXPIRED = "expired"
+
+
+class DelegateRunResult(BaseModel):
+    delegate_run_id: str
+    agent_name: str
+    status: DelegateRunStatus
+    output: str = ""
+    request: ParentInputRequest | None = None
+    error: dict[str, Any] = Field(default_factory=dict)
+
+
 class ResumedToolResult(BaseModel):
     tool_call_id: str | None = None
     tool_name: str
@@ -61,6 +90,7 @@ class ToolResult(BaseModel):
     tool_call_id: str | None = None
     is_error: bool = False
     input_request: UserInputRequest | None = None
+    parent_request: ParentInputRequest | None = None
 
     def to_message(self) -> "Message":
         return Message(
@@ -108,6 +138,14 @@ class GenerationResponse(BaseModel):
 class RunContext(BaseModel):
     agent_name: str
     session_id: str | None = None
+    # Explicit memory identity (stateful delegates): memory_scope_kind determines
+    # whether this run has isolated memory; memory_scope_id names the scope;
+    # delegate_run_id identifies this delegate run; parent_delegate_run_id
+    # tracks the logical parent for nested delegates.
+    memory_scope_kind: Literal["session", "delegate", "none"] = "session"
+    memory_scope_id: str | None = None
+    delegate_run_id: str | None = None
+    parent_delegate_run_id: str | None = None
     # Execution identity (per-agent sandbox profiles). ``session_id`` drives
     # memory/trace persistence; ``execution_scope_id`` is the sandbox lifecycle
     # scope (chat session id, or run id for stateless invokes);
