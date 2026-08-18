@@ -58,3 +58,6 @@ skills/uploaded
 
 .playwright-cli
 .playwright-mcp
+.ruff_cache
+.pytest_cache
+.pylint_cache
