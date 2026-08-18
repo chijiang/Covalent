@@ -596,5 +596,36 @@ class StatefulDelegateMemoryTests(unittest.IsolatedAsyncioTestCase):
                          "legacy delegate must not write to the delegate store")
 
 
+    async def test_explicit_delegate_scope_beats_memory_mode_none(self) -> None:
+        """Scope resolution order: an explicit delegate scope wins over
+        metadata memory_mode=none. A delegate spawned from a stateless parent
+        (memory_mode=none inherited) that is granted its own delegate scope
+        must still persist to that scope — swapping _memory_scope's first two
+        branches would silently turn every stateful delegate memoryless."""
+        delegate_store = InMemoryDelegateRunStore()
+        session_store = InMemorySessionStore()
+        child = make_test_agent(name="child", model="m-child")
+        model = ScriptedModelAdapter([text_response("Scoped answer.")])
+        registry = make_test_registry(child, model=model)
+        runtime = self._runtime(registry, session_store, delegate_store)
+        delegate_context = RunContext(
+            agent_name="child",
+            session_id="s1",
+            memory_scope_kind="delegate",
+            memory_scope_id="delegate-2",
+            delegate_run_id="delegate-2",
+            metadata={"delegated_by": "parent", "memory_mode": "none"},
+        )
+
+        response = await runtime.run(child, "scoped task", delegate_context)
+
+        self.assertEqual(response.output_text, "Scoped answer.")
+        saved = await delegate_store.load_messages("delegate-2")
+        self.assertTrue(any(m.role == "assistant" for m in saved),
+                        "explicit delegate scope must persist even with memory_mode=none")
+        self.assertEqual(await session_store.load_messages("s1"), [],
+                         "nothing may land in the session store")
+
+
 if __name__ == "__main__":
     unittest.main()
