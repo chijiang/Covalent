@@ -121,6 +121,16 @@ class AppSettings(BaseSettings):
     skills_root_dir: str = "skills"
     skills_directories: str | None = None
     skills_cache_dir: str = "~/.covalent/skill_cache"
+    # Stateful delegates (AGENT_FRAMEWORK_STATEFUL_DELEGATES_ENABLED)
+    stateful_delegates_enabled: bool = False
+    delegate_max_active_runs_per_parent: int = 4
+    delegate_max_runs_per_scope: int = 32
+    delegate_max_depth: int = 3  # delegation_chain length cap; 0 = unlimited
+    delegate_max_messages_per_run: int = 200  # bounds exchanges + memory growth
+    delegate_idle_ttl_seconds: float = 86400.0  # 0 = never expire idle runs
+    delegate_waiting_ttl_seconds: float = 3600.0  # 0 = never expire waiting runs
+    delegate_released_retention_seconds: float = 3600.0  # raw memory kept this long after release
+    delegate_running_lease_seconds: float = 900.0  # running rows older than this are orphans
 
     def resolve_path(self, path: str | None) -> Path | None:
         return Path(path).expanduser() if path else None
