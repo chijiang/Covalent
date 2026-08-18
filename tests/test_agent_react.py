@@ -74,6 +74,25 @@ def _echo_handler(args, ctx):
     return json.dumps({"echo": args.get("msg", "")})
 
 
+#: Delegate lifecycle SSE event names (mirrors covalent.api.sse_events).
+DELEGATE_LIFECYCLE_EVENT_NAMES = (
+    "delegate_created",
+    "delegate_running",
+    "delegate_waiting_parent",
+    "delegate_resumed",
+    "delegate_idle",
+    "delegate_released",
+    "delegate_cancelled",
+    "delegate_expired",
+    "delegate_failed",
+)
+
+
+def _lifecycle_sequence(events: list[dict]) -> list[str]:
+    """Ordered lifecycle event names from a stream, for boundary assertions."""
+    return [e["event"] for e in events if e["event"] in DELEGATE_LIFECYCLE_EVENT_NAMES]
+
+
 class ReactLoopTests(unittest.IsolatedAsyncioTestCase):
     async def test_react_no_tools_single_turn(self) -> None:
         """Model returns text immediately — no tool calls, one model call."""
@@ -413,6 +432,9 @@ class ConcurrentDelegateTests(unittest.IsolatedAsyncioTestCase):
         # Each id is represented, and events partition cleanly by id.
         ids_seen = {e["payload"]["delegate_tool_call_id"] for e in delegate_events}
         self.assertEqual(ids_seen, set(call_ids))
+
+        # Legacy path (no coordinator) never emits lifecycle events.
+        self.assertEqual(_lifecycle_sequence(events), [])
 
     async def test_batch_counts_as_one_parent_iteration(self) -> None:
         """A batch of N delegate calls counts as ONE parent iteration event sequence."""
@@ -791,6 +813,20 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(delegate_finals, "expected a forwarded delegate_final event")
         self.assertEqual(delegate_finals[-1].get("delegate_run_id"), run_id)
 
+        # Lifecycle events mark the run boundary in order, each with the run
+        # identity and a status; the deprecated delegate_input_required never
+        # fires on the stateful path.
+        self.assertEqual(
+            _lifecycle_sequence(events),
+            ["delegate_created", "delegate_running", "delegate_idle"],
+        )
+        for name in ("delegate_created", "delegate_running", "delegate_idle"):
+            payload = next(e["payload"] for e in events if e["event"] == name)
+            self.assertEqual(payload["delegate_run_id"], run_id)
+            self.assertIsInstance(payload["status"], str)
+            self.assertIsInstance(payload["summary"], str)
+        self.assertFalse([e for e in events if e["event"] == "delegate_input_required"])
+
         # Delegate memory is private and ends with the child's assistant answer.
         delegate_messages = await fixture.run_store.load_messages(run_id)
         self.assertEqual(delegate_messages[-1].role, "assistant")
@@ -868,6 +904,19 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         row = await fixture.run_store.get_run(run_id)
         self.assertEqual(row.status, DelegateRunStatus.WAITING_PARENT)
         self.assertIsNotNone(row.pending_request)
+
+        # The pause surfaced as a waiting_parent lifecycle boundary: status,
+        # run identity, and the request title in the summary.
+        self.assertEqual(
+            _lifecycle_sequence(events),
+            ["delegate_created", "delegate_running", "delegate_waiting_parent"],
+        )
+        waiting_payload = next(
+            e["payload"] for e in events if e["event"] == "delegate_waiting_parent"
+        )
+        self.assertEqual(waiting_payload["status"], "waiting_parent")
+        self.assertEqual(waiting_payload["delegate_run_id"], run_id)
+        self.assertIn("Need target", waiting_payload["summary"])
 
         # Resuming the run replays the parent's answer and completes the turn.
         handle = await fixture.service.send(
@@ -1200,6 +1249,29 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertTrue(send_finals, "the resumed child turn must forward its final event")
 
+        # Lifecycle boundaries: the fresh leg pauses, the send leg resumes and
+        # idles — resumed/running/idle all tagged to the delegate_send call.
+        self.assertEqual(
+            _lifecycle_sequence(events),
+            [
+                "delegate_created",
+                "delegate_running",
+                "delegate_waiting_parent",
+                "delegate_resumed",
+                "delegate_running",
+                "delegate_idle",
+            ],
+        )
+        resumed_payload = next(e["payload"] for e in events if e["event"] == "delegate_resumed")
+        self.assertEqual(resumed_payload["delegate_run_id"], envelope.delegate_run_id)
+        self.assertEqual(resumed_payload["delegate_tool_call_id"], "ps-1")
+        idle_payload = next(
+            e["payload"] for e in events
+            if e["event"] == "delegate_idle"
+            and e["payload"].get("delegate_tool_call_id") == "ps-1"
+        )
+        self.assertEqual(idle_payload["status"], "idle")
+
     async def test_delegate_send_followup_to_idle_appends_parent_user_message(self) -> None:
         fixture = self._build(
             parent_responses=[],
@@ -1328,6 +1400,18 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self._tool_result(events, "pr-1")["is_error"])
         row = await fixture.run_store.get_run(released.delegate_run_id)
         self.assertEqual(row.status, DelegateRunStatus.RELEASED)
+
+        # The release surfaced as a lifecycle event carrying the reason.
+        self.assertEqual(
+            _lifecycle_sequence(events),
+            ["delegate_created", "delegate_running", "delegate_idle", "delegate_released"],
+        )
+        released_payload = next(
+            e["payload"] for e in events if e["event"] == "delegate_released"
+        )
+        self.assertEqual(released_payload["delegate_run_id"], released.delegate_run_id)
+        self.assertEqual(released_payload["status"], "released")
+        self.assertEqual(released_payload["summary"], "Released: finished")
 
         gone = self._tool_result(events, "ps-1")
         self.assertTrue(gone["is_error"])

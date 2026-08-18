@@ -10,7 +10,7 @@ from typing import Any
 
 from covalent.application.errors import ApplicationError
 from covalent.core.agent import AgentSpec
-from covalent.core.types import GenerationRequest, GenerationResponse, Message, ParentInputRequest, PromptContent, ResumedToolResult, RunContext, ToolCall, ToolResult, UserInputRequest
+from covalent.core.types import DelegateRunResult, GenerationRequest, GenerationResponse, Message, ParentInputRequest, PromptContent, ResumedToolResult, RunContext, ToolCall, ToolResult, UserInputRequest
 from covalent.infra.memory import SessionStore
 from covalent.model.base import ModelProviderError
 from covalent.registry.registry import FrameworkRegistry
@@ -48,7 +48,32 @@ ASK_PARENT_TOOL = "ask_parent"
 
 #: Lifecycle tools for stateful delegate runs (registered by the application
 #: layer). Exposed at root only, never inside a delegated run.
-DELEGATE_LIFECYCLE_TOOLS = ("delegate_send", "delegate_list", "delegate_release")
+DELEGATE_SEND_TOOL = "delegate_send"
+DELEGATE_LIST_TOOL = "delegate_list"
+DELEGATE_RELEASE_TOOL = "delegate_release"
+DELEGATE_LIFECYCLE_TOOLS = (DELEGATE_SEND_TOOL, DELEGATE_LIST_TOOL, DELEGATE_RELEASE_TOOL)
+
+#: Delegate lifecycle SSE event names, emitted from the stateful paths into
+#: the parent stream. Mirrored as SSE_EVENT_DELEGATE_* constants in
+#: covalent.api.sse_events (kept local here so the runtime never imports the
+#: API layer). ``delegate_expired`` has no runtime site: expiry is a service
+#: sweep with no live stream to emit into.
+DELEGATE_LIFECYCLE_EVENT_CREATED = "delegate_created"
+DELEGATE_LIFECYCLE_EVENT_RUNNING = "delegate_running"
+DELEGATE_LIFECYCLE_EVENT_WAITING_PARENT = "delegate_waiting_parent"
+DELEGATE_LIFECYCLE_EVENT_RESUMED = "delegate_resumed"
+DELEGATE_LIFECYCLE_EVENT_IDLE = "delegate_idle"
+DELEGATE_LIFECYCLE_EVENT_RELEASED = "delegate_released"
+DELEGATE_LIFECYCLE_EVENT_CANCELLED = "delegate_cancelled"
+DELEGATE_LIFECYCLE_EVENT_FAILED = "delegate_failed"
+
+#: Terminal child-turn outcomes → lifecycle event name.
+DELEGATE_LIFECYCLE_OUTCOME_EVENTS = {
+    "idle": DELEGATE_LIFECYCLE_EVENT_IDLE,
+    "waiting_parent": DELEGATE_LIFECYCLE_EVENT_WAITING_PARENT,
+    "failed": DELEGATE_LIFECYCLE_EVENT_FAILED,
+    "cancelled": DELEGATE_LIFECYCLE_EVENT_CANCELLED,
+}
 
 DELEGATE_LIFECYCLE_POLICY = (
     "Delegates are stateful subagents. Calling agent__<name> starts a run and returns a JSON envelope: "
@@ -633,8 +658,28 @@ class ReactAgentRuntime(AgentRuntime):
                 is_error=True,
             )
         try:
+            await self._emit_lifecycle_event(
+                handle,
+                event_name=DELEGATE_LIFECYCLE_EVENT_CREATED,
+                status="created",
+                summary=f"Started: {handle.initial_input}",
+                parent_agent=agent,
+                tool_call=tool_call,
+                parent_context=parent_context,
+                parent_iteration=parent_iteration,
+                event_sink=event_sink,
+            )
             outcome = await self._execute_delegate_turn(
                 handle,
+                parent_agent=agent,
+                tool_call=tool_call,
+                parent_context=parent_context,
+                parent_iteration=parent_iteration,
+                event_sink=event_sink,
+            )
+            await self._emit_outcome_lifecycle_event(
+                handle,
+                outcome,
                 parent_agent=agent,
                 tool_call=tool_call,
                 parent_context=parent_context,
@@ -684,12 +729,35 @@ class ReactAgentRuntime(AgentRuntime):
             raise RuntimeError("delegate lifecycle tools require a coordinator")
         handled = await self.registry.execute_tool_call(agent, tool_call, context)
         if not isinstance(handled.content, DelegateRunHandle):
+            await self._emit_released_lifecycle_event(
+                agent, tool_call, context, parent_iteration, handled, event_sink
+            )
             return handled
         handle = handled.content
         parent_context = context if context is not None else RunContext(agent_name=agent.name)
         try:
+            await self._emit_lifecycle_event(
+                handle,
+                event_name=DELEGATE_LIFECYCLE_EVENT_RESUMED,
+                status="resumed",
+                summary="Resumed by parent send",
+                parent_agent=agent,
+                tool_call=tool_call,
+                parent_context=parent_context,
+                parent_iteration=parent_iteration,
+                event_sink=event_sink,
+            )
             outcome = await self._execute_delegate_turn(
                 handle,
+                parent_agent=agent,
+                tool_call=tool_call,
+                parent_context=parent_context,
+                parent_iteration=parent_iteration,
+                event_sink=event_sink,
+            )
+            await self._emit_outcome_lifecycle_event(
+                handle,
+                outcome,
                 parent_agent=agent,
                 tool_call=tool_call,
                 parent_context=parent_context,
@@ -741,6 +809,17 @@ class ReactAgentRuntime(AgentRuntime):
         waiting_request: ParentInputRequest | None = None
         last_assistant_text = ""
         try:
+            await self._emit_lifecycle_event(
+                handle,
+                event_name=DELEGATE_LIFECYCLE_EVENT_RUNNING,
+                status="running",
+                summary="Turn started",
+                parent_agent=parent_agent,
+                tool_call=tool_call,
+                parent_context=parent_context,
+                parent_iteration=parent_iteration,
+                event_sink=event_sink,
+            )
             if event_sink is not None:
                 await event_sink(self._delegate_thought_event(
                     parent_agent=parent_agent,
@@ -764,6 +843,10 @@ class ReactAgentRuntime(AgentRuntime):
             async for event in self.stream_events(handle.agent, "", handle.context):
                 event_name = str(event.get("event") or "")
                 if event_name == "parent_input_required":
+                    # Known/intentional trace artifact: the child's ask_parent
+                    # tool call appears in traces with no result event until
+                    # the resume leg answers it (the pause breaks the loop
+                    # before a tool result exists).
                     waiting_request = ParentInputRequest.model_validate(event["payload"])
                     break
                 if event_name == "input_required":
@@ -814,6 +897,26 @@ class ReactAgentRuntime(AgentRuntime):
                 output=self._response_output_text(final_response, fallback_text=last_assistant_text),
             )
         except asyncio.CancelledError:
+            # Best-effort cancelled lifecycle event before the shielded
+            # report; a sink failure during teardown must not mask the
+            # re-raised cancellation.
+            if event_sink is not None:
+                try:
+                    await self._emit_outcome_lifecycle_event(
+                        handle,
+                        DelegateTurnOutcome(status="cancelled"),
+                        parent_agent=parent_agent,
+                        tool_call=tool_call,
+                        parent_context=parent_context,
+                        parent_iteration=parent_iteration,
+                        event_sink=event_sink,
+                    )
+                except Exception:
+                    logger.warning(
+                        "failed to emit cancelled lifecycle event for delegate run %s",
+                        handle.run.id,
+                        exc_info=True,
+                    )
             if coordinator is not None:
                 try:
                     await asyncio.shield(
@@ -881,6 +984,130 @@ class ReactAgentRuntime(AgentRuntime):
             if delegate_context.parent_delegate_run_id:
                 metadata["parent_delegate_run_id"] = delegate_context.parent_delegate_run_id
         return metadata
+
+    def _delegate_lifecycle_event(
+        self,
+        *,
+        event_name: str,
+        run_id: str,
+        status: str,
+        summary: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build one delegate lifecycle SSE event: run identity, status, and a
+        safe truncated summary on top of the standard delegate trace metadata."""
+        return {
+            "event": event_name,
+            "payload": {
+                **metadata,
+                "delegate_run_id": run_id,
+                "status": status,
+                "summary": self._truncate_text(summary, 240),
+            },
+        }
+
+    async def _emit_lifecycle_event(
+        self,
+        handle: DelegateRunHandle,
+        *,
+        event_name: str,
+        status: str,
+        summary: str,
+        parent_agent: AgentSpec,
+        tool_call: ToolCall,
+        parent_context: RunContext,
+        parent_iteration: int,
+        event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ) -> None:
+        """Emit a lifecycle event for ``handle``'s run into the parent stream;
+        a no-op without a sink (service-driven turns in tests pass
+        ``event_sink=None``)."""
+        if event_sink is None:
+            return
+        await event_sink(self._delegate_lifecycle_event(
+            event_name=event_name,
+            run_id=handle.run.id,
+            status=status,
+            summary=summary,
+            metadata=self._delegate_trace_metadata(
+                parent_agent=parent_agent,
+                delegate_agent=handle.agent,
+                tool_call=tool_call,
+                context=parent_context,
+                parent_iteration=parent_iteration,
+                delegate_context=handle.context,
+            ),
+        ))
+
+    async def _emit_outcome_lifecycle_event(
+        self,
+        handle: DelegateRunHandle,
+        outcome: DelegateTurnOutcome,
+        *,
+        parent_agent: AgentSpec,
+        tool_call: ToolCall,
+        parent_context: RunContext,
+        parent_iteration: int,
+        event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ) -> None:
+        """Emit the terminal lifecycle event matching a completed turn's
+        outcome (idle / waiting_parent / failed / cancelled)."""
+        if event_sink is None:
+            return
+        if outcome.status == "idle":
+            summary = f"Returned: {outcome.output}"
+        elif outcome.status == "waiting_parent":
+            summary = (
+                f"Waiting for parent: {outcome.request.title}"
+                if outcome.request is not None
+                else "Waiting for parent"
+            )
+        elif outcome.status == "failed":
+            summary = f"Failed: {outcome.error.get('code') or 'error'}"
+        else:
+            summary = "Cancelled"
+        await self._emit_lifecycle_event(
+            handle,
+            event_name=DELEGATE_LIFECYCLE_OUTCOME_EVENTS[outcome.status],
+            status=outcome.status,
+            summary=summary,
+            parent_agent=parent_agent,
+            tool_call=tool_call,
+            parent_context=parent_context,
+            parent_iteration=parent_iteration,
+            event_sink=event_sink,
+        )
+
+    async def _emit_released_lifecycle_event(
+        self,
+        parent_agent: AgentSpec,
+        tool_call: ToolCall,
+        context: RunContext | None,
+        parent_iteration: int,
+        handled: ToolResult,
+        event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ) -> None:
+        """Emit ``delegate_released`` after a successful delegate_release tool
+        call. There is no DelegateRunHandle on this path (release never drives
+        a child turn), so the run identity comes from the released envelope
+        the handler returned."""
+        if event_sink is None or handled.is_error or tool_call.name != DELEGATE_RELEASE_TOOL:
+            return
+        released = DelegateRunResult.model_validate_json(str(handled.content))
+        reason = str(tool_call.arguments.get("reason") or "")
+        await event_sink(self._delegate_lifecycle_event(
+            event_name=DELEGATE_LIFECYCLE_EVENT_RELEASED,
+            run_id=released.delegate_run_id,
+            status="released",
+            summary=f"Released: {reason or 'by parent'}",
+            metadata=self._delegate_trace_metadata(
+                parent_agent=parent_agent,
+                delegate_agent=self.registry.get_agent(released.agent_name),
+                tool_call=tool_call,
+                context=context,
+                parent_iteration=parent_iteration,
+            ),
+        ))
 
     def _decorate_delegate_event(
         self,
