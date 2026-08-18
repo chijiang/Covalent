@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 from pathlib import Path
 import sys
 import os
@@ -31,7 +30,7 @@ def _run_migrate() -> None:
     database_url = settings.database_url
     if not database_url:
         raise SystemExit("AGENT_FRAMEWORK_DATABASE_URL must be set to run migrations")
-    asyncio.run(run_database_migrations(database_url.replace("+asyncpg", "")))
+    run_database_migrations(database_url.replace("+asyncpg", ""))
     print("Database migrations applied.")
 
 

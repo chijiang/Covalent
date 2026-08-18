@@ -197,6 +197,14 @@ AGENT_FRAMEWORK_EXECUTION_BACKEND_KIND=docker
 
 Full design — the pluggable `ExecutionBackend` interface, lifecycle, security model, and phase roadmap — is in [`docs/execution-backend-design.md`](docs/execution-backend-design.md).
 
+### Stateful Delegates (experimental)
+
+`AGENT_FRAMEWORK_STATEFUL_DELEGATES_ENABLED` (default `false`) turns the fire-and-forget delegate tool into **stateful delegate runs**: private per-run memory, an `ask_parent` tool (delegates question their parent, never the end user), root-agent `delegate_send` / `delegate_list` / `delegate_release` tools, and lifecycle SSE events. **Before enabling, run `uv run python main.py migrate`** — migration `20260818_000027` adds the backing tables.
+
+Tune via env vars (defaults shown; `0` disables a TTL): `AGENT_FRAMEWORK_DELEGATE_MAX_ACTIVE_RUNS_PER_PARENT=4`, `..._DELEGATE_MAX_RUNS_PER_SCOPE=32`, `..._DELEGATE_MAX_DEPTH=3` (0 = unlimited), `..._DELEGATE_MAX_MESSAGES_PER_RUN=200`, `..._DELEGATE_IDLE_TTL_SECONDS=86400`, `..._DELEGATE_WAITING_TTL_SECONDS=3600`, `..._DELEGATE_RELEASED_RETENTION_SECONDS=3600` (raw run memory kept after release), `..._DELEGATE_RUNNING_LEASE_SECONDS=900` (stale-running lease before orphan recovery).
+
+Rollout checklist: enable in dev first and soak on the `delegate_run_transition` / error logs → remove the legacy child-`input_required` promotion path → remove the flag after one compatibility release (each on its own branch).
+
 ## Skills
 
 ### Directory Layout

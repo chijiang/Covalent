@@ -311,11 +311,14 @@ class DelegateService:
             "delegate_run_transition",
             extra={
                 "delegate_run_id": run.id,
+                "parent_delegate_run_id": run.parent_delegate_run_id,
                 "transition": transition,
                 "parent_agent_name": parent_agent_name
                 if parent_agent_name is not None
                 else run.parent_agent_name,
+                "delegate_agent_name": run.delegate_agent_name,
                 "session_id": session_id if session_id is not None else run.session_id,
+                "execution_scope_id": run.execution_scope_id,
             },
         )
 
@@ -813,8 +816,11 @@ class DelegateService:
                 "delegate_run_messages_pruned",
                 extra={
                     "delegate_run_id": record.id,
+                    "parent_delegate_run_id": record.parent_delegate_run_id,
                     "parent_agent_name": record.parent_agent_name,
+                    "delegate_agent_name": record.delegate_agent_name,
                     "session_id": record.session_id,
+                    "execution_scope_id": record.execution_scope_id,
                 },
             )
         return [record.id for record in due]
