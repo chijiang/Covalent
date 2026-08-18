@@ -1,3 +1,5 @@
+
+
 # Covalent
 
 Run autonomous agents with sandboxed skills, live traces, and production API access.
@@ -398,7 +400,7 @@ A full token looks like `cvt_0a1b2c3d4e5f6g7h_<random-secret>`. Only this `cvt_<
 API tokens are created in the Service Console UI:
 
 1. **Sign in** to the console. On first boot an admin is seeded from `AGENT_FRAMEWORK_CONSOLE_SEED_ADMIN_*` (default `admin` / `admin123` — change the password before exposing the console).
-2. Open **Service Console → API Tokens** in the left navigation (also reachable from your account page → *api-tokens* tab). The page shows usage overview tiles, a request chart, and a two-panel token workspace: the token inventory list on the left, the editor form on the right.
+2. Open **Service Console → API Tokens** (the route redirects to **Account → API tokens**) or go directly to your account page → *api-tokens* tab. The page shows usage overview tiles, a request chart, and a two-panel token workspace: the token inventory list on the left, the editor form on the right.
 3. Click **New token** (the button appears in both the page header and the inventory panel heading). The right panel switches to **Create API token** mode and pre-fills a default name like `api-token-YYYY-MM-DD`.
 4. **Token details** — edit the **Name** (required) and optionally set **Expires at** as a local date/time. Scope is fixed to `agent:invoke`; the workspace is the current one.
 5. **Access policy**:
