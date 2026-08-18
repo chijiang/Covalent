@@ -348,15 +348,22 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
         from covalent.api.routes.config import _enforce_agent_delegate_run_checks
 
         _, store = _delegate_service()
-        await _seed_run(store, "run-1", session_id="sess-1", execution_scope_id="sess-1", agent_name="helper")
+        # Non-admin-owned agent: run rows carry the registry-internal name.
+        await _seed_run(
+            store, "run-1", session_id="sess-1", execution_scope_id="sess-1",
+            agent_name="helper__user_abc",
+        )
         await _seed_run(
             store, "run-2", session_id="sess-1", execution_scope_id="sess-1",
-            agent_name="helper", status=DelegateRunStatus.IDLE,
+            agent_name="helper__user_abc", status=DelegateRunStatus.IDLE,
         )
 
         with self.assertRaises(ConflictError) as ctx:
             await _enforce_agent_delegate_run_checks(
-                store, payload_names=set(), current_names={"helper"}, renamed_from=set(),
+                store,
+                payload_names=set(),
+                current_document=[{"name": "helper", "internal_name": "helper__user_abc"}],
+                renamed_from=set(),
             )
         self.assertIn("helper", str(ctx.exception))
         self.assertIn("run-1", str(ctx.exception))
@@ -368,11 +375,18 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
         from covalent.api.routes.config import _enforce_agent_delegate_run_checks
 
         _, store = _delegate_service()
-        await _seed_run(store, "run-1", session_id="sess-1", execution_scope_id="sess-1", agent_name="helper")
-
+        await _seed_run(
+            store, "run-1", session_id="sess-1", execution_scope_id="sess-1",
+            agent_name="helper__user_abc",
+        )
+        # At check time the current document still lists the agent under its
+        # old public name; the rename metadata names the new one.
         with self.assertRaises(ConflictError):
             await _enforce_agent_delegate_run_checks(
-                store, payload_names={"helper-v2"}, current_names={"helper-v2"}, renamed_from={"helper"},
+                store,
+                payload_names={"helper-v2"},
+                current_document=[{"name": "helper", "internal_name": "helper__user_abc"}],
+                renamed_from={"helper"},
             )
 
     async def test_kept_agents_and_terminal_runs_pass(self) -> None:
@@ -381,14 +395,57 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
         _, store = _delegate_service()
         await _seed_run(
             store, "run-done", session_id="sess-1", execution_scope_id="sess-1",
-            agent_name="helper", status=DelegateRunStatus.RELEASED,
+            agent_name="helper__user_abc", status=DelegateRunStatus.RELEASED,
         )
         await _seed_run(store, "run-live", session_id="sess-1", execution_scope_id="sess-1", agent_name="keeper")
 
         # helper is removed but has no ACTIVE runs; keeper stays.
         await _enforce_agent_delegate_run_checks(
-            store, payload_names={"keeper"}, current_names={"helper", "keeper"}, renamed_from=set(),
+            store,
+            payload_names={"keeper"},
+            current_document=[
+                {"name": "helper", "internal_name": "helper__user_abc"},
+                {"name": "keeper"},
+            ],
+            renamed_from=set(),
         )
+
+    async def test_scoped_fallback_maps_public_to_user_suffixed_internal(self) -> None:
+        """Document without internal_name + member principal → the scoped-name
+        fallback must derive public__user_<suffix> exactly like the save path."""
+        from covalent.api.routes.config import _enforce_agent_delegate_run_checks
+        from covalent.infra.config_store import ConfigPrincipal
+
+        _, store = _delegate_service()
+        await _seed_run(
+            store, "run-1", session_id="sess-1", execution_scope_id="sess-1",
+            agent_name="helper__user_abc-123",
+        )
+        principal = ConfigPrincipal(user_id="abc-123", workspace_id="ws-1", role="member")
+
+        with self.assertRaises(ConflictError):
+            await _enforce_agent_delegate_run_checks(
+                store,
+                payload_names=set(),
+                current_document=[{"name": "helper"}],
+                renamed_from=set(),
+                principal=principal,
+            )
+
+    async def test_admin_document_without_internal_name_queries_public_name(self) -> None:
+        from covalent.api.routes.config import _enforce_agent_delegate_run_checks
+
+        _, store = _delegate_service()
+        await _seed_run(store, "run-1", session_id="sess-1", execution_scope_id="sess-1", agent_name="helper")
+
+        # Admin (or no principal): internal == public, identity fallback.
+        with self.assertRaises(ConflictError):
+            await _enforce_agent_delegate_run_checks(
+                store,
+                payload_names=set(),
+                current_document=[{"name": "helper"}],
+                renamed_from=set(),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -428,10 +485,13 @@ class _FakeConfigStore:
 
 
 class PutConfigAgentsConflictTests(unittest.IsolatedAsyncioTestCase):
-    def _client(self, store: InMemoryDelegateRunStore | None) -> TestClient:
+    def _client(
+        self, store: InMemoryDelegateRunStore | None, *, agents_document: list[dict] | None = None
+    ) -> TestClient:
         app = create_app()
+        agents = agents_document if agents_document is not None else _AGENT_PAYLOAD
         state = _base_state(
-            config_store=_FakeConfigStore({"agents": _AGENT_PAYLOAD, "providers": [_DEFAULT_PROVIDER]}),
+            config_store=_FakeConfigStore({"agents": agents, "providers": [_DEFAULT_PROVIDER]}),
         )
         for key, value in vars(state).items():
             setattr(app.state, key, value)
@@ -459,6 +519,30 @@ class PutConfigAgentsConflictTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("default", detail)
         self.assertIn("run-live", detail)
         self.assertIn("running", detail)
+
+    async def test_delete_user_scoped_agent_with_active_run_returns_409(self) -> None:
+        """A user-owned agent's run rows live under the internal (suffixed)
+        name; the check must map the public document name onto it instead of
+        silently passing."""
+        store = InMemoryDelegateRunStore()
+        await _seed_run(
+            store, "run-live", session_id="sess-1", execution_scope_id="sess-1",
+            agent_name="default__user_abc",
+        )
+        scoped_document = [dict(_AGENT_PAYLOAD[0], internal_name="default__user_abc")]
+        client = self._client(store, agents_document=scoped_document)
+        settings = client.app.state.settings
+
+        resp = client.put(
+            "/config/agents",
+            json={"raw": "[]"},
+            headers={"Cookie": _admin_cookie(settings)},
+        )
+
+        self.assertEqual(resp.status_code, 409)
+        detail = resp.json()["detail"]
+        self.assertIn("default", detail)
+        self.assertIn("run-live", detail)
 
     async def test_rename_agent_with_active_run_returns_409(self) -> None:
         store = InMemoryDelegateRunStore()
