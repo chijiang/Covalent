@@ -8,13 +8,30 @@ core execution path: tool calling, session persistence, max iterations.
 from __future__ import annotations
 
 import asyncio
+import json
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
-from covalent.core.types import GenerationRequest, GenerationResponse, Message, RunContext, TokenUsage, ToolCall
+from covalent.application.services.delegate_service import DelegateService, register_ask_parent_tool
+from covalent.core.types import (
+    DelegateRunResult,
+    DelegateRunStatus,
+    GenerationRequest,
+    GenerationResponse,
+    Message,
+    ParentInputRequest,
+    RunContext,
+    TokenUsage,
+    ToolCall,
+    UserInputRequest,
+    UserQuestion,
+)
 from covalent.infra.delegate_repository import DelegateRunRecord, InMemoryDelegateRunStore
 from covalent.infra.memory import InMemorySessionStore
+from covalent.infra.settings import AppSettings
 from covalent.registry.registry import FrameworkRegistry
+from covalent.runtime.delegation import DelegateActor
 from covalent.runtime.memory_port import RuntimeMemoryAdapter
 from covalent.runtime.react import ReactAgentRuntime
 from covalent.skills.meta_tools import (
@@ -625,6 +642,418 @@ class StatefulDelegateMemoryTests(unittest.IsolatedAsyncioTestCase):
                         "explicit delegate scope must persist even with memory_mode=none")
         self.assertEqual(await session_store.load_messages("s1"), [],
                          "nothing may land in the session store")
+
+
+_ASK_USER_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "ask_user",
+        "description": "Ask the end user a question.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "questions": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["questions"],
+        },
+    },
+}
+
+
+def _fake_ask_user_handler(_args, _ctx):
+    return UserInputRequest(
+        id="qu-1",
+        tool_name="ask_user",
+        title="Need input",
+        questions=[UserQuestion(header="H", question="Q")],
+    )
+
+
+class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    """Stateful delegate path: the runtime drives DelegateService-backed runs.
+
+    Delegate tool calls return JSON envelopes, children see ask_parent instead
+    of ask_user, delegate memory is isolated per run, and a waiting_parent
+    pause surfaces at the ROOT as a parent_input_required event — never as a
+    top-level input_required.
+    """
+
+    @staticmethod
+    def _build(
+        parent_responses: list[GenerationResponse],
+        child_responses: list[GenerationResponse],
+        *,
+        child_local_tools: list[str] | None = None,
+        parent_local_tools: list[str] | None = None,
+        register_ask_user: bool = False,
+        child_model: ScriptedModelAdapter | None = None,
+        settings: AppSettings | None = None,
+    ) -> SimpleNamespace:
+        session_store = InMemorySessionStore()
+        run_store = InMemoryDelegateRunStore()
+        parent = make_test_agent(
+            name="parent", model="m-parent", local_tools=parent_local_tools
+        ).model_copy(update={"delegate_agents": ["child"]})
+        child = make_test_agent(name="child", model="m-child", local_tools=child_local_tools)
+        parent_model = ScriptedModelAdapter(parent_responses)
+        child_adapter = child_model or ScriptedModelAdapter(child_responses)
+        registry = make_test_registry(parent, model=parent_model)
+        registry.register_agent(child)
+        registry.model_providers[child.provider.cache_key()] = child_adapter
+        register_ask_parent_tool(registry)
+        if register_ask_user:
+            registry.register_local_tool(
+                "ask_user", _ASK_USER_SCHEMA, handler=_fake_ask_user_handler
+            )
+        service = DelegateService(
+            registry=registry, run_store=run_store, settings=settings or AppSettings()
+        )
+        runtime = ReactAgentRuntime(
+            registry,
+            session_store=session_store,
+            memory_store=RuntimeMemoryAdapter(session_store, run_store),
+            delegate_coordinator=service,
+            enable_llm_summarization=False,
+        )
+        return SimpleNamespace(
+            parent=parent,
+            child=child,
+            runtime=runtime,
+            service=service,
+            registry=registry,
+            session_store=session_store,
+            run_store=run_store,
+            parent_model=parent_model,
+            child_model=child_adapter,
+        )
+
+    @staticmethod
+    async def _collect(runtime, agent, user_input: str, context: RunContext) -> list[dict]:
+        return [event async for event in runtime.stream_events(agent, user_input, context)]
+
+    @staticmethod
+    def _tool_result_content(events: list[dict], tool_call_id: str) -> str:
+        for event in reversed(events):
+            if event["event"] != "tool_results":
+                continue
+            for result in event["payload"]["results"]:
+                if result.get("tool_call_id") == tool_call_id:
+                    return str(result["content"])
+        raise AssertionError(f"no tool result for {tool_call_id!r} in stream")
+
+    async def test_final_answer_returns_idle_envelope_and_persists_private_memory(self) -> None:
+        fixture = self._build(
+            parent_responses=[
+                tool_call_response("agent__child", arguments={"input": "Summarize the report"}, call_id="pc-1"),
+                text_response("Parent done"),
+            ],
+            child_responses=[text_response("Child answer")],
+        )
+        context = RunContext(agent_name="parent", session_id="s1")
+
+        events = await self._collect(fixture.runtime, fixture.parent, "Please delegate", context)
+
+        envelope = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pc-1"))
+        )
+        self.assertEqual(envelope.status, DelegateRunStatus.IDLE)
+        self.assertEqual(envelope.output, "Child answer")
+        run_id = envelope.delegate_run_id
+
+        # Delegate trace events carry the run identity.
+        delegate_finals = [e["payload"] for e in events if e["event"] == "delegate_final"]
+        self.assertTrue(delegate_finals, "expected a forwarded delegate_final event")
+        self.assertEqual(delegate_finals[-1].get("delegate_run_id"), run_id)
+
+        # Delegate memory is private and ends with the child's assistant answer.
+        delegate_messages = await fixture.run_store.load_messages(run_id)
+        self.assertEqual(delegate_messages[-1].role, "assistant")
+        self.assertIn("Child answer", str(delegate_messages[-1].content))
+
+        # Session memory holds only the parent transcript — no capsule, no child turn.
+        session_messages = await fixture.session_store.load_messages("s1")
+        self.assertNotIn(
+            "[delegation]", " ".join(str(m.content) for m in session_messages),
+            "delegate capsule must not leak into session memory",
+        )
+        self.assertEqual(
+            [m.role for m in session_messages], ["user", "assistant", "tool", "assistant"],
+            "session memory should be exactly the parent transcript",
+        )
+
+        # The run row reached IDLE.
+        row = await fixture.run_store.get_run(run_id)
+        self.assertEqual(row.status, DelegateRunStatus.IDLE)
+
+    async def test_ask_parent_pauses_child_and_returns_waiting_envelope(self) -> None:
+        fixture = self._build(
+            parent_responses=[
+                tool_call_response("agent__child", arguments={"input": "Deploy the service"}, call_id="pc-1"),
+            ],
+            child_responses=[
+                tool_call_response(
+                    "ask_parent",
+                    arguments={
+                        "title": "Need target",
+                        "questions": [{"header": "Target", "question": "Which target?"}],
+                    },
+                    call_id="ask-1",
+                ),
+                text_response("Resolved with Docker"),
+            ],
+        )
+        # execution_scope_id matters for the resume leg: delegate ownership is
+        # checked against the actor's (agent, run, scope) tuple.
+        parent_context = RunContext(
+            agent_name="parent", session_id="s1", execution_scope_id="scope-1"
+        )
+
+        events = await self._collect(fixture.runtime, fixture.parent, "Deploy it", parent_context)
+
+        # The pause is a parent_input_required event; no root input_required ever fires.
+        self.assertFalse([e for e in events if e["event"] == "input_required"])
+        self.assertFalse([e for e in events if e["event"] == "delegate_input_required"])
+        pauses = [e for e in events if e["event"] == "parent_input_required"]
+        self.assertEqual(len(pauses), 1)
+        request = ParentInputRequest.model_validate(pauses[0]["payload"])
+        self.assertEqual(request.title, "Need target")
+        self.assertEqual(request.tool_call_id, "ask-1")
+
+        # The persisted parent transcript carries the waiting envelope through
+        # the assistant agent__child tool call.
+        session_messages = await fixture.session_store.load_messages("s1")
+        envelope_message = next(
+            m for m in session_messages if m.role == "tool" and m.tool_call_id == "pc-1"
+        )
+        envelope = DelegateRunResult.model_validate(json.loads(str(envelope_message.content)))
+        self.assertEqual(envelope.status, DelegateRunStatus.WAITING_PARENT)
+        self.assertIsNotNone(envelope.request)
+        self.assertEqual(envelope.request.title, "Need target")
+        self.assertEqual(envelope.request.tool_call_id, "ask-1")
+
+        # Run row is WAITING_PARENT with the pending request stored.
+        run_id = envelope.delegate_run_id
+        row = await fixture.run_store.get_run(run_id)
+        self.assertEqual(row.status, DelegateRunStatus.WAITING_PARENT)
+        self.assertIsNotNone(row.pending_request)
+
+        # Resuming the run replays the parent's answer and completes the turn.
+        handle = await fixture.service.send(
+            actor=DelegateActor.from_context(parent_context),
+            delegate_run_id=run_id,
+            input_text="Use Docker",
+        )
+        outcome = await fixture.runtime._execute_delegate_turn(
+            handle,
+            parent_agent=fixture.parent,
+            tool_call=ToolCall(id="pc-1", name="agent__child", arguments={"input": "Deploy the service"}),
+            parent_context=parent_context,
+            parent_iteration=1,
+            event_sink=None,
+        )
+        self.assertEqual(outcome.status, "idle")
+        self.assertEqual(outcome.output, "Resolved with Docker")
+        result = await fixture.service.report_outcome(handle.run.id, outcome)
+        self.assertEqual(result.status, DelegateRunStatus.IDLE)
+
+        resumed_messages = await fixture.run_store.load_messages(run_id)
+        self.assertEqual(resumed_messages[-1].role, "assistant")
+        self.assertIn("Resolved with Docker", str(resumed_messages[-1].content))
+
+    async def test_ask_user_absent_and_rejected_in_delegated_context(self) -> None:
+        fixture = self._build(
+            parent_responses=[
+                tool_call_response("agent__child", arguments={"input": "Do it"}, call_id="pc-1"),
+                text_response("Parent done"),
+            ],
+            child_responses=[
+                tool_call_response(
+                    "ask_user",
+                    arguments={"questions": [{"header": "H", "question": "Q"}]},
+                    call_id="au-1",
+                ),
+                text_response("Continued without user input"),
+            ],
+            child_local_tools=["ask_user"],
+            register_ask_user=True,
+        )
+
+        events = await self._collect(
+            fixture.runtime, fixture.parent, "Run the child", RunContext(agent_name="parent", session_id="s1")
+        )
+
+        # The child's resolved tool schemas exclude ask_user and include ask_parent.
+        child_tool_names = {
+            t["function"]["name"] for t in fixture.child_model.received_requests[0].tools
+        }
+        self.assertNotIn("ask_user", child_tool_names)
+        self.assertIn("ask_parent", child_tool_names)
+
+        # Calling ask_user by name yields an error tool result pointing at ask_parent.
+        converted = None
+        for event in events:
+            if event["event"] != "delegate_tool_results":
+                continue
+            for result in event["payload"]["results"]:
+                if result.get("tool_call_id") == "au-1":
+                    converted = result
+        self.assertIsNotNone(converted, "expected the converted ask_user result in delegate traces")
+        self.assertTrue(converted["is_error"])
+        self.assertIn("ask_parent", str(converted["content"]))
+
+        # No input_required of any kind reached the stream; the run completed.
+        self.assertFalse(
+            [e for e in events if e["event"] in ("input_required", "delegate_input_required")]
+        )
+        envelope = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pc-1"))
+        )
+        self.assertEqual(envelope.status, DelegateRunStatus.IDLE)
+
+    async def test_ask_parent_absent_in_root_context(self) -> None:
+        fixture = self._build(
+            parent_responses=[text_response("Direct answer")],
+            child_responses=[text_response("child")],
+            parent_local_tools=["ask_parent"],
+        )
+
+        await fixture.runtime.run(
+            fixture.parent, "Hi", RunContext(agent_name="parent", session_id="s1")
+        )
+
+        tool_names = {
+            t["function"]["name"] for t in fixture.parent_model.received_requests[0].tools
+        }
+        self.assertNotIn("ask_parent", tool_names, "ask_parent must be filtered out of root tools")
+        self.assertIn("agent__child", tool_names, "delegate tools stay available at root")
+
+    async def test_two_runs_same_definition_isolated_memory(self) -> None:
+        fixture = self._build(
+            parent_responses=[
+                tool_call_response("agent__child", arguments={"input": "first task"}, call_id="pc-1"),
+                tool_call_response("agent__child", arguments={"input": "second task"}, call_id="pc-2"),
+                text_response("Both done"),
+            ],
+            child_responses=[text_response("First answer"), text_response("Second answer")],
+        )
+
+        events = await self._collect(
+            fixture.runtime, fixture.parent, "Two tasks", RunContext(agent_name="parent", session_id="s1")
+        )
+
+        envelope_1 = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pc-1"))
+        )
+        envelope_2 = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pc-2"))
+        )
+        self.assertNotEqual(envelope_1.delegate_run_id, envelope_2.delegate_run_id)
+        self.assertEqual(envelope_1.output, "First answer")
+        self.assertEqual(envelope_2.output, "Second answer")
+
+        memory_1 = await fixture.run_store.load_messages(envelope_1.delegate_run_id)
+        memory_2 = await fixture.run_store.load_messages(envelope_2.delegate_run_id)
+        self.assertIn("first task", " ".join(str(m.content) for m in memory_1))
+        self.assertNotIn("second task", " ".join(str(m.content) for m in memory_1))
+        self.assertIn("second task", " ".join(str(m.content) for m in memory_2))
+        self.assertNotIn("first task", " ".join(str(m.content) for m in memory_2))
+
+        for envelope in (envelope_1, envelope_2):
+            row = await fixture.run_store.get_run(envelope.delegate_run_id)
+            self.assertEqual(row.status, DelegateRunStatus.IDLE)
+
+
+    async def test_child_failure_reports_failed_envelope(self) -> None:
+        class _ExplodingAdapter(ScriptedModelAdapter):
+            async def generate(self, request: GenerationRequest) -> GenerationResponse:
+                raise RuntimeError("child model exploded")
+
+        fixture = self._build(
+            parent_responses=[
+                tool_call_response("agent__child", arguments={"input": "Do it"}, call_id="pc-1"),
+                text_response("Parent saw the failure"),
+            ],
+            child_responses=[],
+            child_model=_ExplodingAdapter([]),
+        )
+
+        events = await self._collect(
+            fixture.runtime, fixture.parent, "Run the child", RunContext(agent_name="parent", session_id="s1")
+        )
+
+        envelope = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pc-1"))
+        )
+        self.assertEqual(envelope.status, DelegateRunStatus.FAILED)
+        self.assertEqual(envelope.error.get("code"), "execution_error")
+        row = await fixture.run_store.get_run(envelope.delegate_run_id)
+        self.assertEqual(row.status, DelegateRunStatus.FAILED)
+
+        # The failure surfaced as a delegate_error trace and the parent still
+        # reached its own final answer.
+        self.assertTrue([e for e in events if e["event"] == "delegate_error"])
+        self.assertTrue([e for e in events if e["event"] == "final"])
+
+    async def test_depth_cap_blocks_nested_delegation(self) -> None:
+        session_store = InMemorySessionStore()
+        run_store = InMemoryDelegateRunStore()
+        parent = make_test_agent(name="parent", model="m-parent").model_copy(
+            update={"delegate_agents": ["child"]}
+        )
+        child = make_test_agent(name="child", model="m-child").model_copy(
+            update={"delegate_agents": ["grand"]}
+        )
+        grand = make_test_agent(name="grand", model="m-grand")
+        parent_model = ScriptedModelAdapter([
+            tool_call_response("agent__child", arguments={"input": "delegate down"}, call_id="pc-1"),
+            text_response("Parent done"),
+        ])
+        child_model = ScriptedModelAdapter([
+            tool_call_response("agent__grand", arguments={"input": "go deeper"}, call_id="cc-1"),
+            text_response("Child done"),
+        ])
+        grand_model = ScriptedModelAdapter([])
+        registry = make_test_registry(parent, model=parent_model)
+        registry.register_agent(child)
+        registry.model_providers[child.provider.cache_key()] = child_model
+        registry.register_agent(grand)
+        registry.model_providers[grand.provider.cache_key()] = grand_model
+        register_ask_parent_tool(registry)
+        service = DelegateService(
+            registry=registry, run_store=run_store, settings=AppSettings(delegate_max_depth=1)
+        )
+        runtime = ReactAgentRuntime(
+            registry,
+            session_store=session_store,
+            memory_store=RuntimeMemoryAdapter(session_store, run_store),
+            delegate_coordinator=service,
+            enable_llm_summarization=False,
+        )
+
+        events = await self._collect(
+            runtime, parent, "Go", RunContext(agent_name="parent", session_id="s1")
+        )
+
+        # The depth cap rejected the grandchild call inside the child's turn
+        # with an error tool result; the grandchild never ran.
+        grand_results = []
+        for event in events:
+            if event["event"] != "delegate_tool_results":
+                continue
+            for result in event["payload"]["results"]:
+                if result.get("tool_call_id") == "cc-1":
+                    grand_results.append(result)
+        self.assertTrue(grand_results, "expected the blocked agent__grand result in traces")
+        self.assertTrue(grand_results[0]["is_error"])
+        self.assertIn("Maximum delegation depth exceeded", str(grand_results[0]["content"]))
+        self.assertEqual(grand_model.call_count, 0)
+
+        # The child itself completed normally.
+        envelope = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pc-1"))
+        )
+        self.assertEqual(envelope.status, DelegateRunStatus.IDLE)
+        self.assertEqual(envelope.output, "Child done")
 
 
 if __name__ == "__main__":

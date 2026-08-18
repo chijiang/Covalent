@@ -3,20 +3,30 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 import json
+import logging
 import re
 from time import perf_counter
 from typing import Any
 
+from covalent.application.errors import ApplicationError
 from covalent.core.agent import AgentSpec
-from covalent.core.types import GenerationRequest, GenerationResponse, Message, PromptContent, ResumedToolResult, RunContext, ToolCall, ToolResult, UserInputRequest
+from covalent.core.types import GenerationRequest, GenerationResponse, Message, ParentInputRequest, PromptContent, ResumedToolResult, RunContext, ToolCall, ToolResult, UserInputRequest
 from covalent.infra.memory import SessionStore
 from covalent.model.base import ModelProviderError
 from covalent.registry.registry import FrameworkRegistry
 from covalent.runtime.base import AgentRuntime
 from covalent.runtime.backend import ExecutionBindingResolver
 from covalent.runtime.context_window_manager import ContextWindowManager
+from covalent.runtime.delegation import (
+    DelegateActor,
+    DelegateCoordinator,
+    DelegateRunHandle,
+    DelegateTurnOutcome,
+)
 from covalent.runtime.memory_port import RuntimeMemoryAdapter, RuntimeMemoryStore
 from covalent.skills.bundle import SkillBundle
+
+logger = logging.getLogger(__name__)
 
 DELEGATE_TOOL_PREFIX = "agent__"
 DELEGATE_EVENT_PREFIX = "delegate_"
@@ -31,6 +41,23 @@ DELEGATE_FORWARDABLE_EVENTS = {
     "context_window",
     "model_call",
 }
+
+#: Local tool a delegated run uses to pause and ask its parent (registered by
+#: the application layer; the runtime only filters/exposes the schema).
+ASK_PARENT_TOOL = "ask_parent"
+
+#: Lifecycle tools for stateful delegate runs (registered by the application
+#: layer). Exposed at root only, never inside a delegated run.
+DELEGATE_LIFECYCLE_TOOLS = ("delegate_send", "delegate_list", "delegate_release")
+
+DELEGATE_LIFECYCLE_POLICY = (
+    "Delegates are stateful subagents. Calling agent__<name> starts a run and returns a JSON envelope: "
+    "delegate_run_id, agent_name, status ('idle' or 'waiting_parent'), and either output or a request. "
+    "Do not quote the envelope verbatim — use the output. When a delegate is 'waiting_parent', its request is in the "
+    "envelope; answer it with delegate_send(delegate_run_id, input=<your answer>). Send follow-up work to an 'idle' "
+    "delegate the same way. Use delegate_list to recover your live delegate ids. Call delegate_release for every run "
+    "you no longer need — idle runs stay alive (holding storage) until released, cancelled, or expired."
+)
 
 DOWNLOAD_PUBLICATION_POLICY = (
     "If you create or modify a file that the user is expected to open or download, "
@@ -72,6 +99,7 @@ class ReactAgentRuntime(AgentRuntime):
         context_summary_model: str | None = None,
         enable_llm_summarization: bool = True,
         binding_resolver: "ExecutionBindingResolver | None" = None,
+        delegate_coordinator: "DelegateCoordinator | None" = None,
     ) -> None:
         self.registry = registry
         self.session_store = session_store
@@ -81,6 +109,10 @@ class ReactAgentRuntime(AgentRuntime):
         self.memory_store = memory_store or RuntimeMemoryAdapter(session_store, None)
         self.session_history_limit = session_history_limit
         self.binding_resolver = binding_resolver
+        # Presence == stateful delegate mode: agent__<name> tool calls route
+        # through the coordinator (stateful runs, JSON envelopes, ask_parent)
+        # instead of the legacy inline streaming path.
+        self.delegate_coordinator = delegate_coordinator
         self.context_token_budget = context_token_budget
         self.context_compact_threshold = max(min(context_compact_threshold, 0.95), 0.5)
         self.context_recent_messages = max(context_recent_messages, 5)
@@ -165,6 +197,8 @@ class ReactAgentRuntime(AgentRuntime):
             prompt_sections.append(agent.reasoning_prompt.strip())
         prompt_sections.append(DOWNLOAD_PUBLICATION_POLICY)
         prompt_sections.append(WORKSPACE_CONFINEMENT_POLICY)
+        if self.delegate_coordinator is not None and agent.delegate_agents:
+            prompt_sections.append(DELEGATE_LIFECYCLE_POLICY)
         if skill_blocks:
             prompt_sections.append(
                 "Available skills (progressive disclosure): detailed instruction bodies are not preloaded. "
@@ -408,6 +442,20 @@ class ReactAgentRuntime(AgentRuntime):
                 tool_call_id=tool_call.id,
                 is_error=True,
             )
+        if (
+            self.delegate_coordinator is not None
+            and self.delegate_coordinator.max_depth > 0
+            and len(chain) + 1 > self.delegate_coordinator.max_depth
+        ):
+            return ToolResult(
+                name=tool_call.name,
+                content=(
+                    f"Maximum delegation depth exceeded ({self.delegate_coordinator.max_depth}); "
+                    f"'{delegate_name}' would run at depth {len(chain) + 1}"
+                ),
+                tool_call_id=tool_call.id,
+                is_error=True,
+            )
         try:
             delegate_agent = self.registry.get_agent(delegate_name)
         except KeyError:
@@ -424,6 +472,10 @@ class ReactAgentRuntime(AgentRuntime):
                 content="Delegate tool requires a non-empty 'input' field",
                 tool_call_id=tool_call.id,
                 is_error=True,
+            )
+        if self.delegate_coordinator is not None:
+            return await self._execute_stateful_delegate_call(
+                agent, tool_call, context, parent_iteration, event_sink
             )
         delegate_context = self._build_delegate_context(
             agent,
@@ -521,6 +573,189 @@ class ReactAgentRuntime(AgentRuntime):
                 is_error=True,
             )
 
+    async def _execute_stateful_delegate_call(
+        self,
+        agent: AgentSpec,
+        tool_call: ToolCall,
+        context: RunContext | None,
+        parent_iteration: int,
+        event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> ToolResult:
+        """Stateful delegate path: admit a run via the coordinator, execute one
+        child turn, report the outcome, and return the JSON envelope as the
+        tool result."""
+        coordinator = self.delegate_coordinator
+        if coordinator is None:  # pragma: no cover - caller-checked branch
+            raise RuntimeError("stateful delegate call requires a coordinator")
+        parent_context = context if context is not None else RunContext(agent_name=agent.name)
+        actor = DelegateActor.from_context(parent_context)
+        delegate_agent_name = tool_call.name.removeprefix(DELEGATE_TOOL_PREFIX)
+        delegate_input = str(tool_call.arguments.get("input", "")).strip()
+        try:
+            handle = await coordinator.start(
+                actor=actor,
+                delegate_agent_name=delegate_agent_name,
+                input_text=delegate_input,
+                origin_tool_call_id=tool_call.id,
+                parent_context=parent_context,
+            )
+        except ApplicationError as exc:
+            return ToolResult(
+                name=tool_call.name,
+                content=str(exc),
+                tool_call_id=tool_call.id,
+                is_error=True,
+            )
+        try:
+            outcome = await self._execute_delegate_turn(
+                handle,
+                parent_agent=agent,
+                tool_call=tool_call,
+                parent_context=parent_context,
+                parent_iteration=parent_iteration,
+                event_sink=event_sink,
+            )
+            result = await coordinator.report_outcome(handle.run.id, outcome)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return ToolResult(
+                name=tool_call.name,
+                content=str(exc),
+                tool_call_id=tool_call.id,
+                is_error=True,
+            )
+        return ToolResult(
+            name=tool_call.name,
+            content=result.model_dump_json(),
+            tool_call_id=tool_call.id,
+            # A waiting_parent envelope carries the pending request so the
+            # parent stream can surface its own parent_input_required boundary.
+            parent_request=result.request,
+        )
+
+    async def _execute_delegate_turn(
+        self,
+        handle: DelegateRunHandle,
+        *,
+        parent_agent: AgentSpec,
+        tool_call: ToolCall,
+        parent_context: RunContext,
+        parent_iteration: int,
+        event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> DelegateTurnOutcome:
+        """Execute one child turn for a stateful delegate run and map its
+        stream boundaries to a DelegateTurnOutcome.
+
+        Child failures become failed outcomes (never raised); only cancellation
+        propagates, after a shielded cancelled report. A child
+        ``parent_input_required`` is consumed here — it is never forwarded as a
+        delegate trace — and a child ``input_required`` is a violation (the
+        runtime rejects ask_user inside delegated runs).
+        """
+        coordinator = self.delegate_coordinator
+        final_response: GenerationResponse | None = None
+        waiting_request: ParentInputRequest | None = None
+        last_assistant_text = ""
+        try:
+            if event_sink is not None:
+                await event_sink(self._delegate_thought_event(
+                    parent_agent=parent_agent,
+                    delegate_agent=handle.agent,
+                    tool_call=tool_call,
+                    context=parent_context,
+                    parent_iteration=parent_iteration,
+                    kind="delegate_started",
+                    summary=(
+                        f"Started with task: {self._truncate_text(handle.initial_input, 240)}"
+                        if handle.initial_input
+                        else f"Resuming run {handle.run.id} with parent input"
+                    ),
+                    delegate_context=handle.context,
+                ))
+            async for event in self.stream_events(handle.agent, handle.initial_input, handle.context):
+                event_name = str(event.get("event") or "")
+                if event_name == "parent_input_required":
+                    waiting_request = ParentInputRequest.model_validate(event["payload"])
+                    break
+                if event_name == "input_required":
+                    logger.warning(
+                        "delegate run %s emitted a top-level input_required; treating as a violation",
+                        handle.run.id,
+                    )
+                    return DelegateTurnOutcome(
+                        status="failed",
+                        error={"code": "child_input_required_violation"},
+                    )
+                if event_name == "final":
+                    final_response = GenerationResponse.model_validate(event["payload"])
+                elif event_name == "assistant":
+                    payload = event.get("payload")
+                    if isinstance(payload, dict):
+                        text = str(payload.get("text") or "").strip()
+                        if text:
+                            last_assistant_text = text
+                if event_sink is not None:
+                    delegate_trace_event = self._decorate_delegate_event(
+                        event,
+                        parent_agent=parent_agent,
+                        delegate_agent=handle.agent,
+                        tool_call=tool_call,
+                        context=parent_context,
+                        parent_iteration=parent_iteration,
+                        delegate_context=handle.context,
+                    )
+                    if delegate_trace_event is not None:
+                        await event_sink(delegate_trace_event)
+            if waiting_request is not None:
+                return DelegateTurnOutcome(
+                    status="waiting_parent",
+                    request=waiting_request,
+                    output=last_assistant_text,
+                )
+            if final_response is None:
+                return DelegateTurnOutcome(
+                    status="failed",
+                    error={
+                        "code": "execution_error",
+                        "detail": f"delegate run {handle.run.id} completed without a final response",
+                    },
+                )
+            return DelegateTurnOutcome(
+                status="idle",
+                output=self._response_output_text(final_response, fallback_text=last_assistant_text),
+            )
+        except asyncio.CancelledError:
+            if coordinator is not None:
+                try:
+                    await asyncio.shield(
+                        coordinator.report_outcome(
+                            handle.run.id, DelegateTurnOutcome(status="cancelled")
+                        )
+                    )
+                except Exception:
+                    logger.warning(
+                        "failed to report cancelled outcome for delegate run %s",
+                        handle.run.id,
+                        exc_info=True,
+                    )
+            raise
+        except Exception as exc:
+            if event_sink is not None:
+                await event_sink(self._delegate_error_event(
+                    parent_agent=parent_agent,
+                    delegate_agent=handle.agent,
+                    tool_call=tool_call,
+                    context=parent_context,
+                    parent_iteration=parent_iteration,
+                    exc=exc,
+                    delegate_context=handle.context,
+                ))
+            return DelegateTurnOutcome(
+                status="failed",
+                error={"code": "execution_error", "detail": str(exc)},
+            )
+
     def _delegate_trace_metadata(
         self,
         *,
@@ -550,6 +785,13 @@ class ReactAgentRuntime(AgentRuntime):
                 metadata["workspace_scope_id"] = source.workspace_scope_id
             if source.sandbox_instance_id:
                 metadata["sandbox_instance_id"] = source.sandbox_instance_id
+        # Stateful delegate identity (absent on the legacy path, which never
+        # sets these context fields).
+        if delegate_context is not None:
+            if delegate_context.delegate_run_id:
+                metadata["delegate_run_id"] = delegate_context.delegate_run_id
+            if delegate_context.parent_delegate_run_id:
+                metadata["parent_delegate_run_id"] = delegate_context.parent_delegate_run_id
         return metadata
 
     def _decorate_delegate_event(
@@ -862,10 +1104,33 @@ class ReactAgentRuntime(AgentRuntime):
         if resumed_tool_message is not None:
             messages.append(resumed_tool_message)
             generation_messages.append(resumed_tool_message.model_copy(deep=True))
-        else:
+        elif user_input:
+            # A blank PromptContent means "the input already lives in the loaded
+            # memory" (a resumed stateful delegate turn): nothing to append.
             messages.append(Message(role="user", content=self._persisted_user_input(user_input, context)))
             generation_messages.append(Message(role="user", content=user_input))
         tools = await self.registry.resolve_tools_for_agent(agent)
+        delegated = context is not None and bool(
+            context.delegate_run_id or context.metadata.get("delegated_by")
+        )
+        if delegated:
+            # Delegated runs never ask the end user directly: swap ask_user for
+            # ask_parent (when registered).
+            tools = [t for t in tools if t.get("function", {}).get("name") != "ask_user"]
+            if ASK_PARENT_TOOL in self.registry.local_tools:
+                tools.append(self.registry.local_tools[ASK_PARENT_TOOL].schema)
+        else:
+            tools = [
+                t for t in tools
+                if t.get("function", {}).get("name") not in DELEGATE_LIFECYCLE_TOOLS
+                and t.get("function", {}).get("name") != ASK_PARENT_TOOL
+            ]
+            if self.delegate_coordinator is not None and agent.delegate_agents:
+                tools.extend(
+                    self.registry.local_tools[name].schema
+                    for name in DELEGATE_LIFECYCLE_TOOLS
+                    if name in self.registry.local_tools
+                )
         tools.extend(self._build_delegate_tools(agent))
         tool_iterations_used = 0
         tool_limit_notified = False
@@ -1078,10 +1343,49 @@ class ReactAgentRuntime(AgentRuntime):
                 )
                 tool_iterations_used += 1
             blocking_input = next((result.input_request for result in tool_results if result.input_request is not None), None)
+            if delegated and blocking_input is not None:
+                # Invariant: delegated runs never emit a top-level input_required.
+                # ask_user is filtered from their tools; if a user-input request
+                # still slips through (model called it by name), convert it to
+                # an error tool result pointing at ask_parent.
+                logger.warning(
+                    "delegated run of agent '%s' produced a user input request via '%s'; "
+                    "converting to an error tool result",
+                    agent.name,
+                    blocking_input.tool_name,
+                )
+                tool_results = [
+                    result
+                    if result.input_request is None
+                    else ToolResult(
+                        name=result.name,
+                        content=(
+                            f"{result.input_request.tool_name} is not available inside a delegated run; "
+                            "ask your parent with ask_parent instead"
+                        ),
+                        tool_call_id=result.tool_call_id,
+                        is_error=True,
+                    )
+                    for result in tool_results
+                ]
+                blocking_input = None
             persisted_results = [result for result in tool_results if result.input_request is None]
             tool_messages = [result.to_message() for result in persisted_results]
             messages.extend(tool_messages)
             generation_messages.extend(message.model_copy(deep=True) for message in tool_messages)
+            parent_request = next(
+                (result.parent_request for result in tool_results if result.parent_request is not None),
+                None,
+            )
+            if parent_request is not None:
+                # A delegate paused on ask_parent: persist through the assistant
+                # tool call and surface the request at this run's own boundary.
+                await self._persist_session_messages(agent, messages, context)
+                yield {
+                    "event": "parent_input_required",
+                    "payload": parent_request.model_dump(mode="json"),
+                }
+                return
             if blocking_input is not None:
                 await self._persist_session_messages(agent, messages, context)
                 yield self._thought_event(

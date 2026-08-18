@@ -20,9 +20,19 @@ from covalent.application.errors import (
     DelegateRunGoneError,
     DelegateRunNotFoundError,
     DelegateTransitionError,
+    InvalidInputError,
 )
-from covalent.application.services.delegate_service import DelegateService
-from covalent.core.types import DelegateRunStatus, Message, ParentInputRequest, RunContext
+from covalent.application.services.delegate_service import (
+    DelegateService,
+    register_ask_parent_tool,
+)
+from covalent.core.types import (
+    DelegateRunStatus,
+    Message,
+    ParentInputRequest,
+    RunContext,
+    ToolCall,
+)
 from covalent.infra.delegate_repository import (
     DelegateRunRecord,
     InMemoryDelegateRunStore,
@@ -602,6 +612,84 @@ class DelegateServiceTests(unittest.IsolatedAsyncioTestCase):
         stored = await store.get_run(handle.run.id)
         self.assertEqual(stored.status, DelegateRunStatus.IDLE)
         self.assertNotEqual(await store.load_messages(handle.run.id), [])
+
+
+class AskParentToolTests(unittest.IsolatedAsyncioTestCase):
+    """The ask_parent local tool: handler validation and registry promotion.
+
+    The handler builds a ParentInputRequest only inside a delegated run; the
+    registry's local-tool branch converts a returned ParentInputRequest into a
+    pausing ToolResult (content "Waiting for parent") carrying the request.
+    """
+
+    @staticmethod
+    def _registry() -> FrameworkRegistry:
+        registry = FrameworkRegistry()
+        register_ask_parent_tool(registry)
+        return registry
+
+    def test_handler_builds_parent_input_request_in_delegated_context(self) -> None:
+        handler = self._registry().local_tools["ask_parent"].handler
+        assert handler is not None
+
+        request = handler(
+            {
+                "title": "Need target",
+                "questions": [{"header": "Target", "question": "Which target?"}],
+            },
+            RunContext(agent_name="child", delegate_run_id="run-7"),
+        )
+
+        self.assertIsInstance(request, ParentInputRequest)
+        self.assertEqual(request.delegate_run_id, "run-7")
+        self.assertEqual(request.title, "Need target")
+        self.assertEqual(request.questions[0].header, "Target")
+        self.assertIsNone(request.tool_call_id, "registry promotion fills the tool call id")
+
+    def test_handler_rejected_outside_delegated_run(self) -> None:
+        handler = self._registry().local_tools["ask_parent"].handler
+        assert handler is not None
+
+        with self.assertRaises(InvalidInputError):
+            handler({"title": "T"}, RunContext(agent_name="parent"))
+        with self.assertRaises(InvalidInputError):
+            handler({"title": "T"}, None)
+
+    def test_handler_requires_title(self) -> None:
+        handler = self._registry().local_tools["ask_parent"].handler
+        assert handler is not None
+
+        with self.assertRaises(InvalidInputError):
+            handler({}, RunContext(agent_name="child", delegate_run_id="run-7"))
+
+    async def test_registry_promotes_parent_input_request_to_tool_result(self) -> None:
+        registry = self._registry()
+        agent = make_test_agent(name="child")
+        tool_call = ToolCall(id="tc-9", name="ask_parent", arguments={"title": "Need target"})
+
+        result = await registry.execute_tool_call(
+            agent, tool_call, RunContext(agent_name="child", delegate_run_id="run-7")
+        )
+
+        self.assertEqual(result.content, "Waiting for parent")
+        self.assertFalse(result.is_error)
+        self.assertIsNone(result.input_request)
+        self.assertIsNotNone(result.parent_request)
+        self.assertEqual(result.parent_request.tool_call_id, "tc-9")
+        self.assertEqual(result.parent_request.delegate_run_id, "run-7")
+
+    async def test_registry_converts_handler_rejection_to_error_result(self) -> None:
+        registry = self._registry()
+        agent = make_test_agent(name="parent")
+        tool_call = ToolCall(id="tc-10", name="ask_parent", arguments={"title": "T"})
+
+        result = await registry.execute_tool_call(
+            agent, tool_call, RunContext(agent_name="parent")
+        )
+
+        self.assertTrue(result.is_error)
+        self.assertIn("only available inside a delegated run", str(result.content))
+        self.assertIsNone(result.parent_request)
 
 
 if __name__ == "__main__":

@@ -24,12 +24,15 @@ from covalent.application.errors import (
     DelegateRunGoneError,
     DelegateRunNotFoundError,
     DelegateTransitionError,
+    InvalidInputError,
 )
 from covalent.core.types import (
     DelegateRunResult,
     DelegateRunStatus,
     Message,
+    ParentInputRequest,
     RunContext,
+    UserQuestion,
 )
 from covalent.infra.delegate_repository import (
     ACTIVE_STATUSES,
@@ -56,6 +59,89 @@ _TERMINAL_STATUSES: tuple[DelegateRunStatus, ...] = (
 #: matches ``expires_at <= before``, so a disabled bucket needs an impossibly
 #: OLD threshold (far past), never a future one.
 _NEVER_DAYS = 100 * 365
+
+#: Local tool name for pausing a delegated run to ask its parent.
+ASK_PARENT_TOOL = "ask_parent"
+
+_ASK_PARENT_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": ASK_PARENT_TOOL,
+        "description": (
+            "Pause this delegated run and ask your parent agent a question. Use it when "
+            "you need information only the parent (or the end user, via the parent) can "
+            "provide; never attempt to contact the end user directly."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short summary of what you need from the parent.",
+                },
+                "questions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "header": {"type": "string"},
+                            "question": {"type": "string"},
+                            "message": {"type": "string"},
+                            "multi_select": {"type": "boolean"},
+                            "allow_freeform_input": {"type": "boolean"},
+                            "max_selections": {"type": "integer", "minimum": 1},
+                            "options": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "recommended": {"type": "boolean"},
+                                    },
+                                    "required": ["label"],
+                                },
+                            },
+                        },
+                        "required": ["header", "question"],
+                    },
+                },
+            },
+            "required": ["title"],
+        },
+    },
+}
+
+
+def register_ask_parent_tool(registry: FrameworkRegistry) -> None:
+    """Register the ask_parent local tool.
+
+    The schema is appended to delegated contexts' tool lists by the runtime;
+    the handler only succeeds inside a delegated run (``context.delegate_run_id``
+    set). The registry's local-tool branch promotes the returned
+    ``ParentInputRequest`` into a pausing ToolResult.
+    """
+    registry.register_local_tool(ASK_PARENT_TOOL, _ASK_PARENT_SCHEMA, handler=_ask_parent_handler)
+
+
+def _ask_parent_handler(args: dict[str, Any], ctx: RunContext | None) -> ParentInputRequest:
+    if ctx is None or not ctx.delegate_run_id:
+        raise InvalidInputError(
+            "ask_parent is only available inside a delegated run; "
+            "in root context answer from your own context or tools"
+        )
+    title = str(args.get("title") or "").strip()
+    if not title:
+        raise InvalidInputError("ask_parent requires a non-empty 'title'")
+    return ParentInputRequest(
+        id=_new_chat_item_id("question"),
+        delegate_run_id=ctx.delegate_run_id,
+        # Left None here on purpose: handlers do not receive the ToolCall, and
+        # the registry's promotion fills tool_call_id from the invoking call.
+        tool_call_id=None,
+        title=title,
+        questions=[UserQuestion.model_validate(q) for q in args.get("questions", [])],
+    )
 
 
 class DelegateService:

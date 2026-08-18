@@ -8,7 +8,7 @@ from typing import Any
 
 from covalent.core.agent import AgentSpec
 from covalent.core.tooling import ToolDefinition, ToolHandler
-from covalent.core.types import RunContext, ToolCall, ToolResult, UserInputRequest
+from covalent.core.types import ParentInputRequest, RunContext, ToolCall, ToolResult, UserInputRequest
 from covalent.mcp.adapter import McpClient
 from covalent.mcp.spec import McpServerConfig
 from covalent.model.base import ModelAdapter, ProviderConfig
@@ -210,6 +210,15 @@ class FrameworkRegistry:
                         content="Input required",
                         tool_call_id=tool_call.id,
                         input_request=request,
+                    )
+                if isinstance(content, ParentInputRequest):
+                    return ToolResult(
+                        name=tool_call.name,
+                        content="Waiting for parent",
+                        tool_call_id=tool_call.id,
+                        parent_request=content.model_copy(
+                            update={"tool_call_id": content.tool_call_id or tool_call.id}
+                        ),
                     )
                 return ToolResult(name=tool_call.name, content=content, tool_call_id=tool_call.id)
             except Exception as exc:
