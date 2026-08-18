@@ -401,6 +401,74 @@ class SandboxInstanceRow(TimestampMixin, Base):
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class DelegateRunRow(TimestampMixin, Base):
+    """One logical delegate run (stateful subagent lifecycle)."""
+
+    __tablename__ = "delegate_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('created','running','waiting_parent','idle','released','cancelled','failed','expired')",
+            name="ck_delegate_runs_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    session_id: Mapped[str | None] = mapped_column(
+        String(255),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    execution_scope_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    workspace_scope_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    root_agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    parent_agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    parent_delegate_run_id: Mapped[str | None] = mapped_column(
+        String(96),
+        ForeignKey("delegate_runs.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    delegate_agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    origin_tool_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    pending_request_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    latest_output: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    error_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    release_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DelegateMessageRow(Base):
+    """Ordered private delegate memory; mirrors core.types.Message."""
+
+    __tablename__ = "delegate_messages"
+    __table_args__ = (
+        UniqueConstraint("delegate_run_id", "position", name="uq_delegate_messages_run_position"),
+    )
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    delegate_run_id: Mapped[str] = mapped_column(
+        String(96),
+        ForeignKey("delegate_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    # full Message.model_dump(mode="json"); sibling columns are queryable projections
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tool_calls: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    reasoning_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class ChatSessionRow(TimestampMixin, Base):
     __tablename__ = "chat_sessions"
 
