@@ -142,6 +142,19 @@ export type ChatSessionActivity = {
   payload: unknown;
 };
 
+export type DelegateRunStatus =
+  | "created" | "running" | "waiting_parent" | "idle"
+  | "released" | "cancelled" | "failed" | "expired";
+
+export type DelegateLifecyclePayload = {
+  delegate_run_id?: string | null;
+  parent_delegate_run_id?: string | null;
+  agent_name?: string | null;
+  delegated_by?: string | null;
+  status?: DelegateRunStatus | null;
+  summary?: string | null;
+};
+
 export type PendingQuestionOption = {
   label: string;
   description?: string | null;

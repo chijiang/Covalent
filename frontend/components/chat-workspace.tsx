@@ -54,6 +54,7 @@ import type {
   AttachmentUploadItem,
   ChatSession,
   ChatSessionSummary,
+  DelegateRunStatus,
   HealthResponse,
   PendingQuestionRequest,
 } from "@/lib/types";
@@ -122,6 +123,7 @@ type TraceNode =
   | {
       kind: "delegate";
       toolCallId: string;
+      runShortId: string | null;
       agentName: string;
       delegatedBy: string;
       depth: number;
@@ -142,6 +144,9 @@ type DelegateTraceMetadata = {
   delegated_by?: string | null;
   delegate_tool_name?: string | null;
   delegate_tool_call_id?: string | null;
+  delegate_run_id?: string | null;
+  parent_delegate_run_id?: string | null;
+  status?: DelegateRunStatus | null;
   delegation_depth?: number | null;
   parent_iteration?: number | null;
 };
@@ -151,15 +156,23 @@ function readDelegateMeta(payload: unknown): DelegateTraceMetadata | null {
     return null;
   }
   const record = payload as Record<string, unknown>;
-  const id = record.delegate_tool_call_id;
-  if (typeof id !== "string" || id.length === 0) {
+  const toolCallId = record.delegate_tool_call_id;
+  const runId = record.delegate_run_id;
+  const hasToolCallId = typeof toolCallId === "string" && toolCallId.length > 0;
+  const hasRunId = typeof runId === "string" && runId.length > 0;
+  // Stateful delegate events carry a stable delegate_run_id alongside the
+  // starting tool call id; legacy events only carry the tool call id.
+  if (!hasToolCallId && !hasRunId) {
     return null;
   }
   return {
     agent_name: typeof record.agent_name === "string" ? record.agent_name : null,
     delegated_by: typeof record.delegated_by === "string" ? record.delegated_by : null,
     delegate_tool_name: typeof record.delegate_tool_name === "string" ? record.delegate_tool_name : null,
-    delegate_tool_call_id: id,
+    delegate_tool_call_id: hasToolCallId ? toolCallId : null,
+    delegate_run_id: hasRunId ? runId : null,
+    parent_delegate_run_id: typeof record.parent_delegate_run_id === "string" ? record.parent_delegate_run_id : null,
+    status: typeof record.status === "string" ? (record.status as DelegateRunStatus) : null,
     delegation_depth: typeof record.delegation_depth === "number" ? record.delegation_depth : null,
     parent_iteration: typeof record.parent_iteration === "number" ? record.parent_iteration : null,
   };
@@ -249,12 +262,19 @@ function buildTraceTree(
     const isDelegateTitle = isDelegateEventTitle(item.title);
     const meta = isDelegateTitle ? readDelegateMeta(item.payload) : null;
 
-    if (!meta?.delegate_tool_call_id) {
+    if (!meta) {
       topLevelPlan.push({ kind: "event", entry: item });
       continue;
     }
 
-    const id = meta.delegate_tool_call_id;
+    // Group by the stable delegate_run_id when present so follow-up sends into
+    // the same run share one trace node even though each leg carries a
+    // different parent tool call id; legacy events fall back to the tool call id.
+    const id = meta.delegate_run_id || meta.delegate_tool_call_id;
+    if (!id) {
+      topLevelPlan.push({ kind: "event", entry: item });
+      continue;
+    }
     // An id currently being built up the stack is this node's own id (or an
     // ancestor's): its events are rendered inline, not re-grouped.
     if (ancestorIds.has(id)) {
@@ -296,12 +316,14 @@ function buildDelegateNode(
 ): Extract<TraceNode, { kind: "delegate" }> {
   const childAncestors = new Set(ancestorIds);
   childAncestors.add(id);
+  const runShortId = meta.delegate_run_id ? meta.delegate_run_id.slice(0, 12) : null;
   // Beyond the max depth, flatten: stop recursing, render children as a flat
   // event list inside this node to avoid runaway nesting.
   if (depth >= MAX_DELEGATE_NESTING_DEPTH) {
     return {
       kind: "delegate",
       toolCallId: id,
+      runShortId,
       agentName: meta.agent_name ?? "",
       delegatedBy: meta.delegated_by ?? "",
       depth,
@@ -312,6 +334,7 @@ function buildDelegateNode(
   return {
     kind: "delegate",
     toolCallId: id,
+    runShortId,
     agentName: meta.agent_name ?? "",
     delegatedBy: meta.delegated_by ?? "",
     depth,
@@ -1520,6 +1543,20 @@ function getTraceEventLabel(title: string, rawPayload?: unknown): string {
   const baseTitle = getBaseEventTitle(title);
   const isDelegate = isDelegateEventTitle(title);
   if (isDelegate) {
+    if (baseTitle === "waiting_parent") {
+      return "Subagent · waiting for parent";
+    }
+    if (baseTitle === "idle") {
+      return "Subagent · idle";
+    }
+    if (
+      baseTitle === "released" ||
+      baseTitle === "cancelled" ||
+      baseTitle === "expired" ||
+      baseTitle === "failed"
+    ) {
+      return "Subagent · ended";
+    }
     return "Subagent";
   }
   if (baseTitle === "error") {
@@ -1751,6 +1788,7 @@ function TraceDelegateGroup({ node }: { node: Extract<TraceNode, { kind: "delega
           <span className="trace-step-event w-[52px] shrink-0 truncate">subagent</span>
           <span className="trace-step-summary min-w-0 flex-1 truncate">
             {sourceLabel} · {eventCount} event{eventCount === 1 ? "" : "s"}
+            {node.runShortId ? ` · ${node.runShortId}` : ""}
           </span>
           <span className="trace-step-time w-14 shrink-0 text-right">depth {node.depth}</span>
           <span className="trace-step-payload-toggle w-14 shrink-0 truncate text-right">
@@ -1768,6 +1806,22 @@ function TraceDelegateGroup({ node }: { node: Extract<TraceNode, { kind: "delega
 }
 
 const DELEGATE_EVENT_PREFIX = "delegate_";
+
+// Base titles (prefix-stripped) of the stateful delegate lifecycle events.
+// They are accepted as trace stream events — and given lifecycle labels and
+// summaries — only when the full title carries the delegate_ prefix, so a
+// hypothetical root event literally named "created" or "idle" never matches.
+const DELEGATE_LIFECYCLE_BASE_TITLES = new Set([
+  "created",
+  "running",
+  "waiting_parent",
+  "resumed",
+  "idle",
+  "released",
+  "cancelled",
+  "expired",
+  "failed",
+]);
 
 function isDelegateEventTitle(value: string): boolean {
   return value.startsWith(DELEGATE_EVENT_PREFIX);
@@ -1883,11 +1937,49 @@ function getTraceSummary(item: ActivityItem): string | null {
     return detail ? withTraceSourcePrefix(isDelegate, payload, detail) : null;
   }
 
+  if (isDelegate && DELEGATE_LIFECYCLE_BASE_TITLES.has(baseTitle)) {
+    const summary = typeof payload.summary === "string" ? payload.summary.trim() : "";
+    if (baseTitle === "waiting_parent") {
+      return withTraceSourcePrefix(
+        isDelegate,
+        payload,
+        summary ? `Waiting for parent: ${truncateTraceSummaryText(summary)}` : "Waiting for parent.",
+      );
+    }
+    if (baseTitle === "idle") {
+      return withTraceSourcePrefix(
+        isDelegate,
+        payload,
+        summary ? `Returned: ${truncateTraceSummaryText(summary)}` : "Returned.",
+      );
+    }
+    if (
+      baseTitle === "released" ||
+      baseTitle === "cancelled" ||
+      baseTitle === "expired" ||
+      baseTitle === "failed"
+    ) {
+      const terminalLabel =
+        baseTitle === "released" ? "Released" : baseTitle === "cancelled" ? "Cancelled" : baseTitle === "expired" ? "Expired" : "Failed";
+      return withTraceSourcePrefix(
+        isDelegate,
+        payload,
+        summary ? `${terminalLabel}: ${truncateTraceSummaryText(summary)}` : `${terminalLabel}.`,
+      );
+    }
+    // created / running / resumed carry no dedicated summary; the entry falls
+    // back to its event title.
+    return null;
+  }
+
   return null;
 }
 
 function isTraceStreamEvent(event: string): boolean {
   const baseEvent = getBaseEventTitle(event);
+  if (event.startsWith(DELEGATE_EVENT_PREFIX) && DELEGATE_LIFECYCLE_BASE_TITLES.has(baseEvent)) {
+    return true;
+  }
   return [
     "assistant",
     "final",
@@ -2487,6 +2579,7 @@ export function ChatWorkspace() {
             return;
           }
 
+          // Contract: only the root input_required opens the answer form; delegate_waiting_parent is trace-only and never matches this exact-name check.
           if (event === "input_required") {
             streamTerminatedCleanly = true;
             const pendingQuestion = normalizePendingQuestionRequest(payload);
