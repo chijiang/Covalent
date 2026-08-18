@@ -3,9 +3,9 @@
 ``DelegateService`` implements the :class:`~covalent.runtime.delegation.DelegateCoordinator`
 protocol: admission (delegate edge, quotas, depth), optimistic state
 transitions with fresh version reads, per-run mailboxes, scoped release, and
-the maintenance sweeps (orphan recovery, TTL expiry). It is persistence and
-lifecycle policy only — it never runs agents; the runtime consumes the
-handles it returns.
+the maintenance sweeps (orphan recovery, TTL expiry, retention pruning). It is
+persistence and lifecycle policy only — it never runs agents; the runtime
+consumes the handles it returns.
 """
 
 from __future__ import annotations
@@ -432,6 +432,7 @@ class DelegateService:
         origin_tool_call_id: str | None,
         parent_context: RunContext,
     ) -> DelegateRunHandle:
+        await self._maintenance_sweep()
         # Delegate edge: the parent must exist, list the delegate, and the
         # delegate must be registered (absent == disabled at runtime).
         try:
@@ -593,6 +594,7 @@ class DelegateService:
     async def send(
         self, *, actor: DelegateActor, delegate_run_id: str, input_text: str
     ) -> DelegateRunHandle:
+        await self._maintenance_sweep()
         run = await self._store.get_run(delegate_run_id)
         if run is None:
             raise DelegateRunNotFoundError(f"delegate run {delegate_run_id} not found")
@@ -663,6 +665,7 @@ class DelegateService:
     # --- DelegateCoordinator: list_children / release ---------------------------
 
     async def list_children(self, *, actor: DelegateActor) -> list[dict[str, Any]]:
+        await self._maintenance_sweep()
         records = await self._store.list_children(
             execution_scope_id=actor.execution_scope_id or "",
             parent_agent_name=actor.agent_name,
@@ -749,10 +752,26 @@ class DelegateService:
         return failed_ids
 
     async def expire_stale(self, *, now: datetime | None = None) -> list[str]:
+        """Expire active runs past their TTLs, then prune retention-due messages.
+
+        The TTL pass expires descendants before parents (deepest first) and
+        returns the ids of runs this call transitioned to ``expired``; the
+        retention pass deletes raw messages of terminal runs past the
+        released-retention window (audit rows and summaries always survive)
+        and is not part of the return value.
+        """
         current = now or datetime.now(UTC)
-        never_before = current - timedelta(days=_NEVER_DAYS)
+        expired = await self._expire_ttl_due(current)
+        await self._prune_retention(current)
+        return expired
+
+    async def _expire_ttl_due(self, current: datetime) -> list[str]:
         idle_ttl = self._settings.delegate_idle_ttl_seconds
         waiting_ttl = self._settings.delegate_waiting_ttl_seconds
+        if idle_ttl <= 0 and waiting_ttl <= 0:
+            # Every bucket disabled — no candidate scan can ever match.
+            return []
+        never_before = current - timedelta(days=_NEVER_DAYS)
         # 0 disables a bucket: with an impossibly old threshold no row's
         # expires_at can satisfy ``expires_at <= before``, so that bucket
         # never expires (even rows carrying a stale expires_at from a
@@ -776,9 +795,29 @@ class DelegateService:
             # a live child still points at them.
             descendants = await self._descendants(record, seen)
             for row in [*descendants, record]:
-                if await self._expire_row(row, current):
+                if await self._expire_row(row):
                     expired_ids.append(row.id)
         return expired_ids
+
+    async def _prune_retention(self, now: datetime) -> list[str]:
+        """Delete raw messages of terminal runs past the retention window.
+
+        The audit row (status, summary, released_at) always survives — only
+        the mailbox goes.
+        """
+        before = now - timedelta(seconds=self._settings.delegate_released_retention_seconds)
+        due = await self._store.list_retention_due(before=before)
+        for record in due:
+            await self._store.delete_messages(record.id)
+            logger.info(
+                "delegate_run_messages_pruned",
+                extra={
+                    "delegate_run_id": record.id,
+                    "parent_agent_name": record.parent_agent_name,
+                    "session_id": record.session_id,
+                },
+            )
+        return [record.id for record in due]
 
     async def _descendants(
         self, root: DelegateRunRecord, seen: set[str]
@@ -801,13 +840,13 @@ class DelegateService:
                 frontier.append(child)
         return ordered
 
-    async def _expire_row(self, row: DelegateRunRecord, now: datetime) -> bool:
-        """Expire one row via CAS; also applies the released-retention sweep.
+    async def _expire_row(self, row: DelegateRunRecord) -> bool:
+        """Expire one row via CAS from any active status.
 
         Returns True when this call performed the EXPIRED transition. Rows
-        already terminal (a released descendant caught in the cascade) keep
-        their status but lose their messages once the released-retention
-        window has passed.
+        that moved on or were deleted concurrently are idempotent skips;
+        terminal descendants caught in the cascade keep their status (their
+        messages are the retention sweep's concern).
         """
         try:
             updated = await self._store.transition_run(
@@ -817,14 +856,43 @@ class DelegateService:
                 status=DelegateRunStatus.EXPIRED,
             )
         except (DelegateRunConflictError, DelegateRunMissingError):
-            updated = None  # moved on / deleted concurrently — idempotent skip
-        if updated is not None:
-            self._log_transition(updated, f"{row.status.value}->expired")
-            await self._store.delete_messages(updated.id)
-        if (
-            row.released_at is not None
-            and row.released_at + timedelta(seconds=self._settings.delegate_released_retention_seconds)
-            < now
-        ):
-            await self._store.delete_messages(row.id)
-        return updated is not None
+            return False  # moved on / deleted concurrently — idempotent skip
+        self._log_transition(updated, f"{row.status.value}->expired")
+        await self._store.delete_messages(updated.id)
+        return True
+
+    async def _maintenance_sweep(self) -> None:
+        """Opportunistic orphan recovery + expiry before a primary operation.
+
+        Best effort by design: a sweep failure logs a warning and never
+        breaks the primary operation that triggered it.
+        """
+        try:
+            await self.recover_orphans()
+        except Exception:
+            logger.warning("delegate maintenance sweep: orphan recovery failed", exc_info=True)
+        try:
+            await self.expire_stale()
+        except Exception:
+            logger.warning("delegate maintenance sweep: expiry sweep failed", exc_info=True)
+
+
+async def run_startup_sweeps(service: DelegateService) -> dict[str, int]:
+    """One-shot recovery + expiry sweep for process startup.
+
+    Called once from the app lifespan alongside the other startup sweeps so
+    runs orphaned by a previous process crash and TTL-expired rows are
+    reconciled before the first request. Each phase is independently
+    exception-tolerant: a failing sweep logs a warning and reports zero
+    rather than blocking startup.
+    """
+    counts = {"recovered": 0, "expired": 0}
+    try:
+        counts["recovered"] = len(await service.recover_orphans())
+    except Exception:
+        logger.warning("startup orphan recovery sweep failed", exc_info=True)
+    try:
+        counts["expired"] = len(await service.expire_stale())
+    except Exception:
+        logger.warning("startup expiry sweep failed", exc_info=True)
+    return counts

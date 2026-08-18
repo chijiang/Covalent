@@ -37,6 +37,15 @@ ACTIVE_STATUSES: tuple[DelegateRunStatus, ...] = (
     DelegateRunStatus.IDLE,
 )
 
+#: Statuses after which a run row survives as an audit record (with its
+#: summary) but its raw messages are pruned once the released-retention
+#: window passes.
+RETENTION_STATUSES: tuple[DelegateRunStatus, ...] = (
+    DelegateRunStatus.RELEASED,
+    DelegateRunStatus.FAILED,
+    DelegateRunStatus.CANCELLED,
+)
+
 
 class DelegateRunRecord(BaseModel):
     id: str
@@ -219,6 +228,11 @@ class DelegateRunStore(ABC):
     ) -> list[DelegateRunRecord]: ...
 
     @abstractmethod
+    async def list_retention_due(
+        self, *, before: datetime, limit: int = 100
+    ) -> list[DelegateRunRecord]: ...
+
+    @abstractmethod
     async def list_active_by_session(self, session_id: str) -> list[DelegateRunRecord]: ...
 
     @abstractmethod
@@ -391,6 +405,20 @@ class InMemoryDelegateRunStore(DelegateRunStore):
                 ):
                     records.append(record)
             records.sort(key=lambda record: (record.expires_at, record.id))
+            return records[:limit]
+
+    async def list_retention_due(
+        self, *, before: datetime, limit: int = 100
+    ) -> list[DelegateRunRecord]:
+        async with self._lock:
+            records = [
+                record
+                for record in self._runs.values()
+                if record.status in RETENTION_STATUSES
+                and record.released_at is not None
+                and record.released_at <= before
+            ]
+            records.sort(key=lambda record: (record.released_at, record.id))
             return records[:limit]
 
     async def list_active_by_session(self, session_id: str) -> list[DelegateRunRecord]:
@@ -739,6 +767,24 @@ class PostgresDelegateRunStore(DelegateRunStore):
                         ),
                     )
                     .order_by(DelegateRunRow.expires_at, DelegateRunRow.id)
+                    .limit(limit)
+                )
+            )
+            return [_record_from_row(row) for row in rows]
+
+    async def list_retention_due(
+        self, *, before: datetime, limit: int = 100
+    ) -> list[DelegateRunRecord]:
+        async with self._session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(DelegateRunRow)
+                    .where(
+                        DelegateRunRow.status.in_(s.value for s in RETENTION_STATUSES),
+                        DelegateRunRow.released_at.is_not(None),
+                        DelegateRunRow.released_at <= before,
+                    )
+                    .order_by(DelegateRunRow.released_at, DelegateRunRow.id)
                     .limit(limit)
                 )
             )

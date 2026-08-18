@@ -461,6 +461,43 @@ class _DelegateRunStoreContract:
             {idle_due.id, waiting_due.id, created_due.id},
         )
 
+    async def test_list_retention_due_filters_terminal_rows_by_released_at(self) -> None:
+        old = _FIXED_NOW - timedelta(hours=2)
+        released_old = await self.store.create_run(
+            self._record(status=DelegateRunStatus.RELEASED, released_at=old)
+        )
+        failed_old = await self.store.create_run(
+            self._record(status=DelegateRunStatus.FAILED, released_at=old, error={"code": "x"})
+        )
+        cancelled_old = await self.store.create_run(
+            self._record(status=DelegateRunStatus.CANCELLED, released_at=old)
+        )
+        # terminal but released too recently for this cutoff: not yet due
+        await self.store.create_run(
+            self._record(
+                status=DelegateRunStatus.RELEASED, released_at=_FIXED_NOW - timedelta(minutes=1)
+            )
+        )
+        # terminal but never released (no timestamp): never due here
+        await self.store.create_run(self._record(status=DelegateRunStatus.FAILED, released_at=None))
+        # active rows are never retention-due, even carrying a stray released_at
+        await self.store.create_run(self._record(status=DelegateRunStatus.IDLE, released_at=old))
+        # expired rows lost their messages at expiry; not retention's concern
+        await self.store.create_run(self._record(status=DelegateRunStatus.EXPIRED, released_at=old))
+
+        cutoff = _FIXED_NOW - timedelta(hours=1)
+        due = await self.store.list_retention_due(before=cutoff)
+        self.assertEqual(
+            {row.id for row in due}, {released_old.id, failed_old.id, cancelled_old.id}
+        )
+        limited = await self.store.list_retention_due(before=cutoff, limit=2)
+        self.assertEqual(len(limited), 2)
+        for row in limited:
+            self.assertIn(row.id, {released_old.id, failed_old.id, cancelled_old.id})
+        self.assertEqual(
+            await self.store.list_retention_due(before=_FIXED_NOW - timedelta(hours=3)), []
+        )
+
     async def test_active_session_scope_and_agent_filters(self) -> None:
         await self._seed_session("session-1")
         await self._seed_session("session-2")

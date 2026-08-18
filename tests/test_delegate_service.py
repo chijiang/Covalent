@@ -25,6 +25,7 @@ from covalent.application.errors import (
 from covalent.application.services.delegate_service import (
     DelegateService,
     register_ask_parent_tool,
+    run_startup_sweeps,
 )
 from covalent.core.types import (
     DelegateRunStatus,
@@ -612,6 +613,187 @@ class DelegateServiceTests(unittest.IsolatedAsyncioTestCase):
         stored = await store.get_run(handle.run.id)
         self.assertEqual(stored.status, DelegateRunStatus.IDLE)
         self.assertNotEqual(await store.load_messages(handle.run.id), [])
+
+    async def test_expire_stale_skips_ttl_scan_when_all_ttls_disabled(self) -> None:
+        service, store = self._service(
+            delegate_idle_ttl_seconds=0.0,
+            delegate_waiting_ttl_seconds=0.0,
+        )
+
+        async def _forbidden(*args: object, **kwargs: object) -> list[DelegateRunRecord]:
+            raise AssertionError("list_expirable must not be scanned when all TTLs are disabled")
+
+        store.list_expirable = _forbidden  # type: ignore[method-assign]
+        self.assertEqual(await service.expire_stale(), [])
+
+    # --- behavior 7: released-retention sweep -----------------------------------
+
+    async def test_retention_sweep_prunes_old_released_and_keeps_recent(self) -> None:
+        service, store = self._service(delegate_released_retention_seconds=600.0)
+        now = datetime.now(UTC)
+        old = await self._raw_record(
+            store,
+            id="run-rel-old",
+            status=DelegateRunStatus.RELEASED,
+            released_at=now - timedelta(hours=3),
+            summary="finished the report",
+        )
+        await store.save_messages(old.id, [Message(role="user", content="old work")])
+        recent = await self._raw_record(
+            store,
+            id="run-rel-new",
+            status=DelegateRunStatus.RELEASED,
+            released_at=now - timedelta(seconds=30),
+            summary="just released",
+        )
+        await store.save_messages(recent.id, [Message(role="user", content="fresh work")])
+
+        # Retention pruning is not expiry: no rows transition, nothing "expired".
+        expired = await service.expire_stale(now=now)
+        self.assertEqual(expired, [])
+
+        old_row = await store.get_run(old.id)
+        self.assertIsNotNone(old_row)
+        self.assertEqual(old_row.status, DelegateRunStatus.RELEASED)
+        self.assertEqual(old_row.summary, "finished the report")  # audit row survives
+        self.assertEqual(await store.load_messages(old.id), [])
+        recent_row = await store.get_run(recent.id)
+        self.assertIsNotNone(recent_row)
+        self.assertEqual(recent_row.status, DelegateRunStatus.RELEASED)
+        self.assertNotEqual(await store.load_messages(recent.id), [])
+
+        # Idempotent: pruning an already-empty mailbox is a no-op.
+        self.assertEqual(await service.expire_stale(now=now), [])
+
+    # --- behavior 7: orphan recovery never replays ------------------------------
+
+    async def test_recover_orphans_keeps_last_committed_messages(self) -> None:
+        service, store = self._service(delegate_running_lease_seconds=900.0)
+        handle = await self._start(service, input_text="interrupted work")
+
+        failed = await service.recover_orphans(
+            now=datetime.now(UTC) + timedelta(seconds=1800)
+        )
+        self.assertEqual(failed, [handle.run.id])
+        stored = await store.get_run(handle.run.id)
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored.status, DelegateRunStatus.FAILED)
+        self.assertEqual(stored.error, {"code": "execution_interrupted"})
+        # Never replays: the transcript stays exactly as last committed.
+        messages = await store.load_messages(handle.run.id)
+        self.assertEqual(len(messages), 1)
+        self.assertIn("interrupted work", messages[0].content)
+
+    # --- behavior 7: opportunistic sweeps on primary calls ----------------------
+
+    async def test_primary_calls_trigger_opportunistic_sweeps(self) -> None:
+        service, store = self._service(delegate_idle_ttl_seconds=3600.0)
+        now = datetime.now(UTC)
+
+        stale_for_start = await self._raw_record(
+            store,
+            id="run-stale-start",
+            status=DelegateRunStatus.IDLE,
+            expires_at=now - timedelta(hours=2),
+        )
+        await store.save_messages(
+            stale_for_start.id, [Message(role="user", content="stale work")]
+        )
+
+        # start's entry sweep expires the due row as a side effect.
+        handle = await self._start(service)
+        row = await store.get_run(stale_for_start.id)
+        self.assertIsNotNone(row)
+        self.assertEqual(row.status, DelegateRunStatus.EXPIRED)
+        self.assertEqual(await store.load_messages(stale_for_start.id), [])
+
+        # send's entry sweep does the same while resuming a live run.
+        stale_for_send = await self._raw_record(
+            store,
+            id="run-stale-send",
+            status=DelegateRunStatus.IDLE,
+            expires_at=now - timedelta(hours=2),
+        )
+        await service.report_outcome(
+            handle.run.id, DelegateTurnOutcome(status="idle", output="done")
+        )
+        resumed = await service.send(
+            actor=self._root_actor(), delegate_run_id=handle.run.id, input_text="go on"
+        )
+        self.assertEqual(resumed.run.status, DelegateRunStatus.RUNNING)
+        row = await store.get_run(stale_for_send.id)
+        self.assertIsNotNone(row)
+        self.assertEqual(row.status, DelegateRunStatus.EXPIRED)
+
+        # list_children's entry sweep too.
+        stale_for_list = await self._raw_record(
+            store,
+            id="run-stale-list",
+            status=DelegateRunStatus.IDLE,
+            expires_at=now - timedelta(hours=2),
+        )
+        await service.list_children(actor=self._root_actor())
+        row = await store.get_run(stale_for_list.id)
+        self.assertIsNotNone(row)
+        self.assertEqual(row.status, DelegateRunStatus.EXPIRED)
+
+    async def test_sweep_failure_never_breaks_primary_calls(self) -> None:
+        service, store = self._service()
+
+        async def _boom(*args: object, **kwargs: object) -> list[DelegateRunRecord]:
+            raise RuntimeError("store unavailable during sweep")
+
+        store.list_stale_running = _boom  # type: ignore[method-assign]
+        store.list_expirable = _boom  # type: ignore[method-assign]
+
+        handle = await self._start(service)  # sweep fails loudly-logged, start works
+        await service.report_outcome(
+            handle.run.id, DelegateTurnOutcome(status="idle", output="done")
+        )
+        resumed = await service.send(
+            actor=self._root_actor(), delegate_run_id=handle.run.id, input_text="next"
+        )
+        self.assertEqual(resumed.run.status, DelegateRunStatus.RUNNING)
+        children = await service.list_children(actor=self._root_actor())
+        self.assertEqual(len(children), 1)
+        self.assertEqual(children[0]["delegate_run_id"], handle.run.id)
+
+    # --- behavior 7: startup sweeps ----------------------------------------------
+
+    async def test_run_startup_sweeps_returns_counts_and_tolerates_failures(self) -> None:
+        service, store = self._service(delegate_idle_ttl_seconds=3600.0)
+        now = datetime.now(UTC)
+        orphan = await self._raw_record(
+            store,
+            id="run-orphan",
+            status=DelegateRunStatus.RUNNING,
+            last_activity_at=now - timedelta(hours=2),
+        )
+        stale_idle = await self._raw_record(
+            store,
+            id="run-old-idle",
+            status=DelegateRunStatus.IDLE,
+            expires_at=now - timedelta(hours=2),
+        )
+
+        counts = await run_startup_sweeps(service)
+        self.assertEqual(counts, {"recovered": 1, "expired": 1})
+        orphan_row = await store.get_run(orphan.id)
+        self.assertIsNotNone(orphan_row)
+        self.assertEqual(orphan_row.status, DelegateRunStatus.FAILED)
+        self.assertEqual(orphan_row.error, {"code": "execution_interrupted"})
+        idle_row = await store.get_run(stale_idle.id)
+        self.assertIsNotNone(idle_row)
+        self.assertEqual(idle_row.status, DelegateRunStatus.EXPIRED)
+
+        # Inner failures degrade to zero counts, never raise.
+        async def _boom(*args: object, **kwargs: object) -> list[DelegateRunRecord]:
+            raise RuntimeError("store down")
+
+        store.list_stale_running = _boom  # type: ignore[method-assign]
+        store.list_expirable = _boom  # type: ignore[method-assign]
+        store.list_retention_due = _boom  # type: ignore[method-assign]
+        self.assertEqual(await run_startup_sweeps(service), {"recovered": 0, "expired": 0})
 
 
 class AskParentToolTests(unittest.IsolatedAsyncioTestCase):
