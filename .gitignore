@@ -57,3 +57,7 @@ skills/uploaded
 .covalent/downloads/
 
 .playwright-cli
+bun.lockb
+bun.lock
+
+docker-compose.yml

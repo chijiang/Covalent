@@ -641,7 +641,8 @@ export function SandboxWorkspace() {
                       })}
                     </Fragment>
                   ))}
-                </tbody>              </table>
+                </tbody>
+              </table>
             </div>
           ) : (
             <div className="py-10 text-center">
