@@ -372,10 +372,10 @@ non-cooperating code can ignore.
 
 ### Image hygiene
 
-`Dockerfile.sandbox` bakes the trusted base (Python + Node + the runners at a
-known path). Same image is pushed to the cluster registry for Kubernetes. Pin a
-digest; rebuild on runner/dependency change via CI; runtime `pip install` lands
-in an ephemeral layer, never the base.
+`sandbox/Dockerfile.python` and its variants (see `sandbox/README.md`) bake the
+trusted base (runtime + the runners at a known path). The same images are pushed
+to the cluster registry for Kubernetes. Pin a digest; rebuild on runner/dependency
+change via CI; runtime `pip install` lands in an ephemeral layer, never the base.
 
 ### Defense in depth retained
 
@@ -574,8 +574,8 @@ daemon/runtime-class settings — the `covalent-sandbox` image and `DockerBacken
 work unchanged; only the daemon/`--runtime` flag differs.
 
 ### Image hygiene
-The GHCR CI workflow (`.github/workflows/sandbox-image.yml`) publishes the image on
-`Dockerfile.sandbox`/runners changes. Pin **digests** in production
+The GHCR CI workflow (`.github/workflows/sandbox-image.yml`) publishes all sandbox
+images on `sandbox/**`/runners changes (matrix: `sandbox/README.md`). Pin **digests** in production
 (`covalent-sandbox@sha256:…`, not `:latest`); rebuild on runner/dependency changes.
 Runtime `pip install` inside a container lands in an ephemeral layer, never the base.
 

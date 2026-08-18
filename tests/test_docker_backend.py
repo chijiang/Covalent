@@ -8,7 +8,7 @@ Two layers:
 - ``DockerBackendIntegrationTests`` — gated on a reachable daemon AND the
   ``covalent-sandbox:dev`` image. Drives a real ``SkillProcessHandle`` over a
   container. Build the image first:
-      docker build -t covalent-sandbox:dev -f Dockerfile.sandbox .
+      docker build -t covalent-sandbox:dev -f sandbox/Dockerfile.python .
 """
 
 from __future__ import annotations
@@ -765,7 +765,7 @@ def _image_present() -> bool:
 
 @unittest.skipUnless(
     _docker_ready() and _image_present(),
-    f"requires a Docker daemon and the {IMAGE} image (build with: docker build -t {IMAGE} -f Dockerfile.sandbox .)",
+    f"requires a Docker daemon and the {IMAGE} image (build with: docker build -t {IMAGE} -f sandbox/Dockerfile.python .)",
 )
 class DockerBackendIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

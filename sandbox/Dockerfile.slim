@@ -1,0 +1,20 @@
+# Covalent sandbox image — Python on Debian slim (glibc).
+#
+# Same [python, shell] contract as Dockerfile.python, but on glibc so
+# manylinux wheels (numpy, pandas, psycopg, ...) install without a compiler.
+# Larger than the Alpine image; prefer Dockerfile.python when wheel
+# compatibility does not matter.
+#
+# Build:  docker build -t covalent-sandbox-slim:dev -f sandbox/Dockerfile.slim .
+
+FROM python:3.12-slim
+
+# Framework runners baked into the image. DockerBackend rewrites the host runner
+# path (src/covalent/skills/runners/<name>) to /runners/<name>.
+COPY src/covalent/skills/runners/ /runners/
+
+LABEL io.covalent.sandbox.contract=1 \
+      io.covalent.sandbox.runtimes=python
+
+# Keep the container alive; the backend execs skill runners into it.
+CMD ["tail", "-f", "/dev/null"]

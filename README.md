@@ -173,9 +173,10 @@ Under `docker`, every agent gets its own logical sandbox instance — a master a
 To use Docker:
 
 ```bash
-# 1. Build the sandbox images (compatibility Python image + Node variant):
-docker build -t covalent-sandbox:dev -f Dockerfile.sandbox .
-docker build -t covalent-sandbox-node:dev -f Dockerfile.sandbox.node .
+# 1. Build the sandbox images (see sandbox/README.md for the full matrix:
+#    python / nodejs / polyglot / slim / toolbox / datascience):
+docker build -t covalent-sandbox:dev -f sandbox/Dockerfile.python .
+docker build -t covalent-sandbox-node:dev -f sandbox/Dockerfile.nodejs .
 
 # 2. Select the backend and (optionally) tune:
 AGENT_FRAMEWORK_EXECUTION_BACKEND_KIND=docker

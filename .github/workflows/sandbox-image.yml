@@ -4,22 +4,23 @@ name: sandbox-image
 # Triggers only when a sandbox image or its baked-in runners change (plus a
 # manual dispatch). Uses the default GITHUB_TOKEN — no extra secret needed.
 #
-# The Python image (covalent-sandbox) is the compatibility/default; the Node
-# image (covalent-sandbox-node) backs nodejs profiles. Both bake the same
+# The image matrix lives in sandbox/ (see sandbox/README.md): the Python image
+# (covalent-sandbox) is the compatibility/default, the Node image
+# (covalent-sandbox-node) backs nodejs profiles, and the polyglot/slim/
+# toolbox/datascience variants cover combined runtimes, glibc wheels, shell
+# glue work, and the preinstalled scientific stack. All bake the same
 # framework runners, so the matrix shares one build context.
 
 on:
   push:
     branches: [main]
     paths:
-      - "Dockerfile.sandbox"
-      - "Dockerfile.sandbox.node"
+      - "sandbox/**"
       - "src/covalent/skills/runners/**"
       - ".github/workflows/sandbox-image.yml"
   pull_request:
     paths:
-      - "Dockerfile.sandbox"
-      - "Dockerfile.sandbox.node"
+      - "sandbox/**"
       - "src/covalent/skills/runners/**"
       - ".github/workflows/sandbox-image.yml"
   workflow_dispatch:
@@ -35,9 +36,17 @@ jobs:
       matrix:
         include:
           - image: covalent-sandbox
-            file: Dockerfile.sandbox
+            file: sandbox/Dockerfile.python
           - image: covalent-sandbox-node
-            file: Dockerfile.sandbox.node
+            file: sandbox/Dockerfile.nodejs
+          - image: covalent-sandbox-polyglot
+            file: sandbox/Dockerfile.polyglot
+          - image: covalent-sandbox-slim
+            file: sandbox/Dockerfile.slim
+          - image: covalent-sandbox-toolbox
+            file: sandbox/Dockerfile.toolbox
+          - image: covalent-sandbox-datascience
+            file: sandbox/Dockerfile.datascience
     steps:
       - uses: actions/checkout@v4
 

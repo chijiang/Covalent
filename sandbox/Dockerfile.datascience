@@ -1,0 +1,24 @@
+# Covalent sandbox image — data science (Python + scientific stack).
+#
+# [python, shell] with a curated scientific stack preinstalled, so agents can
+# use numpy/pandas/matplotlib/scipy without a compiler or an outbound
+# allowlist at first use. Versions float to build time; production profiles
+# should pin the image by digest (see the per-agent sandbox profiles design).
+#
+# ~750 MB — the heaviest variant. Prefer Dockerfile.slim when only one or two
+# packages are needed and installs at runtime are acceptable.
+#
+# Build:  docker build -t covalent-sandbox-datascience:dev -f sandbox/Dockerfile.datascience .
+
+FROM python:3.12-slim
+
+# Runners first: they change on every framework release, the stack rarely.
+COPY src/covalent/skills/runners/ /runners/
+
+RUN pip install --no-cache-dir numpy pandas matplotlib scipy
+
+LABEL io.covalent.sandbox.contract=1 \
+      io.covalent.sandbox.runtimes=python
+
+# Keep the container alive; the backend execs skill runners into it.
+CMD ["tail", "-f", "/dev/null"]

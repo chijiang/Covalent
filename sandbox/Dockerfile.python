@@ -9,13 +9,16 @@
 # flaky under some networks). Production may prefer python:3.12-slim for
 # glibc compatibility — swap the FROM line.
 #
-# Build:  docker build -t covalent-sandbox:dev -f Dockerfile.sandbox .
+# Build:  docker build -t covalent-sandbox:dev -f sandbox/Dockerfile.python .
 
 FROM python:3.12-alpine
 
 # Framework runners baked into the image. DockerBackend rewrites the host runner
 # path (src/covalent/skills/runners/<name>) to /runners/<name>.
 COPY src/covalent/skills/runners/ /runners/
+
+LABEL io.covalent.sandbox.contract=1 \
+      io.covalent.sandbox.runtimes=python
 
 # Keep the container alive; the backend execs skill runners into it.
 CMD ["tail", "-f", "/dev/null"]

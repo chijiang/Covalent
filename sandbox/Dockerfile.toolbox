@@ -1,0 +1,25 @@
+# Covalent sandbox image — shell toolbox.
+#
+# Minimal image for glue-work agents: no language runtime, just a capable
+# POSIX userland plus common CLI tools. Declares only [shell]; the validator
+# never probes runner files or runtime binaries for it. The runners are
+# baked anyway to keep every sandbox image uniform.
+#
+# Unlike the other images this one installs packages with apk at build time —
+# providing the tools is its purpose. CI networks are fine with dl-cdn; for
+# flaky local networks build the other variants instead.
+#
+# Build:  docker build -t covalent-sandbox-toolbox:dev -f sandbox/Dockerfile.toolbox .
+
+FROM alpine:3.22
+
+RUN apk add --no-cache bash git curl jq unzip
+
+# Framework runners baked into the image (uniform with the other variants).
+COPY src/covalent/skills/runners/ /runners/
+
+LABEL io.covalent.sandbox.contract=1 \
+      io.covalent.sandbox.runtimes=shell
+
+# Keep the container alive; the backend execs commands into it.
+CMD ["tail", "-f", "/dev/null"]

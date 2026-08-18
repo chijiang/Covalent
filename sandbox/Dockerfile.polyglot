@@ -1,0 +1,31 @@
+# Covalent sandbox image — polyglot (Python + Node).
+#
+# One container declaring both [python, nodejs, shell]: a single agent can
+# run Python and Node skills without a second sandbox. Node is copied in
+# from the official node image rather than installed with apk, so the build
+# stays off alpine mirrors (see Dockerfile.python for the apk-flakiness
+# rationale).
+#
+# Build:  docker build -t covalent-sandbox-polyglot:dev -f sandbox/Dockerfile.polyglot .
+
+FROM python:3.12-alpine
+
+# Node binary + core modules from the official image (same musl base, so no
+# glibc mismatch), plus the libstdc++/libgcc runtime libs it links against —
+# python:3.12-alpine does not ship them. npm is kept for skills that install
+# packages at runtime under an outbound allowlist.
+COPY --from=node:22-alpine /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:22-alpine /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node:22-alpine /usr/lib/libstdc++* /usr/lib/libgcc_s.so.1 /usr/lib/
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Framework runners baked into the image. DockerBackend rewrites the host runner
+# path (src/covalent/skills/runners/<name>) to /runners/<name>.
+COPY src/covalent/skills/runners/ /runners/
+
+LABEL io.covalent.sandbox.contract=1 \
+      io.covalent.sandbox.runtimes=python,nodejs
+
+# Keep the container alive; the backend execs skill runners into it.
+CMD ["tail", "-f", "/dev/null"]
