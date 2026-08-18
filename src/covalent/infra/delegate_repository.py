@@ -415,10 +415,17 @@ class InMemoryDelegateRunStore(DelegateRunStore):
                 record
                 for record in self._runs.values()
                 if record.status in RETENTION_STATUSES
-                and record.released_at is not None
-                and record.released_at <= before
+                # released_at is authoritative; failed/cancelled rows carry
+                # only their terminal last_activity_at.
+                and (record.released_at or record.last_activity_at) <= before
+                # Rows already pruned (or never given messages) have nothing
+                # left to remove — excluding them keeps later due rows
+                # reachable within the batch limit.
+                and bool(self._messages.get(record.id))
             ]
-            records.sort(key=lambda record: (record.released_at, record.id))
+            records.sort(
+                key=lambda record: (record.released_at or record.last_activity_at, record.id)
+            )
             return records[:limit]
 
     async def list_active_by_session(self, session_id: str) -> list[DelegateRunRecord]:
@@ -775,16 +782,27 @@ class PostgresDelegateRunStore(DelegateRunStore):
     async def list_retention_due(
         self, *, before: datetime, limit: int = 100
     ) -> list[DelegateRunRecord]:
+        # The retention clock is COALESCE(released_at, last_activity_at):
+        # released rows keep released_at as authoritative, while failed and
+        # cancelled rows (which never get a released_at stamp) fall back to
+        # the last_activity_at stamped by their terminal transition. The
+        # EXISTS predicate excludes rows whose messages were already pruned,
+        # so batches self-heal past the limit instead of re-pruning no-ops.
+        terminal_clock = func.coalesce(
+            DelegateRunRow.released_at, DelegateRunRow.last_activity_at
+        )
         async with self._session_factory() as session:
             rows = list(
                 await session.scalars(
                     select(DelegateRunRow)
                     .where(
                         DelegateRunRow.status.in_(s.value for s in RETENTION_STATUSES),
-                        DelegateRunRow.released_at.is_not(None),
-                        DelegateRunRow.released_at <= before,
+                        terminal_clock <= before,
+                        select(DelegateMessageRow.id)
+                        .where(DelegateMessageRow.delegate_run_id == DelegateRunRow.id)
+                        .exists(),
                     )
-                    .order_by(DelegateRunRow.released_at, DelegateRunRow.id)
+                    .order_by(terminal_clock, DelegateRunRow.id)
                     .limit(limit)
                 )
             )

@@ -461,41 +461,64 @@ class _DelegateRunStoreContract:
             {idle_due.id, waiting_due.id, created_due.id},
         )
 
-    async def test_list_retention_due_filters_terminal_rows_by_released_at(self) -> None:
-        old = _FIXED_NOW - timedelta(hours=2)
-        released_old = await self.store.create_run(
-            self._record(status=DelegateRunStatus.RELEASED, released_at=old)
-        )
-        failed_old = await self.store.create_run(
-            self._record(status=DelegateRunStatus.FAILED, released_at=old, error={"code": "x"})
-        )
-        cancelled_old = await self.store.create_run(
-            self._record(status=DelegateRunStatus.CANCELLED, released_at=old)
-        )
-        # terminal but released too recently for this cutoff: not yet due
-        await self.store.create_run(
-            self._record(
-                status=DelegateRunStatus.RELEASED, released_at=_FIXED_NOW - timedelta(minutes=1)
-            )
-        )
-        # terminal but never released (no timestamp): never due here
-        await self.store.create_run(self._record(status=DelegateRunStatus.FAILED, released_at=None))
-        # active rows are never retention-due, even carrying a stray released_at
-        await self.store.create_run(self._record(status=DelegateRunStatus.IDLE, released_at=old))
-        # expired rows lost their messages at expiry; not retention's concern
-        await self.store.create_run(self._record(status=DelegateRunStatus.EXPIRED, released_at=old))
+    async def test_list_retention_due_terminal_clock_and_pruned_exclusion(self) -> None:
+        # Distinct terminal clocks, oldest first: rows 0/1 take the released_at
+        # path (authoritative when present); rows 2/3 are failed/cancelled with
+        # only last_activity_at — the coalesce clock that makes them due.
+        clocks = [_FIXED_NOW - timedelta(hours=4, minutes=-20 * i) for i in range(4)]
+        specs = [
+            {"status": DelegateRunStatus.RELEASED, "released_at": clocks[0]},
+            {"status": DelegateRunStatus.CANCELLED, "released_at": clocks[1]},
+            {"status": DelegateRunStatus.FAILED, "last_activity_at": clocks[2]},
+            {"status": DelegateRunStatus.RELEASED, "last_activity_at": clocks[3]},
+        ]
+        due_ids: list[str] = []
+        for spec in specs:
+            record = await self.store.create_run(self._record(**spec))
+            await self.store.save_messages(record.id, [Message(role="user", content="raw")])
+            due_ids.append(record.id)
 
         cutoff = _FIXED_NOW - timedelta(hours=1)
         due = await self.store.list_retention_due(before=cutoff)
-        self.assertEqual(
-            {row.id for row in due}, {released_old.id, failed_old.id, cancelled_old.id}
-        )
+        self.assertEqual([row.id for row in due], due_ids)  # oldest clock first
+
+        # Bound respects the clock ordering, not insertion order.
         limited = await self.store.list_retention_due(before=cutoff, limit=2)
-        self.assertEqual(len(limited), 2)
-        for row in limited:
-            self.assertIn(row.id, {released_old.id, failed_old.id, cancelled_old.id})
+        self.assertEqual([row.id for row in limited], due_ids[:2])
+
+        # Clock too recent (either clock source): not yet due.
+        for spec in (
+            {"status": DelegateRunStatus.RELEASED, "released_at": _FIXED_NOW - timedelta(minutes=1)},
+            {"status": DelegateRunStatus.FAILED, "last_activity_at": _FIXED_NOW - timedelta(minutes=1)},
+        ):
+            record = await self.store.create_run(self._record(**spec))
+            await self.store.save_messages(record.id, [Message(role="user", content="raw")])
+        # Active/expired rows never due, even carrying a stray released_at.
+        await self.store.create_run(
+            self._record(
+                status=DelegateRunStatus.IDLE,
+                released_at=clocks[0],
+            )
+        )
+        await self.store.create_run(
+            self._record(status=DelegateRunStatus.EXPIRED, released_at=clocks[0])
+        )
+        # Terminal rows without messages never appear (nothing to prune).
+        await self.store.create_run(self._record(status=DelegateRunStatus.FAILED, last_activity_at=clocks[0]))
+        still_due = await self.store.list_retention_due(before=cutoff)
+        self.assertEqual([row.id for row in still_due], due_ids)
+
+        # Pruned rows drop out of the due set — so with the same limit the
+        # previously starved rows become reachable (no perpetual re-prune,
+        # no starvation past the batch limit).
+        for run_id in due_ids[:2]:
+            await self.store.delete_messages(run_id)
+        after_prune = await self.store.list_retention_due(before=cutoff, limit=2)
+        self.assertEqual([row.id for row in after_prune], due_ids[2:])
+
+        # Nothing due before the oldest terminal clock.
         self.assertEqual(
-            await self.store.list_retention_due(before=_FIXED_NOW - timedelta(hours=3)), []
+            await self.store.list_retention_due(before=_FIXED_NOW - timedelta(hours=5)), []
         )
 
     async def test_active_session_scope_and_agent_filters(self) -> None:

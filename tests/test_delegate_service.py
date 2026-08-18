@@ -628,7 +628,7 @@ class DelegateServiceTests(unittest.IsolatedAsyncioTestCase):
 
     # --- behavior 7: released-retention sweep -----------------------------------
 
-    async def test_retention_sweep_prunes_old_released_and_keeps_recent(self) -> None:
+    async def test_retention_sweep_prunes_old_terminal_and_keeps_recent(self) -> None:
         service, store = self._service(delegate_released_retention_seconds=600.0)
         now = datetime.now(UTC)
         old = await self._raw_record(
@@ -647,23 +647,78 @@ class DelegateServiceTests(unittest.IsolatedAsyncioTestCase):
             summary="just released",
         )
         await store.save_messages(recent.id, [Message(role="user", content="fresh work")])
+        # failed/cancelled rows carry no released_at — their terminal
+        # last_activity_at is the retention clock.
+        failed_old = await self._raw_record(
+            store,
+            id="run-failed-old",
+            status=DelegateRunStatus.FAILED,
+            last_activity_at=now - timedelta(hours=3),
+            error={"code": "boom"},
+            summary="crashed mid-run",
+        )
+        await store.save_messages(failed_old.id, [Message(role="user", content="failed work")])
+        cancelled_recent = await self._raw_record(
+            store,
+            id="run-cancelled-new",
+            status=DelegateRunStatus.CANCELLED,
+            last_activity_at=now - timedelta(seconds=30),
+        )
+        await store.save_messages(
+            cancelled_recent.id, [Message(role="user", content="fresh cancel")]
+        )
 
         # Retention pruning is not expiry: no rows transition, nothing "expired".
         expired = await service.expire_stale(now=now)
         self.assertEqual(expired, [])
 
-        old_row = await store.get_run(old.id)
-        self.assertIsNotNone(old_row)
-        self.assertEqual(old_row.status, DelegateRunStatus.RELEASED)
-        self.assertEqual(old_row.summary, "finished the report")  # audit row survives
-        self.assertEqual(await store.load_messages(old.id), [])
-        recent_row = await store.get_run(recent.id)
-        self.assertIsNotNone(recent_row)
-        self.assertEqual(recent_row.status, DelegateRunStatus.RELEASED)
-        self.assertNotEqual(await store.load_messages(recent.id), [])
+        for pruned in (old, failed_old):
+            row = await store.get_run(pruned.id)
+            self.assertIsNotNone(row)
+            self.assertEqual(row.status, pruned.status)
+            self.assertEqual(row.summary, "finished the report" if pruned is old else "crashed mid-run")
+            self.assertEqual(await store.load_messages(pruned.id), [])
+        for kept in (recent, cancelled_recent):
+            row = await store.get_run(kept.id)
+            self.assertIsNotNone(row)
+            self.assertEqual(row.status, kept.status)
+            self.assertNotEqual(await store.load_messages(kept.id), [])
 
         # Idempotent: pruning an already-empty mailbox is a no-op.
         self.assertEqual(await service.expire_stale(now=now), [])
+
+    async def test_retention_does_not_reprune_or_starve(self) -> None:
+        service, store = self._service(delegate_released_retention_seconds=600.0)
+        now = datetime.now(UTC)
+        rows = []
+        for i in range(3):
+            row = await self._raw_record(
+                store,
+                id=f"run-rel-{i}",
+                status=DelegateRunStatus.RELEASED,
+                released_at=now - timedelta(hours=3, minutes=-i),
+                summary=f"report {i}",
+            )
+            await store.save_messages(row.id, [Message(role="user", content=f"work {i}")])
+            rows.append(row)
+
+        deleted: list[str] = []
+        original = store.delete_messages
+
+        async def _counting(run_id: str) -> None:
+            deleted.append(run_id)
+            await original(run_id)
+
+        store.delete_messages = _counting  # type: ignore[method-assign]
+
+        self.assertEqual(await service.expire_stale(now=now), [])
+        self.assertEqual(sorted(deleted), sorted(row.id for row in rows))
+
+        # Pruned rows are excluded from subsequent due queries: no re-prune
+        # churn, no no-op deletes, no log spam on later sweeps.
+        deleted.clear()
+        self.assertEqual(await service.expire_stale(now=now), [])
+        self.assertEqual(deleted, [])
 
     # --- behavior 7: orphan recovery never replays ------------------------------
 
