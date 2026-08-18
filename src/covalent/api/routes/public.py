@@ -23,6 +23,7 @@ from covalent.api.auth import require_memory_mode_allowed
 from covalent.api.auth import require_scope
 from covalent.api.auth import require_trace_level_allowed
 from covalent.application.errors import ApplicationError
+from covalent.application.errors import ConflictError
 from covalent.application.schemas import PublicAgentInvokeRequest
 from covalent.application.schemas import PublicAgentInvokeResponse
 from covalent.application.services.invoke_service import (
@@ -221,6 +222,32 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
             metadata=invoke_request.metadata,
         )
         raise HTTPException(status_code=status_code, detail=exc.detail) from exc
+    except RuntimeError as exc:
+        # The run paused on ask_user (the stream ended with input_required and
+        # no final). HITL is only supported on the streaming endpoint, so map
+        # the runtime's generic "no final response" failure to a typed
+        # conflict; any other RuntimeError keeps propagating untouched.
+        if str(exc) != "Runtime completed without a final response":
+            raise
+        latency_ms = int((perf_counter() - started) * 1000)
+        await _record_public_agent_run(
+            db_manager,
+            principal=principal,
+            run_id=run_id,
+            agent_name=agent.name,
+            memory_mode=memory_mode,
+            session_id=session_id,
+            status="failed",
+            latency_ms=latency_ms,
+            provider=agent.provider.provider,
+            model=agent.provider.model,
+            usage={},
+            error={"code": "input_required", "message": str(exc)},
+            metadata=invoke_request.metadata,
+        )
+        raise ConflictError(
+            "This agent requested user input; user input is only supported on the streaming endpoint"
+        ) from exc
     finally:
         with anyio.CancelScope(shield=True):
             await _cleanup_stateless_scope()

@@ -534,14 +534,20 @@ class ReactAgentRuntime(AgentRuntime):
                 event_name = str(event.get("event") or "")
                 if event_name == "final":
                     final_response = GenerationResponse.model_validate(event["payload"])
-                elif event_name == "input_required":
-                    blocking_input = UserInputRequest.model_validate(event["payload"])
                 elif event_name == "assistant":
                     payload = event.get("payload")
                     if isinstance(payload, dict):
                         text = str(payload.get("text") or "").strip()
                         if text:
                             last_assistant_text = text
+                elif event_name == "input_required" and self.delegate_coordinator is None:
+                    # Legacy promotion: capture the child input_required so it
+                    # surfaces at this run's own boundary. In stateful mode this
+                    # branch is unreachable (the coordinator branch above
+                    # replaced the legacy delegate execution), and the guard
+                    # keeps it dead: a child input_required there is a violation
+                    # handled by _execute_delegate_turn, never a promotion.
+                    blocking_input = UserInputRequest.model_validate(event["payload"])
                 delegate_trace_event = self._decorate_delegate_event(
                     event,
                     parent_agent=agent,
@@ -649,8 +655,10 @@ class ReactAgentRuntime(AgentRuntime):
             name=tool_call.name,
             content=result.model_dump_json(),
             tool_call_id=tool_call.id,
-            # A waiting_parent envelope carries the pending request so the
-            # parent stream can surface its own parent_input_required boundary.
+            # A waiting_parent envelope carries the pending request for stream
+            # consumers (tool-result trace payloads); it never pauses the
+            # parent stream — the envelope is an ordinary tool result the
+            # parent answers with delegate_send or escalates from.
             parent_request=result.request,
         )
 
@@ -702,8 +710,10 @@ class ReactAgentRuntime(AgentRuntime):
             name=tool_call.name,
             content=result.model_dump_json(),
             tool_call_id=tool_call.id,
-            # A waiting_parent envelope carries the pending request so the
-            # parent stream can surface its own parent_input_required boundary.
+            # A waiting_parent envelope carries the pending request for stream
+            # consumers (tool-result trace payloads); it never pauses the
+            # parent stream — the envelope is an ordinary tool result the
+            # parent answers with delegate_send or escalates from.
             parent_request=result.request,
         )
 
@@ -1452,7 +1462,17 @@ class ReactAgentRuntime(AgentRuntime):
             messages.extend(tool_messages)
             generation_messages.extend(message.model_copy(deep=True) for message in tool_messages)
             parent_request = next(
-                (result.parent_request for result in tool_results if result.parent_request is not None),
+                (
+                    result.parent_request
+                    for result in tool_results
+                    # Only this run's OWN ask_parent call pauses the stream. A
+                    # waiting-parent envelope (agent__<name> / delegate_send
+                    # result carrying parent_request) is an ordinary tool
+                    # result: the parent keeps its ReAct loop and decides
+                    # whether to answer with delegate_send or escalate (a root
+                    # parent escalates through its own ask_user).
+                    if result.parent_request is not None and result.name == ASK_PARENT_TOOL
+                ),
                 None,
             )
             if parent_request is not None:

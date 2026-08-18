@@ -25,7 +25,6 @@ from covalent.core.types import (
     GenerationRequest,
     GenerationResponse,
     Message,
-    ParentInputRequest,
     RunContext,
     TokenUsage,
     ToolCall,
@@ -47,6 +46,7 @@ from covalent.skills.meta_tools import (
 from covalent.skills.spec import ManifestSkillSpec
 
 from tests.helpers import (
+    _EnvelopeRunIdAdapter,
     ScriptedModelAdapter,
     make_test_agent,
     make_test_registry,
@@ -674,46 +674,14 @@ def _fake_ask_user_handler(_args, _ctx):
     )
 
 
-def _latest_delegate_run_id(messages: list[Message]) -> str | None:
-    """The newest delegate run id visible in the conversation's tool-result
-    envelopes, so scripted lifecycle calls can target runs whose ids are only
-    generated at runtime."""
-    for message in reversed(messages):
-        if message.role != "tool":
-            continue
-        try:
-            payload = json.loads(str(message.content))
-        except ValueError:
-            continue
-        if isinstance(payload, dict) and isinstance(payload.get("delegate_run_id"), str):
-            return payload["delegate_run_id"]
-    return None
-
-
-class _EnvelopeRunIdAdapter(ScriptedModelAdapter):
-    """Fills an empty ``delegate_run_id`` argument on scripted delegate_send /
-    delegate_release calls with the newest run id found in the conversation."""
-
-    async def generate(self, request: GenerationRequest) -> GenerationResponse:
-        response = await super().generate(request)
-        run_id = _latest_delegate_run_id(request.messages)
-        if run_id is None:
-            return response
-        for tool_call in response.tool_calls:
-            if tool_call.name not in ("delegate_send", "delegate_release"):
-                continue
-            if not str(tool_call.arguments.get("delegate_run_id") or "").strip():
-                tool_call.arguments = {**tool_call.arguments, "delegate_run_id": run_id}
-        return response
-
-
 class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
     """Stateful delegate path: the runtime drives DelegateService-backed runs.
 
     Delegate tool calls return JSON envelopes, children see ask_parent instead
     of ask_user, delegate memory is isolated per run, and a waiting_parent
-    pause surfaces at the ROOT as a parent_input_required event — never as a
-    top-level input_required.
+    pause surfaces to the parent as an ordinary envelope tool result — the
+    parent answers with delegate_send or escalates on its own, and a waiting
+    child never becomes a top-level input_required.
     """
 
     @staticmethod
@@ -847,6 +815,7 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         fixture = self._build(
             parent_responses=[
                 tool_call_response("agent__child", arguments={"input": "Deploy the service"}, call_id="pc-1"),
+                text_response("The deployer needs a target; I will report back."),
             ],
             child_responses=[
                 tool_call_response(
@@ -868,14 +837,19 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         events = await self._collect(fixture.runtime, fixture.parent, "Deploy it", parent_context)
 
-        # The pause is a parent_input_required event; no root input_required ever fires.
-        self.assertFalse([e for e in events if e["event"] == "input_required"])
-        self.assertFalse([e for e in events if e["event"] == "delegate_input_required"])
-        pauses = [e for e in events if e["event"] == "parent_input_required"]
-        self.assertEqual(len(pauses), 1)
-        request = ParentInputRequest.model_validate(pauses[0]["payload"])
-        self.assertEqual(request.title, "Need target")
-        self.assertEqual(request.tool_call_id, "ask-1")
+        # The child's pause never surfaces as a stream boundary at the root:
+        # the waiting envelope is an ordinary tool result, the parent keeps its
+        # ReAct loop, and no input_required of any kind fires.
+        self.assertFalse(
+            [e for e in events if e["event"] in ("input_required", "delegate_input_required", "parent_input_required")]
+        )
+        self.assertTrue([e for e in events if e["event"] == "final"])
+
+        # The parent's second model call saw the waiting envelope as its
+        # agent__child tool result and answered on its own.
+        second_request_messages = fixture.parent_model.received_requests[1].messages
+        envelope_text = " ".join(str(m.content) for m in second_request_messages if m.role == "tool")
+        self.assertIn("waiting_parent", envelope_text)
 
         # The persisted parent transcript carries the waiting envelope through
         # the assistant agent__child tool call.
@@ -1172,14 +1146,13 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
             agent_name="parent", session_id="s1", execution_scope_id="scope-1"
         )
 
-        # Turn 1: the child pauses on ask_parent and the parent stream ends at
-        # its own parent_input_required boundary.
-        first = await self._collect(fixture.runtime, fixture.parent, "Deploy it", parent_context)
-        self.assertEqual(len([e for e in first if e["event"] == "parent_input_required"]), 1)
-
-        # Turn 2: the parent answers via delegate_send; the child resumes from
-        # its saved memory and finishes the turn.
-        second = await self._collect(fixture.runtime, fixture.parent, "", parent_context)
+        # One parent stream: the child pauses on ask_parent, the parent sees
+        # the waiting envelope as its tool result, and answers it with
+        # delegate_send in its next model response — no user input involved.
+        events = await self._collect(fixture.runtime, fixture.parent, "Deploy it", parent_context)
+        self.assertFalse(
+            [e for e in events if e["event"] in ("input_required", "delegate_input_required", "parent_input_required")]
+        )
 
         # The lifecycle tools are exposed to the root agent.
         exposed = {
@@ -1212,7 +1185,7 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         envelope = DelegateRunResult.model_validate(
-            json.loads(self._tool_result_content(second, "ps-1"))
+            json.loads(self._tool_result_content(events, "ps-1"))
         )
         self.assertEqual(envelope.status, DelegateRunStatus.IDLE)
         self.assertEqual(envelope.output, "Resolved with Docker")
@@ -1221,7 +1194,7 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         # The send turn's child events flowed through the parent stream.
         send_finals = [
-            e["payload"] for e in second
+            e["payload"] for e in events
             if e["event"] == "delegate_final"
             and e["payload"].get("delegate_tool_call_id") == "ps-1"
         ]

@@ -69,7 +69,6 @@ from covalent.application.schemas import (
     ConsoleAccountUpdateRequest,
     ConsoleLoginRequest,
     ConsoleRegisterRequest,
-    ApiTokenUpdateRequest,
     normalize_username,
 )
 
@@ -1058,6 +1057,19 @@ class _FakeRuntime:
         )
 
 
+class _InputPausingRuntime:
+    """A runtime whose run pauses on user input: the stream ends with
+    input_required and no final, so ``run`` raises the generic
+    "completed without a final response" error the route must map."""
+
+    def __init__(self) -> None:
+        self.run_calls = 0
+
+    async def run(self, agent, input_value, context):
+        self.run_calls += 1
+        raise RuntimeError("Runtime completed without a final response")
+
+
 class PublicAgentInvokeEndToEndTests(unittest.TestCase):
     def test_multi_user_tokens_enforce_agent_isolation_rate_limits_and_audit(self) -> None:
         state = _PublicApiFakeDbState()
@@ -1157,6 +1169,63 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
         self.assertEqual({row.actor_user_id for row in denied_audits}, {"user_1", "user_2", None})
         self.assertEqual({row.metadata_json["status_code"] for row in denied_audits}, {401, 403, 429})
         self.assertTrue(any(row.action == "agent.invoke" and row.outcome == "completed" for row in state.audit_logs))
+
+    def test_non_stream_invoke_maps_input_pause_to_typed_conflict(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.users["user_1"] = UserRow(id="user_1", email="u1@example.com", display_name="User 1", role="member", status="active")
+        token, prefix = generate_api_token()
+        state.add_token(
+            raw_token=token,
+            token_prefix=prefix,
+            token_id="token_1",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            policy={},
+        )
+        state.agents["pausing-agent"] = AgentRow(
+            name="pausing-agent",
+            display_name=None,
+            owner_user_id="user_1",
+            workspace_id="workspace_1",
+            visibility="private",
+            publication_status="draft",
+            description="Pausing agent",
+            system_prompt="You pause.",
+            provider_name="openai_compatible",
+            provider_model="gpt-test",
+        )
+        registry = FrameworkRegistry()
+        registry.register_agent(
+            AgentSpec(
+                name="pausing-agent",
+                description="Pausing agent",
+                system_prompt="You pause.",
+                provider=ProviderConfig(provider="openai_compatible", model="gpt-test"),
+            )
+        )
+        runtime = _InputPausingRuntime()
+        app = create_app()
+        app.state.settings = AppSettings(api_token_hash_pepper="pepper")
+        app.state.db_manager = SimpleNamespace(session_factory=state.session_factory)
+        app.state.registry = registry
+        app.state.runtime = runtime
+        client = TestClient(app)
+
+        response = client.post(
+            "/v1/agent/invoke",
+            headers={"authorization": f"Bearer {token}"},
+            json={"agent": "pausing-agent", "input": "deploy it", "memory": {"mode": "none"}, "trace": {"level": "steps"}},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json()["detail"],
+            "This agent requested user input; user input is only supported on the streaming endpoint",
+        )
+        self.assertEqual(runtime.run_calls, 1)
+        self.assertEqual(len(state.run_logs), 1)
+        self.assertEqual(state.run_logs[0].status, "failed")
+        self.assertEqual(state.run_logs[0].error_json["code"], "input_required")
 
     def test_token_policy_enforces_daily_request_and_token_quotas(self) -> None:
         state = _PublicApiFakeDbState()
