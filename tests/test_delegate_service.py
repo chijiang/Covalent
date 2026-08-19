@@ -235,6 +235,85 @@ class DelegateServiceTests(unittest.IsolatedAsyncioTestCase):
                 parent_context=handle.context,
             )
 
+    async def test_scope_quota_counts_active_runs_only(self) -> None:
+        """The per-scope quota gates concurrent ACTIVE runs, not lifetime
+        starts: releasing (or failing) a run frees its slot — otherwise
+        start→release cycles would brick delegation with an unclearable
+        DelegateQuotaError."""
+        service, _ = self._service(delegate_max_runs_per_scope=1)
+        handle = await self._start(service)
+        with self.assertRaises(DelegateQuotaError):
+            await self._start(service)
+
+        released = await service.release(
+            actor=self._root_actor(), delegate_run_id=handle.run.id, reason="done"
+        )
+        self.assertEqual(released.status, DelegateRunStatus.RELEASED)
+        second = await self._start(service)
+        self.assertEqual(second.run.status, DelegateRunStatus.RUNNING)
+
+        # Terminal rows of every flavor accumulate as audit records without
+        # ever counting against the quota.
+        await service.report_outcome(
+            second.run.id, DelegateTurnOutcome(status="failed", error={"code": "boom"})
+        )
+        third = await self._start(service)
+        await service.report_outcome(third.run.id, DelegateTurnOutcome(status="cancelled"))
+        fourth = await self._start(service)
+        self.assertEqual(fourth.run.status, DelegateRunStatus.RUNNING)
+
+    async def test_running_lease_is_floored_to_a_positive_minimum(self) -> None:
+        """delegate_running_lease_seconds=0 has no "disable" meaning — it
+        would make every RUNNING row instantly orphan-eligible. The service
+        floors the lease to a sane minimum so a misconfiguration cannot
+        insta-fail all running rows."""
+        service, store = self._service(delegate_running_lease_seconds=0.0)
+        now = datetime.now(UTC)
+        fresh = await self._raw_record(
+            store,
+            id="run-fresh",
+            status=DelegateRunStatus.RUNNING,
+            last_activity_at=now - timedelta(seconds=30),
+        )
+
+        self.assertEqual(await service.recover_orphans(now=now), [])
+        row = await store.get_run(fresh.id)
+        assert row is not None
+        self.assertEqual(row.status, DelegateRunStatus.RUNNING)
+
+        # Past the floor the lease applies again (an unfloored 0 would have
+        # failed the row on the very first sweep above).
+        failed = await service.recover_orphans(now=now + timedelta(seconds=120))
+        self.assertEqual(failed, [fresh.id])
+
+    async def test_touch_activity_keeps_running_row_alive_through_sweep(self) -> None:
+        """The runtime heartbeat: a RUNNING row whose last_activity_at is
+        older than the lease survives the sweep after a touch, while its
+        untouched sibling is correctly recovered as an orphan."""
+        service, store = self._service(delegate_running_lease_seconds=900.0)
+        now = datetime.now(UTC)
+        long_running = await self._raw_record(
+            store,
+            id="run-long",
+            status=DelegateRunStatus.RUNNING,
+            last_activity_at=now - timedelta(seconds=1800),
+        )
+        orphan = await self._raw_record(
+            store,
+            id="run-orphan",
+            status=DelegateRunStatus.RUNNING,
+            last_activity_at=now - timedelta(seconds=1800),
+        )
+
+        await service.touch_activity(long_running.id)
+
+        recovered = await service.recover_orphans(now=datetime.now(UTC) + timedelta(seconds=30))
+        self.assertEqual(recovered, [orphan.id])
+        survivor = await store.get_run(long_running.id)
+        assert survivor is not None
+        self.assertEqual(survivor.status, DelegateRunStatus.RUNNING)
+        self.assertGreater(survivor.last_activity_at, now)
+
     # --- behavior 3: report_outcome mapping ---------------------------------
 
     async def test_report_outcome_maps_statuses_and_errors(self) -> None:

@@ -231,6 +231,33 @@ class _DelegateRunStoreContract:
                 status=DelegateRunStatus.RUNNING,
             )
 
+    async def test_touch_activity_refreshes_without_version_bump(self) -> None:
+        """The lease heartbeat: one unversioned last_activity_at update, no
+        status change, and an idempotent no-op when the row is gone."""
+        created = await self.store.create_run(
+            self._record(
+                status=DelegateRunStatus.RUNNING,
+                last_activity_at=_FIXED_NOW - timedelta(hours=2),
+            )
+        )
+        await self.store.touch_activity(created.id)
+        touched = await self.store.get_run(created.id)
+        assert touched is not None
+        self.assertEqual(touched.version, created.version)
+        self.assertEqual(touched.status, DelegateRunStatus.RUNNING)
+        self.assertGreater(touched.last_activity_at, created.last_activity_at)
+        # A concurrent CAS transition still wins after a touch (the heartbeat
+        # must never break the optimistic protocol).
+        updated = await self.store.transition_run(
+            created.id,
+            expected_version=created.version,
+            from_statuses=(DelegateRunStatus.RUNNING,),
+            status=DelegateRunStatus.IDLE,
+        )
+        self.assertEqual(updated.version, created.version + 1)
+        # Missing row: idempotent no-op, never raises.
+        await self.store.touch_activity("missing-run")
+
     # --- messages -----------------------------------------------------------
 
     async def test_messages_round_trip_every_field(self) -> None:
@@ -344,8 +371,26 @@ class _DelegateRunStoreContract:
             ),
             1,
         )
-        self.assertEqual(await self.store.count_by_execution_scope("scope-1"), 5)
+        # The scope quota counts ACTIVE runs only: the released row no longer
+        # counts (5 rows live in scope-1, 4 active). Every terminal status is
+        # an audit record and never counts — otherwise start→release cycles
+        # would permanently exhaust the quota.
+        for run_id, terminal in (
+            ("run-t-cancelled", DelegateRunStatus.CANCELLED),
+            ("run-t-failed", DelegateRunStatus.FAILED),
+            ("run-t-expired", DelegateRunStatus.EXPIRED),
+        ):
+            await self.store.create_run(
+                self._record(
+                    id=run_id,
+                    execution_scope_id="scope-1",
+                    parent_delegate_run_id="run-parent",
+                    status=terminal,
+                )
+            )
+        self.assertEqual(await self.store.count_by_execution_scope("scope-1"), 4)
         self.assertEqual(await self.store.count_by_execution_scope("scope-2"), 1)
+        self.assertEqual(await self.store.count_by_execution_scope("scope-none"), 0)
 
     async def test_release_scope_marks_active_released(self) -> None:
         await self.store.create_run(

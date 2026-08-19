@@ -203,7 +203,10 @@ class DelegateRunStore(ABC):
     ) -> int: ...
 
     @abstractmethod
-    async def count_by_execution_scope(self, execution_scope_id: str) -> int: ...
+    async def count_by_execution_scope(self, execution_scope_id: str) -> int:
+        """Count ACTIVE runs in the execution scope. Terminal rows (released/
+        cancelled/failed/expired) are audit records — they never count against
+        the scope quota, or start→release cycles would permanently exhaust it."""
 
     @abstractmethod
     async def save_messages(self, run_id: str, messages: list[Message]) -> None: ...
@@ -213,6 +216,12 @@ class DelegateRunStore(ABC):
 
     @abstractmethod
     async def count_messages(self, run_id: str) -> int: ...
+
+    @abstractmethod
+    async def touch_activity(self, run_id: str) -> None:
+        """Refresh a run's lease heartbeat: a single ``last_activity_at``
+        update with no version bump and no status check; a no-op when the
+        row is gone."""
 
     @abstractmethod
     async def delete_messages(self, run_id: str) -> None: ...
@@ -356,6 +365,7 @@ class InMemoryDelegateRunStore(DelegateRunStore):
                 1
                 for record in self._runs.values()
                 if record.execution_scope_id == execution_scope_id
+                and record.status in ACTIVE_STATUSES
             )
 
     async def save_messages(self, run_id: str, messages: list[Message]) -> None:
@@ -369,6 +379,13 @@ class InMemoryDelegateRunStore(DelegateRunStore):
     async def count_messages(self, run_id: str) -> int:
         async with self._lock:
             return len(self._messages.get(run_id, []))
+
+    async def touch_activity(self, run_id: str) -> None:
+        async with self._lock:
+            record = self._runs.get(run_id)
+            if record is None:
+                return  # row gone — idempotent no-op
+            self._runs[run_id] = record.model_copy(update={"last_activity_at": _utcnow()})
 
     async def delete_messages(self, run_id: str) -> None:
         async with self._lock:
@@ -675,7 +692,10 @@ class PostgresDelegateRunStore(DelegateRunStore):
             count = await session.scalar(
                 select(func.count())
                 .select_from(DelegateRunRow)
-                .where(DelegateRunRow.execution_scope_id == execution_scope_id)
+                .where(
+                    DelegateRunRow.execution_scope_id == execution_scope_id,
+                    DelegateRunRow.status.in_(_active_values()),
+                )
             )
             return int(count or 0)
 
@@ -723,6 +743,18 @@ class PostgresDelegateRunStore(DelegateRunStore):
                 .where(DelegateMessageRow.delegate_run_id == run_id)
             )
             return int(count or 0)
+
+    async def touch_activity(self, run_id: str) -> None:
+        # Single unversioned UPDATE: heartbeats must not race the CAS protocol
+        # (bumping version would fail concurrent report_outcome transitions),
+        # and rowcount 0 (row gone) is an idempotent no-op.
+        async with self._session_factory() as session:
+            await session.execute(
+                update(DelegateRunRow)
+                .where(DelegateRunRow.id == run_id)
+                .values(last_activity_at=func.now())
+            )
+            await session.commit()
 
     async def delete_messages(self, run_id: str) -> None:
         async with self._session_factory() as session:

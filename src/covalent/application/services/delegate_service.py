@@ -68,6 +68,10 @@ _TERMINAL_STATUSES: tuple[DelegateRunStatus, ...] = (
 #: OLD threshold (far past), never a future one.
 _NEVER_DAYS = 100 * 365
 
+#: Lower bound for the stale-running lease. Unlike the TTLs, the lease has no
+#: meaningful "0 disables it" semantics — 0 would insta-fail every RUNNING row.
+_MIN_RUNNING_LEASE_SECONDS = 60.0
+
 _ASK_PARENT_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -301,6 +305,12 @@ class DelegateService:
         self._store = run_store
         self._settings = settings
         self.max_depth = settings.delegate_max_depth
+        # The running lease must stay positive: 0 (or a tiny misconfigured
+        # value) would make every RUNNING row instantly orphan-eligible on the
+        # next sweep. Floor it to a sane minimum instead.
+        self._running_lease_seconds = max(
+            settings.delegate_running_lease_seconds, _MIN_RUNNING_LEASE_SECONDS
+        )
 
     # --- helpers -------------------------------------------------------------
 
@@ -670,6 +680,15 @@ class DelegateService:
             run=resumed, agent=agent, context=context, initial_input=""
         )
 
+    # --- DelegateCoordinator: touch_activity -----------------------------------
+
+    async def touch_activity(self, run_id: str) -> None:
+        """Refresh a RUNNING run's lease heartbeat (called by the runtime as
+        child events stream past). A single unversioned store update; a no-op
+        when the row is gone. Never raises into the turn — the runtime already
+        guards the call."""
+        await self._store.touch_activity(run_id)
+
     # --- DelegateCoordinator: list_children / release ---------------------------
 
     async def list_children(self, *, actor: DelegateActor) -> list[dict[str, Any]]:
@@ -741,7 +760,7 @@ class DelegateService:
 
     async def recover_orphans(self, *, now: datetime | None = None) -> list[str]:
         current = now or datetime.now(UTC)
-        older_than = current - timedelta(seconds=self._settings.delegate_running_lease_seconds)
+        older_than = current - timedelta(seconds=self._running_lease_seconds)
         stale = await self._store.list_stale_running(older_than=older_than)
         failed_ids: list[str] = []
         for record in stale:

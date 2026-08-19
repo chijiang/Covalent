@@ -132,6 +132,11 @@ class DelegateCoordinator(Protocol):
         self, *, actor: DelegateActor, delegate_run_id: str, input_text: str
     ) -> DelegateRunHandle: ...
 
+    async def touch_activity(self, run_id: str) -> None:
+        """Refresh a RUNNING run's lease heartbeat: a single unversioned
+        ``last_activity_at`` update; a no-op when the row is gone."""
+        ...
+
     async def list_children(self, *, actor: DelegateActor) -> list[dict[str, Any]]: ...
 
     async def release(

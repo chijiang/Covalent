@@ -67,6 +67,12 @@ DELEGATE_LIFECYCLE_OUTCOME_EVENTS = {
     "cancelled": DELEGATE_LIFECYCLE_EVENT_CANCELLED,
 }
 
+#: Minimum spacing between lease heartbeats for one child turn. As child
+#: events stream past, the run's last_activity_at is refreshed at most this
+#: often, so a legitimately-running turn longer than the running lease is
+#: never failed as an orphan by the parent's next maintenance sweep.
+DELEGATE_HEARTBEAT_INTERVAL_SECONDS = 60.0
+
 DELEGATE_LIFECYCLE_POLICY = (
     "Delegates are stateful subagents. Calling agent__<name> starts a run and returns a JSON envelope: "
     "delegate_run_id, agent_name, status ('idle' or 'waiting_parent'), and either output or a request. "
@@ -825,6 +831,7 @@ class ReactAgentRuntime(AgentRuntime):
         final_response: GenerationResponse | None = None
         waiting_request: ParentInputRequest | None = None
         last_assistant_text = ""
+        last_heartbeat = perf_counter()
         try:
             await self._emit_lifecycle_event(
                 handle,
@@ -858,6 +865,25 @@ class ReactAgentRuntime(AgentRuntime):
             # user_input — the blank-input guard appends nothing and the task
             # text reaches the model exactly once.
             async for event in self.stream_events(handle.agent, "", handle.context):
+                # Lease heartbeat: each arriving child event proves the run is
+                # legitimately active, so periodically refresh last_activity_at
+                # (bounded to one touch per interval) — otherwise a turn longer
+                # than the running lease is failed as an orphan by the parent's
+                # next maintenance sweep. A failed touch never kills the turn.
+                if (
+                    coordinator is not None
+                    and perf_counter() - last_heartbeat
+                    >= DELEGATE_HEARTBEAT_INTERVAL_SECONDS
+                ):
+                    last_heartbeat = perf_counter()
+                    try:
+                        await coordinator.touch_activity(handle.run.id)
+                    except Exception:
+                        logger.warning(
+                            "heartbeat refresh failed for delegate run %s",
+                            handle.run.id,
+                            exc_info=True,
+                        )
                 event_name = str(event.get("event") or "")
                 if event_name == "parent_input_required":
                     # Known/intentional trace artifact: the child's ask_parent

@@ -38,6 +38,7 @@ from covalent.infra.settings import AppSettings
 from covalent.registry.registry import FrameworkRegistry
 from covalent.runtime.delegation import DelegateActor, DelegateTurnOutcome
 from covalent.runtime.memory_port import RuntimeMemoryAdapter
+from covalent.runtime import react as react_module
 from covalent.runtime.react import ReactAgentRuntime
 from covalent.skills.meta_tools import (
     READ_SKILL_INSTRUCTIONS_TOOL,
@@ -1438,6 +1439,45 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["is_error"])
         self.assertIn("store exploded", str(result["content"]))
         self.assertTrue([e for e in events if e["event"] == "final"])
+
+    async def test_delegate_turn_heartbeats_run_activity(self) -> None:
+        """As child events stream past, the runtime refreshes the run's
+        last_activity_at (bounded to one touch per heartbeat interval), so a
+        legitimately-running turn longer than the running lease is never
+        failed as an orphan by the parent's next maintenance sweep."""
+        fixture = self._build(
+            parent_responses=[],
+            child_responses=[text_response("Child answer")],
+            parent_model=ScriptedModelAdapter([
+                tool_call_response("agent__child", arguments={"input": "Long job"}, call_id="pc-1"),
+                text_response("Parent done"),
+            ]),
+        )
+        touched: list[str] = []
+        original_touch = fixture.service.touch_activity
+
+        async def _recording(run_id: str) -> None:
+            touched.append(run_id)
+            await original_touch(run_id)
+
+        fixture.service.touch_activity = _recording  # type: ignore[method-assign]
+
+        original_interval = react_module.DELEGATE_HEARTBEAT_INTERVAL_SECONDS
+        react_module.DELEGATE_HEARTBEAT_INTERVAL_SECONDS = 0.0  # touch on every event
+        try:
+            events = await self._collect(
+                fixture.runtime, fixture.parent, "Run it",
+                RunContext(agent_name="parent", session_id="s1", execution_scope_id="scope-1"),
+            )
+        finally:
+            react_module.DELEGATE_HEARTBEAT_INTERVAL_SECONDS = original_interval
+
+        envelope = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pc-1"))
+        )
+        self.assertEqual(envelope.status, DelegateRunStatus.IDLE)
+        self.assertIn(envelope.delegate_run_id, touched)
+        self.assertGreaterEqual(touched.count(envelope.delegate_run_id), 1)
 
     async def test_lifecycle_handle_never_stringifies_into_tool_result(self) -> None:
         """Defense in depth: if a lifecycle tool result carrying a raw
