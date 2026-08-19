@@ -69,7 +69,11 @@ async def list_agents(request: Request) -> list[dict[str, str]]:
     principal = await _resolve_console_principal(request, db_manager)
     agents = await config_store.get_document("agents", principal.config)
     return [
-        {"name": str(agent.get("name") or ""), "description": str(agent.get("description") or "")}
+        {
+            "name": str(agent.get("name") or ""),
+            "internal_name": str(agent.get("internal_name") or agent.get("name") or ""),
+            "description": str(agent.get("description") or ""),
+        }
         for agent in agents
         if str(agent.get("name") or "") and agent.get("enabled", True) is not False
     ]

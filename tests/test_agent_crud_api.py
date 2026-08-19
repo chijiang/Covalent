@@ -58,6 +58,19 @@ _AGENT_PAYLOAD: list[dict] = [{
     "allowed_outbound": [],
     "capabilities": ["chat", "react", "tool_calling", "streaming"],
     "max_iterations": 10,
+}, {
+    # An agent whose display name differs from its internal name. The console
+    # needs internal_name to reconcile chat sessions (which store the internal
+    # name) against the public agent list.
+    "name": "Story Teller",
+    "internal_name": "story-teller",
+    "description": "Display-named agent",
+    "system_prompt": "You are a helpful assistant.",
+    "provider": _DEFAULT_PROVIDER,
+    "local_tools": ["get_current_time"],
+    "allowed_outbound": [],
+    "capabilities": ["chat", "react", "tool_calling", "streaming"],
+    "max_iterations": 10,
 }]
 
 
@@ -178,6 +191,18 @@ class AgentCrudTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status_code, 200)
         names = [a["name"] for a in resp.json()]
         self.assertIn("default", names)
+
+    async def test_list_agents_exposes_internal_name(self) -> None:
+        """The console reconciles a chat session's stored internal agent name
+        against the public agent list via internal_name; without it a
+        display-named agent (name != internal_name) silently falls back to the
+        user's default agent."""
+        resp = self.client.get("/agents", headers={"Cookie": _admin_cookie(self.settings)})
+        self.assertEqual(resp.status_code, 200)
+        by_name = {a["name"]: a for a in resp.json()}
+        self.assertIn("Story Teller", by_name)
+        self.assertEqual(by_name["Story Teller"]["internal_name"], "story-teller")
+        self.assertEqual(by_name["default"]["internal_name"], "default")
 
     # ------------------------------------------------------------------
     # GET /agents/{name} — includes allowed_outbound

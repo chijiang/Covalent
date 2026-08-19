@@ -337,6 +337,16 @@ class FrameworkRegistry:
             parameters = tool.input_schema
             if not isinstance(parameters, dict):
                 parameters = {"type": "object", "properties": {}}
+            elif parameters.get("type") != "object":
+                # OpenAI-compatible providers reject parameters schemas without
+                # an explicit ``type: "object"`` (observed as: "schema must be a
+                # JSON Schema of 'type: \"object\"', got 'type: null'"). MCP
+                # servers emitting ``inputSchema: null`` reach here as empty or
+                # typed-null dicts; force the object type while keeping any
+                # declared properties.
+                parameters = {key: value for key, value in parameters.items() if key != "type"}
+                parameters["type"] = "object"
+                parameters.setdefault("properties", {})
             exported.append(
                 {
                     "type": "function",

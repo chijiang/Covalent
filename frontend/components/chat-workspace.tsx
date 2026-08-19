@@ -1032,8 +1032,13 @@ function pickAvailableAgentName(agents: AgentDetail[], ...candidates: Array<stri
     if (!normalized) {
       continue;
     }
-    if (agents.some((agent) => agent.name === normalized)) {
-      return normalized;
+    // A chat session stores the agent's internal name while the list carries
+    // the public display name (agents may have display_name != internal name,
+    // e.g. "Skill Writer" for "default"). Match on either, and return the
+    // public name so the selection stays consistent with the picker options.
+    const matched = agents.find((agent) => agent.name === normalized || agent.internal_name === normalized);
+    if (matched) {
+      return matched.name;
     }
   }
   return agents[0]?.name || "";

@@ -55,7 +55,12 @@ class McpSdkClient(McpClient):
             raise ValueError(f"MCP server '{server.name}' is missing a URL")
 
         if server.transport == "streamable_http":
-            async with streamable_http_client(server.url) as (read, write, _):
+            # mcp SDK 1.x yields (read, write, get_session_id); 2.0.0 yields
+            # (read, write). Unpack shape-agnostically — a fixed 3-tuple unpack
+            # raises ValueError inside the SDK's TaskGroup, which the API layer
+            # then reports as an opaque "unhandled errors in a TaskGroup".
+            async with streamable_http_client(server.url) as streams:
+                read, write = streams[0], streams[1]
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     yield session

@@ -79,6 +79,11 @@ export type AgentSummary = {
 
 export type AgentDetail = {
   name: string;
+  /** Registry-internal name when it differs from the public display name
+   * (e.g. the default agent with display_name "Skill Writer"). Chat sessions
+   * store the internal name; the UI reconciles against the public list via
+   * this field. */
+  internal_name?: string | null;
   description: string;
   system_prompt: string;
   reasoning_prompt: string;
