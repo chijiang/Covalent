@@ -18,6 +18,9 @@ from covalent.runtime.base import AgentRuntime
 from covalent.runtime.backend import ExecutionBindingResolver
 from covalent.runtime.context_window_manager import ContextWindowManager
 from covalent.runtime.delegation import (
+    ASK_PARENT_TOOL,
+    DELEGATE_LIFECYCLE_TOOLS,
+    DELEGATE_RELEASE_TOOL,
     DelegateActor,
     DelegateCoordinator,
     DelegateRunHandle,
@@ -41,17 +44,6 @@ DELEGATE_FORWARDABLE_EVENTS = {
     "context_window",
     "model_call",
 }
-
-#: Local tool a delegated run uses to pause and ask its parent (registered by
-#: the application layer; the runtime only filters/exposes the schema).
-ASK_PARENT_TOOL = "ask_parent"
-
-#: Lifecycle tools for stateful delegate runs (registered by the application
-#: layer). Exposed at root only, never inside a delegated run.
-DELEGATE_SEND_TOOL = "delegate_send"
-DELEGATE_LIST_TOOL = "delegate_list"
-DELEGATE_RELEASE_TOOL = "delegate_release"
-DELEGATE_LIFECYCLE_TOOLS = (DELEGATE_SEND_TOOL, DELEGATE_LIST_TOOL, DELEGATE_RELEASE_TOOL)
 
 #: Delegate lifecycle SSE event names, emitted from the stateful paths into
 #: the parent stream. Mirrored as SSE_EVENT_DELEGATE_* constants in
@@ -257,7 +249,18 @@ class ReactAgentRuntime(AgentRuntime):
                     parent_iteration=iteration,
                     event_sink=event_sink,
                 )
-            return await self.registry.execute_tool_call(agent, tc, context)
+            result = await self.registry.execute_tool_call(agent, tc, context)
+            if isinstance(result.content, DelegateRunHandle):
+                # A lifecycle-tool marker reached the generic execution path
+                # (no coordinator rewiring — e.g. a mis-wired assembly). Never
+                # let the handle stringify into the model-visible transcript.
+                return ToolResult(
+                    name=tc.name,
+                    content="delegate lifecycle tool executed outside the stateful runtime",
+                    tool_call_id=tc.id,
+                    is_error=True,
+                )
+            return result
 
         # Delegate subagents run concurrently: events from each are tagged with
         # delegate_tool_call_id by _delegate_trace_metadata, so interleaved events
@@ -657,6 +660,15 @@ class ReactAgentRuntime(AgentRuntime):
                 tool_call_id=tool_call.id,
                 is_error=True,
             )
+        except Exception as exc:
+            # Raw store/DB failures must not kill the parent run (the legacy
+            # path wrapped everything); surface them as error tool results.
+            return ToolResult(
+                name=tool_call.name,
+                content=str(exc),
+                tool_call_id=tool_call.id,
+                is_error=True,
+            )
         try:
             await self._emit_lifecycle_event(
                 handle,
@@ -727,15 +739,20 @@ class ReactAgentRuntime(AgentRuntime):
         coordinator = self.delegate_coordinator
         if coordinator is None:  # pragma: no cover - caller-checked branch
             raise RuntimeError("delegate lifecycle tools require a coordinator")
-        handled = await self.registry.execute_tool_call(agent, tool_call, context)
-        if not isinstance(handled.content, DelegateRunHandle):
-            await self._emit_released_lifecycle_event(
-                agent, tool_call, context, parent_iteration, handled, event_sink
-            )
-            return handled
-        handle = handled.content
         parent_context = context if context is not None else RunContext(agent_name=agent.name)
         try:
+            handled = await self.registry.execute_tool_call(agent, tool_call, context)
+            if not isinstance(handled.content, DelegateRunHandle):
+                # list/release pass through; the released-event emission is
+                # inside this try so a registry that lost the delegate agent
+                # (deleted after the run went terminal — release on a terminal
+                # run is legal) degrades to an error tool result instead of
+                # crashing the parent stream.
+                await self._emit_released_lifecycle_event(
+                    agent, tool_call, context, parent_iteration, handled, event_sink
+                )
+                return handled
+            handle = handled.content
             await self._emit_lifecycle_event(
                 handle,
                 event_name=DELEGATE_LIFECYCLE_EVENT_RESUMED,
@@ -1095,18 +1112,36 @@ class ReactAgentRuntime(AgentRuntime):
             return
         released = DelegateRunResult.model_validate_json(str(handled.content))
         reason = str(tool_call.arguments.get("reason") or "")
+        try:
+            delegate_agent = self.registry.get_agent(released.agent_name)
+        except KeyError:
+            # The delegate agent was deleted after the run went terminal;
+            # releasing a terminal run is legal, so emit envelope-only trace
+            # metadata (same fields, sourced from the envelope and this call)
+            # instead of letting the missing agent crash the parent stream.
+            chain = list((context.metadata if context else {}).get("delegation_chain", []))
+            metadata: dict[str, Any] = {
+                "agent_name": released.agent_name,
+                "delegated_by": parent_agent.name,
+                "delegate_tool_name": tool_call.name,
+                "delegate_tool_call_id": tool_call.id,
+                "delegation_depth": len(chain) + 1,
+                "parent_iteration": parent_iteration,
+            }
+        else:
+            metadata = self._delegate_trace_metadata(
+                parent_agent=parent_agent,
+                delegate_agent=delegate_agent,
+                tool_call=tool_call,
+                context=context,
+                parent_iteration=parent_iteration,
+            )
         await event_sink(self._delegate_lifecycle_event(
             event_name=DELEGATE_LIFECYCLE_EVENT_RELEASED,
             run_id=released.delegate_run_id,
             status="released",
             summary=f"Released: {reason or 'by parent'}",
-            metadata=self._delegate_trace_metadata(
-                parent_agent=parent_agent,
-                delegate_agent=self.registry.get_agent(released.agent_name),
-                tool_call=tool_call,
-                context=context,
-                parent_iteration=parent_iteration,
-            ),
+            metadata=metadata,
         ))
 
     def _decorate_delegate_event(
@@ -1430,10 +1465,25 @@ class ReactAgentRuntime(AgentRuntime):
         )
         if delegated:
             # Delegated runs never ask the end user directly: swap ask_user for
-            # ask_parent (when registered).
-            tools = [t for t in tools if t.get("function", {}).get("name") != "ask_user"]
+            # ask_parent (when registered). A delegate that itself owns
+            # delegates (nested delegation) also gets the lifecycle tools,
+            # coordinator-gated exactly like the root branch: its children's
+            # ask_parent pauses are answered by THIS run with delegate_send,
+            # never escalated to the root by omission.
+            tools = [
+                t for t in tools
+                if t.get("function", {}).get("name") != "ask_user"
+                and t.get("function", {}).get("name") not in DELEGATE_LIFECYCLE_TOOLS
+                and t.get("function", {}).get("name") != ASK_PARENT_TOOL
+            ]
             if ASK_PARENT_TOOL in self.registry.local_tools:
                 tools.append(self.registry.local_tools[ASK_PARENT_TOOL].schema)
+            if self.delegate_coordinator is not None and agent.delegate_agents:
+                tools.extend(
+                    self.registry.local_tools[name].schema
+                    for name in DELEGATE_LIFECYCLE_TOOLS
+                    if name in self.registry.local_tools
+                )
         else:
             tools = [
                 t for t in tools

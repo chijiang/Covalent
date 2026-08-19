@@ -25,6 +25,7 @@ from covalent.core.types import (
     GenerationRequest,
     GenerationResponse,
     Message,
+    ParentInputRequest,
     RunContext,
     TokenUsage,
     ToolCall,
@@ -1271,6 +1272,250 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
             and e["payload"].get("delegate_tool_call_id") == "ps-1"
         )
         self.assertEqual(idle_payload["status"], "idle")
+
+    async def test_nested_delegate_gets_lifecycle_tools_and_answers_grandchild(self) -> None:
+        """A delegate that itself owns delegates receives the lifecycle tools:
+        the MIDDLE run answers a grandchild's ask_parent with delegate_send
+        inside its own turn — the grandchild resumes and completes without the
+        root ever intervening (one level deeper than the root-answers test)."""
+        grand_model = ScriptedModelAdapter([
+            tool_call_response(
+                "ask_parent",
+                arguments={
+                    "title": "Need target",
+                    "questions": [{"header": "Target", "question": "Which target?"}],
+                },
+                call_id="ask-1",
+            ),
+            text_response("Grand done"),
+        ])
+        fixture = self._build(
+            parent_responses=[],
+            child_responses=[],
+            child_model=_EnvelopeRunIdAdapter([
+                tool_call_response("agent__grand", arguments={"input": "go deeper"}, call_id="cc-1"),
+                tool_call_response(
+                    "delegate_send",
+                    arguments={"delegate_run_id": "", "input": "Use Docker"},
+                    call_id="cs-1",
+                ),
+                text_response("Child done"),
+            ]),
+            child_delegate_agents=["grand"],
+            extra_agents={"grand": grand_model},
+            parent_model=ScriptedModelAdapter([
+                tool_call_response("agent__child", arguments={"input": "Do the nested job"}, call_id="pc-1"),
+                text_response("Parent done"),
+            ]),
+        )
+        parent_context = RunContext(
+            agent_name="parent", session_id="s1", execution_scope_id="scope-1"
+        )
+
+        events = await self._collect(fixture.runtime, fixture.parent, "Go nested", parent_context)
+
+        # The middle delegate's tool schema carries both delegation surfaces:
+        # ask_parent (it is delegated) and the lifecycle tools (it owns the
+        # grandchild run and must be able to answer it with delegate_send).
+        child_tool_names = {
+            t["function"]["name"] for t in fixture.child_model.received_requests[1].tools
+        }
+        self.assertIn("delegate_send", child_tool_names)
+        self.assertIn("delegate_list", child_tool_names)
+        self.assertIn("delegate_release", child_tool_names)
+        self.assertIn("ask_parent", child_tool_names)
+        self.assertNotIn("ask_user", child_tool_names)
+
+        # The grandchild paused on ask_parent and its DIRECT parent answered:
+        # the resumed grandchild request ends with the ask-1 tool answer.
+        grand_second_messages = grand_model.received_requests[-1].messages
+        self.assertEqual(grand_second_messages[-1].role, "tool")
+        self.assertEqual(grand_second_messages[-1].tool_call_id, "ask-1")
+        self.assertIn("Use Docker", str(grand_second_messages[-1].content))
+
+        # The send leg's envelope surfaced inside the child's turn traces and
+        # completed idle; the child and grandchild rows both ended idle.
+        send_results = []
+        for event in events:
+            if event["event"] != "delegate_tool_results":
+                continue
+            for result in event["payload"]["results"]:
+                if result.get("tool_call_id") == "cs-1":
+                    send_results.append(result)
+        self.assertTrue(send_results, "the middle delegate's send result must appear in traces")
+        grand_envelope = DelegateRunResult.model_validate(
+            json.loads(str(send_results[0]["content"]))
+        )
+        self.assertEqual(grand_envelope.status, DelegateRunStatus.IDLE)
+        self.assertEqual(grand_envelope.output, "Grand done")
+        grand_row = await fixture.run_store.get_run(grand_envelope.delegate_run_id)
+        self.assertEqual(grand_row.status, DelegateRunStatus.IDLE)
+        self.assertEqual(grand_row.parent_agent_name, "child")
+
+        child_envelope = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(events, "pc-1"))
+        )
+        self.assertEqual(child_envelope.status, DelegateRunStatus.IDLE)
+        self.assertEqual(child_envelope.output, "Child done")
+
+    async def test_delegate_release_survives_deleted_delegate_agent(self) -> None:
+        """Release on a terminal run is legal even after the delegate agent
+        was deleted from the registry: the released envelope comes back as the
+        tool result and the delegate_released event still fires — never a
+        crash of the parent stream from the missing agent lookup."""
+        fixture = self._build(
+            parent_responses=[],
+            child_responses=[text_response("Child answer")],
+            parent_model=_EnvelopeRunIdAdapter([
+                tool_call_response("agent__child", arguments={"input": "One job"}, call_id="pc-1"),
+                text_response("Started"),
+            ]),
+        )
+        parent_context = RunContext(
+            agent_name="parent", session_id="s1", execution_scope_id="scope-1"
+        )
+        first = await self._collect(fixture.runtime, fixture.parent, "Run it", parent_context)
+        envelope = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(first, "pc-1"))
+        )
+        self.assertEqual(envelope.status, DelegateRunStatus.IDLE)
+
+        # The delegate agent is removed from the registry after the run went
+        # terminal (agent deletion is only blocked while runs are ACTIVE).
+        del fixture.registry.agents["child"]
+        release_model = _EnvelopeRunIdAdapter([
+            tool_call_response(
+                "delegate_release",
+                arguments={"delegate_run_id": "", "reason": "finished"},
+                call_id="pr-1",
+            ),
+            text_response("Cleaned up"),
+        ])
+        fixture.registry.model_providers[fixture.parent.provider.cache_key()] = release_model
+
+        second = await self._collect(fixture.runtime, fixture.parent, "Clean up", parent_context)
+
+        released = DelegateRunResult.model_validate(
+            json.loads(self._tool_result_content(second, "pr-1"))
+        )
+        self.assertEqual(released.status, DelegateRunStatus.RELEASED)
+        self.assertEqual(released.delegate_run_id, envelope.delegate_run_id)
+        self.assertFalse(self._tool_result(second, "pr-1")["is_error"])
+        # The release still surfaces as a lifecycle event, with envelope-only
+        # trace metadata now that the agent spec is gone.
+        released_events = [e for e in second if e["event"] == "delegate_released"]
+        self.assertEqual(len(released_events), 1)
+        payload = released_events[0]["payload"]
+        self.assertEqual(payload["delegate_run_id"], envelope.delegate_run_id)
+        self.assertEqual(payload["agent_name"], "child")
+        self.assertEqual(payload["delegated_by"], "parent")
+        # The parent stream completed normally.
+        self.assertTrue([e for e in second if e["event"] == "final"])
+
+    async def test_stateful_start_raw_store_failure_returns_error_tool_result(self) -> None:
+        """A raw (non-ApplicationError) failure inside coordinator.start must
+        not kill the parent run — the stream survives with an error tool
+        result, matching the legacy delegate path's blanket containment."""
+        fixture = self._build(
+            parent_responses=[],
+            child_responses=[text_response("Child answer")],
+            parent_model=ScriptedModelAdapter([
+                tool_call_response("agent__child", arguments={"input": "Do it"}, call_id="pc-1"),
+                text_response("Parent survived"),
+            ]),
+        )
+
+        async def _boom(**_kwargs: object) -> None:
+            raise RuntimeError("store exploded")
+
+        fixture.service.start = _boom  # type: ignore[method-assign]
+
+        events = await self._collect(
+            fixture.runtime, fixture.parent, "Run",
+            RunContext(agent_name="parent", session_id="s1", execution_scope_id="scope-1"),
+        )
+        result = self._tool_result(events, "pc-1")
+        self.assertTrue(result["is_error"])
+        self.assertIn("store exploded", str(result["content"]))
+        self.assertTrue([e for e in events if e["event"] == "final"])
+
+    async def test_lifecycle_handle_never_stringifies_into_tool_result(self) -> None:
+        """Defense in depth: if a lifecycle tool result carrying a raw
+        DelegateRunHandle ever reaches the generic registry path (a mis-wired
+        runtime with the tools registered but no coordinator), it becomes an
+        explicit error tool result — never a stringified handle in the
+        transcript."""
+        session_store = InMemorySessionStore()
+        run_store = InMemoryDelegateRunStore()
+        parent = make_test_agent(name="parent", model="m-parent").model_copy(
+            update={"delegate_agents": ["child"]}
+        )
+        child = make_test_agent(name="child", model="m-child")
+        parent_model = ScriptedModelAdapter([
+            tool_call_response(
+                "delegate_send",
+                arguments={"delegate_run_id": "placeholder", "input": "answer"},
+                call_id="ps-1",
+            ),
+            text_response("Done"),
+        ])
+        registry = make_test_registry(parent, model=parent_model)
+        registry.register_agent(child)
+        register_ask_parent_tool(registry)
+        service = DelegateService(
+            registry=registry, run_store=run_store, settings=AppSettings()
+        )
+        register_delegate_lifecycle_tools(registry, service)
+        # Mis-wired assembly: the lifecycle tools exist on the registry but
+        # the runtime has no coordinator to intercept them.
+        runtime = ReactAgentRuntime(
+            registry,
+            session_store=session_store,
+            memory_store=RuntimeMemoryAdapter(session_store, run_store),
+            enable_llm_summarization=False,
+        )
+
+        parent_context = RunContext(
+            agent_name="parent", session_id="s1", execution_scope_id="scope-1"
+        )
+        handle = await service.start(
+            actor=DelegateActor.from_context(parent_context),
+            delegate_agent_name="child",
+            input_text="task",
+            origin_tool_call_id=None,
+            parent_context=parent_context,
+        )
+        await service.report_outcome(
+            handle.run.id,
+            DelegateTurnOutcome(
+                status="waiting_parent",
+                request=ParentInputRequest(
+                    id="q1",
+                    delegate_run_id=handle.run.id,
+                    tool_call_id="ask-1",
+                    title="Need target",
+                ),
+            ),
+        )
+        # Swap in the real scripted calls now that the run id is known.
+        registry.model_providers[parent.provider.cache_key()] = ScriptedModelAdapter([
+            tool_call_response(
+                "delegate_send",
+                arguments={"delegate_run_id": handle.run.id, "input": "answer"},
+                call_id="ps-1",
+            ),
+            text_response("Done"),
+        ])
+
+        events = await self._collect(runtime, parent, "Send", parent_context)
+
+        result = self._tool_result(events, "ps-1")
+        self.assertTrue(result["is_error"])
+        self.assertEqual(
+            str(result["content"]),
+            "delegate lifecycle tool executed outside the stateful runtime",
+        )
+        self.assertTrue([e for e in events if e["event"] == "final"])
 
     async def test_delegate_send_followup_to_idle_appends_parent_user_message(self) -> None:
         fixture = self._build(

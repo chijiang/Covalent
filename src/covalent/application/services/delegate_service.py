@@ -43,7 +43,15 @@ from covalent.infra.delegate_repository import (
 )
 from covalent.infra.settings import AppSettings
 from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.delegation import DelegateActor, DelegateRunHandle, DelegateTurnOutcome
+from covalent.runtime.delegation import (
+    ASK_PARENT_TOOL,
+    DELEGATE_LIST_TOOL,
+    DELEGATE_RELEASE_TOOL,
+    DELEGATE_SEND_TOOL,
+    DelegateActor,
+    DelegateRunHandle,
+    DelegateTurnOutcome,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +67,6 @@ _TERMINAL_STATUSES: tuple[DelegateRunStatus, ...] = (
 #: matches ``expires_at <= before``, so a disabled bucket needs an impossibly
 #: OLD threshold (far past), never a future one.
 _NEVER_DAYS = 100 * 365
-
-#: Local tool name for pausing a delegated run to ask its parent.
-ASK_PARENT_TOOL = "ask_parent"
 
 _ASK_PARENT_SCHEMA: dict[str, Any] = {
     "type": "function",
@@ -144,11 +149,11 @@ def _ask_parent_handler(args: dict[str, Any], ctx: RunContext | None) -> ParentI
     )
 
 
-#: Local tool names for the stateful delegate lifecycle (mirrored by the
-#: runtime's DELEGATE_LIFECYCLE_TOOLS tuple). Exposed to root agents only.
-DELEGATE_SEND_TOOL = "delegate_send"
-DELEGATE_LIST_TOOL = "delegate_list"
-DELEGATE_RELEASE_TOOL = "delegate_release"
+#: Delegate lifecycle tool names are imported from
+#: covalent.runtime.delegation (the single source; mirrors the runtime's
+#: DELEGATE_LIFECYCLE_TOOLS tuple). The runtime exposes them to ANY agent
+#: that can own delegates — root or delegated — never to agents without
+#: delegate_agents.
 
 _DELEGATE_SEND_SCHEMA: dict[str, Any] = {
     "type": "function",

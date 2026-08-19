@@ -21,6 +21,25 @@ if TYPE_CHECKING:
     from covalent.infra.delegate_repository import DelegateRunRecord
 
 
+#: Local tool a delegated run uses to pause and ask its parent (registered by
+#: the application layer; the runtime only filters/exposes the schema).
+ASK_PARENT_TOOL = "ask_parent"
+
+#: Lifecycle tools for stateful delegate runs (registered by the application
+#: layer). Single source of truth for both the runtime and the service: the
+#: runtime exposes them to ANY agent that can own delegates (has
+#: ``delegate_agents``) while a coordinator is present — root or delegated
+#: alike — and never to agents that cannot own runs.
+DELEGATE_SEND_TOOL = "delegate_send"
+DELEGATE_LIST_TOOL = "delegate_list"
+DELEGATE_RELEASE_TOOL = "delegate_release"
+DELEGATE_LIFECYCLE_TOOLS = (
+    DELEGATE_SEND_TOOL,
+    DELEGATE_LIST_TOOL,
+    DELEGATE_RELEASE_TOOL,
+)
+
+
 @dataclass(frozen=True)
 class DelegateActor:
     """Identity of the logical actor operating on delegate runs.
