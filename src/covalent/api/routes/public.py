@@ -26,6 +26,7 @@ from covalent.application.errors import ApplicationError
 from covalent.application.errors import ConflictError
 from covalent.application.schemas import PublicAgentInvokeRequest
 from covalent.application.schemas import PublicAgentInvokeResponse
+from covalent.application.schemas import PublicAgentListResponse
 from covalent.application.services.invoke_service import (
     _ApiTokenRunLimiter,
     _enforce_api_token_policy_limits,
@@ -37,6 +38,7 @@ from covalent.application.services.invoke_service import (
 )
 from covalent.application.services.management_service import _ensure_api_principal_can_invoke_agent
 from covalent.application.services.management_service import _resolve_api_agent_name
+from covalent.application.services.management_service import list_public_agents
 from covalent.core.types import RunContext
 from covalent.infra.db import DatabaseManager
 from covalent.infra.settings import AppSettings
@@ -76,6 +78,21 @@ async def _teardown_stateless_run_scope(request: Request, run_id: str) -> None:
             logger.warning(
                 "Stateless delegate scope finalize failed for %s", run_id, exc_info=True
             )
+
+
+@router.get("/v1/agents", response_model=PublicAgentListResponse)
+async def public_list_agents(request: Request) -> PublicAgentListResponse:
+    settings: AppSettings = request.app.state.settings
+    db_manager: DatabaseManager = request.app.state.db_manager
+    registry: FrameworkRegistry = request.app.state.registry
+
+    principal = await authenticate_api_token(
+        request,
+        settings=settings,
+        session_factory=db_manager.session_factory,
+    )
+    require_scope(principal, "agent:invoke")
+    return await list_public_agents(db_manager, principal, registry)
 
 
 @router.post("/v1/agent/invoke", response_model=None)

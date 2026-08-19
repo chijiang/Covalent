@@ -970,6 +970,8 @@ class _PublicApiFakeSession:
             return _ScalarResult(self._matching_audit_logs(params))
         if "agents" in statement_text:
             display_name = self._param(params, "display_name")
+            if display_name is None:
+                return _ScalarResult(list(self.state.agents.values()))
             return _ScalarResult([row for row in self.state.agents.values() if row.display_name == display_name])
         return _ScalarResult()
 
@@ -1029,7 +1031,7 @@ class _PublicApiFakeDbState:
     def session_factory(self):
         return _PublicApiFakeSession(self)
 
-    def add_token(self, *, raw_token: str, token_prefix: str, token_id: str, user_id: str, workspace_id: str, policy: dict[str, object]) -> None:
+    def add_token(self, *, raw_token: str, token_prefix: str, token_id: str, user_id: str, workspace_id: str, policy: dict[str, object], scopes: list[str] | None = None) -> None:
         row = ApiTokenRow(
             id=token_id,
             user_id=user_id,
@@ -1037,7 +1039,7 @@ class _PublicApiFakeDbState:
             name=token_id,
             token_prefix=token_prefix,
             token_hash=hash_api_token(raw_token, "pepper"),
-            scopes=["agent:invoke"],
+            scopes=scopes if scopes is not None else ["agent:invoke"],
             policy_json=policy,
             created_at=datetime.now(UTC),
         )
@@ -1384,6 +1386,121 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
 
         self.assertEqual(revoke_context.exception.status_code, 404)
         self.assertEqual(runs_context.exception.status_code, 404)
+
+
+class PublicAgentListEndToEndTests(unittest.TestCase):
+    def _build_client(self, state: _PublicApiFakeDbState, registry: FrameworkRegistry) -> TestClient:
+        app = create_app()
+        app.state.settings = AppSettings(api_token_hash_pepper="pepper")
+        app.state.db_manager = SimpleNamespace(session_factory=state.session_factory)
+        app.state.registry = registry
+        app.state.runtime = _FakeRuntime()
+        return TestClient(app)
+
+    @staticmethod
+    def _agent_row(*, name: str, owner_user_id: str | None, visibility: str, publication_status: str, display_name: str | None = None) -> AgentRow:
+        return AgentRow(
+            name=name,
+            display_name=display_name,
+            owner_user_id=owner_user_id,
+            workspace_id=None,
+            visibility=visibility,
+            publication_status=publication_status,
+            description=f"Description of {name}",
+            system_prompt=f"You are {name}.",
+            provider_name="openai_compatible",
+            provider_model="gpt-test",
+        )
+
+    @staticmethod
+    def _registry_with(*names: str) -> FrameworkRegistry:
+        registry = FrameworkRegistry()
+        for name in names:
+            registry.register_agent(
+                AgentSpec(
+                    name=name,
+                    description=f"Description of {name}",
+                    system_prompt=f"You are {name}.",
+                    provider=ProviderConfig(provider="openai_compatible", model="gpt-test"),
+                )
+            )
+        return registry
+
+    def test_list_agents_returns_only_invocable_agents(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.users["user_1"] = UserRow(id="user_1", email="u1@example.com", display_name="User 1", role="member", status="active")
+        state.users["user_2"] = UserRow(id="user_2", email="u2@example.com", display_name="User 2", role="member", status="active")
+        token, prefix = generate_api_token()
+        state.add_token(raw_token=token, token_prefix=prefix, token_id="token_1", user_id="user_1", workspace_id="workspace_1", policy={})
+
+        state.agents["own-private"] = self._agent_row(name="own-private", owner_user_id="user_1", visibility="private", publication_status="draft")
+        state.agents["shared-agent"] = self._agent_row(
+            name="shared-agent", owner_user_id="user_2", visibility="public", publication_status="approved", display_name="Shared Agent"
+        )
+        state.agents["other-private"] = self._agent_row(name="other-private", owner_user_id="user_2", visibility="private", publication_status="draft")
+        state.agents["disabled-agent"] = self._agent_row(name="disabled-agent", owner_user_id="user_1", visibility="private", publication_status="draft")
+        registry = self._registry_with("own-private", "shared-agent", "other-private")
+
+        client = self._build_client(state, registry)
+        response = client.get("/v1/agents", headers={"authorization": f"Bearer {token}"})
+
+        self.assertEqual(response.status_code, 200)
+        agents = response.json()["agents"]
+        self.assertEqual([agent["name"] for agent in agents], ["own-private", "shared-agent"])
+        shared = next(agent for agent in agents if agent["name"] == "shared-agent")
+        self.assertEqual(shared["display_name"], "Shared Agent")
+        self.assertEqual(shared["description"], "Description of shared-agent")
+        self.assertEqual(shared["metadata"], {"provider": "openai_compatible", "model": "gpt-test"})
+
+    def test_list_agents_policy_filters_allowed_agents_by_name_and_display_name(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.users["user_1"] = UserRow(id="user_1", email="u1@example.com", display_name="User 1", role="member", status="active")
+        token, prefix = generate_api_token()
+        state.add_token(
+            raw_token=token,
+            token_prefix=prefix,
+            token_id="token_1",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            policy={"allowed_agents": ["own-private", "Shared Agent"]},
+        )
+
+        state.agents["own-private"] = self._agent_row(name="own-private", owner_user_id="user_1", visibility="private", publication_status="draft")
+        state.agents["shared-agent"] = self._agent_row(
+            name="shared-agent", owner_user_id=None, visibility="public", publication_status="approved", display_name="Shared Agent"
+        )
+        state.agents["blocked-agent"] = self._agent_row(name="blocked-agent", owner_user_id="user_1", visibility="private", publication_status="draft")
+        registry = self._registry_with("own-private", "shared-agent", "blocked-agent")
+
+        client = self._build_client(state, registry)
+        response = client.get("/v1/agents", headers={"authorization": f"Bearer {token}"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([agent["name"] for agent in response.json()["agents"]], ["own-private", "shared-agent"])
+
+    def test_list_agents_requires_token_and_scope(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.users["user_1"] = UserRow(id="user_1", email="u1@example.com", display_name="User 1", role="member", status="active")
+        token, prefix = generate_api_token()
+        scoped_token, scoped_prefix = generate_api_token()
+        state.add_token(raw_token=token, token_prefix=prefix, token_id="token_1", user_id="user_1", workspace_id="workspace_1", policy={})
+        state.add_token(
+            raw_token=scoped_token,
+            token_prefix=scoped_prefix,
+            token_id="token_2",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            policy={},
+            scopes=[],
+        )
+
+        client = self._build_client(state, FrameworkRegistry())
+
+        unauthenticated = client.get("/v1/agents")
+        self.assertEqual(unauthenticated.status_code, 401)
+
+        forbidden = client.get("/v1/agents", headers={"authorization": f"Bearer {scoped_token}"})
+        self.assertEqual(forbidden.status_code, 403)
 
 
 if __name__ == "__main__":

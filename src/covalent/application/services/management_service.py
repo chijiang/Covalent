@@ -34,6 +34,8 @@ from covalent.application.schemas import (
     ManagementImportResponse,
     ManagementKind,
     PublicationRequestResponse,
+    PublicAgentListResponse,
+    PublicAgentSummary,
 )
 from covalent.core.agent import AgentSpec
 from covalent.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
@@ -267,6 +269,15 @@ def _available_local_tool_summaries(
         )
     return summaries
 
+def _api_principal_can_access_agent_row(row: AgentRow, user_id: str) -> bool:
+    """Invoke permission ladder for an agent row: owned by (or ownerless for
+    seeded/legacy rows) the user, or public+approved. Shared by the per-agent
+    invoke guard and the public agent listing so both stay in lockstep."""
+    if row.owner_user_id in {None, "", user_id}:
+        return True
+    return row.visibility == "public" and row.publication_status == "approved"
+
+
 async def _ensure_api_principal_can_invoke_agent(
     db_manager: DatabaseManager,
     principal: ApiPrincipal,
@@ -276,11 +287,45 @@ async def _ensure_api_principal_can_invoke_agent(
         row = await session.get(AgentRow, agent_name)
         if row is None:
             return
-        if row.owner_user_id in {None, "", principal.user_id}:
-            return
-        if row.visibility == "public" and row.publication_status == "approved":
+        if _api_principal_can_access_agent_row(row, principal.user_id):
             return
     raise ForbiddenError(f"Token is not allowed to invoke agent: {agent_name}")
+
+
+async def list_public_agents(
+    db_manager: DatabaseManager,
+    principal: ApiPrincipal,
+    registry: FrameworkRegistry,
+) -> PublicAgentListResponse:
+    """Agents the API principal can invoke on /v1/agent/invoke: the DB
+    permission ladder, intersected with registry membership (enabled agents
+    only) and the token policy's allowed_agents (matched by internal name or
+    display name, mirroring what invoke accepts). Provider/model come from the
+    registry spec — the config that actually runs — matching the invoke
+    response's metadata."""
+    async with db_manager.session_factory() as session:
+        rows = list(await session.scalars(select(AgentRow)))
+    allowed_agents = principal.policy.get("allowed_agents")
+    allowed_names = {str(item) for item in allowed_agents} if isinstance(allowed_agents, list) else None
+    summaries: list[PublicAgentSummary] = []
+    for row in rows:
+        spec = registry.agents.get(row.name)
+        if spec is None:
+            continue
+        if not _api_principal_can_access_agent_row(row, principal.user_id):
+            continue
+        if allowed_names is not None and row.name not in allowed_names and row.display_name not in allowed_names:
+            continue
+        summaries.append(
+            PublicAgentSummary(
+                name=row.name,
+                display_name=row.display_name,
+                description=row.description,
+                metadata={"provider": spec.provider.provider, "model": spec.provider.model},
+            )
+        )
+    summaries.sort(key=lambda summary: summary.name)
+    return PublicAgentListResponse(agents=summaries)
 
 def _resource_display_name(row: object) -> str:
     return str(getattr(row, "display_name", None) or getattr(row, "name"))

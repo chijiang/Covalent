@@ -85,6 +85,17 @@ class PublicAgentInvokeResponse(BaseModel):
     created_at: datetime
 
 
+class PublicAgentSummary(BaseModel):
+    name: str
+    display_name: str | None = None
+    description: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PublicAgentListResponse(BaseModel):
+    agents: list[PublicAgentSummary] = Field(default_factory=list)
+
+
 class ConsoleLoginRequest(BaseModel):
     identifier: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=1, max_length=1024)
