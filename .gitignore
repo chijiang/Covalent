@@ -57,6 +57,10 @@ skills/uploaded
 .covalent/downloads/
 
 .playwright-cli
+bun.lockb
+bun.lock
+
+docker-compose.yml
 .playwright-mcp
 .ruff_cache
 .pytest_cache
