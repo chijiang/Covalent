@@ -145,8 +145,11 @@ function successRate(usage: ApiTokenUsage | null): string {
 
 function agentPolicyLabel(token: ApiTokenSummary): string {
   const agents = token.policy.allowed_agents;
-  if (!agents || agents.length === 0) {
+  if (agents === undefined) {
     return "All agents";
+  }
+  if (agents.length === 0) {
+    return "No agents";
   }
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}`;
 }
@@ -211,10 +214,12 @@ function resetForm(): TokenFormState {
   return { ...DEFAULT_FORM, name: `api-token-${new Date().toISOString().slice(0, 10)}` };
 }
 
-function formFromToken(token: ApiTokenSummary): TokenFormState {
+function formFromToken(token: ApiTokenSummary, allAgentValues: string[] = []): TokenFormState {
   return {
     name: token.name,
-    allowedAgents: token.policy.allowed_agents ?? [],
+    // undefined policy means "all agents"; prefill the full list so the editor
+    // shows exactly what a save writes (an empty array would mean "no agents").
+    allowedAgents: token.policy.allowed_agents ?? allAgentValues,
     allowedMemoryModes: token.policy.allowed_memory_modes ?? ["none", "session"],
     maxTraceLevel: token.policy.max_trace_level ?? "steps",
     maxRequestsPerMinute: token.policy.max_requests_per_minute?.toString() ?? "",
@@ -329,9 +334,9 @@ export function ApiTokensWorkspace({ embedded = false }: { embedded?: boolean })
 
   useEffect(() => {
     if (editorMode === "edit" && selectedToken) {
-      setForm(formFromToken(selectedToken));
+      setForm(formFromToken(selectedToken, agentOptions.map((option) => option.value)));
     }
-  }, [editorMode, selectedToken]);
+  }, [editorMode, selectedToken, agentOptions]);
 
   useEffect(() => {
     if (!message) {
@@ -420,7 +425,7 @@ export function ApiTokensWorkspace({ embedded = false }: { embedded?: boolean })
   function handleSelectToken(token: ApiTokenSummary) {
     setSelectedId(token.id);
     setEditorMode("edit");
-    setForm(formFromToken(token));
+    setForm(formFromToken(token, agentOptions.map((option) => option.value)));
     setError(null);
   }
 
@@ -738,12 +743,12 @@ export function ApiTokensWorkspace({ embedded = false }: { embedded?: boolean })
               <div className="console-form-section-body">
                 <div className="grid gap-4 md:grid-cols-2">
                   <MultiSelectField
-                    helper="Leave empty to allow all configured agents."
+                    helper="Leave empty to block all agents."
                     label="Allowed agents"
                     noOptionsMessage="No agents configured"
                     onChange={(value) => setForm((current) => ({ ...current, allowedAgents: value }))}
                     options={agentOptions}
-                    placeholder="All agents"
+                    placeholder="No agents"
                     value={form.allowedAgents}
                   />
                   <MultiSelectField

@@ -60,6 +60,9 @@ export function MultiSelectField({
     return options.filter((option) => `${option.label} ${option.hint || ""}`.toLowerCase().includes(normalizedQuery));
   }, [options, query]);
 
+  const allSelected = options.length > 0 && options.every((option) => value.includes(option.value));
+  const showSelectAll = options.length > 0 && !allSelected;
+
   const emptyMessage =
     typeof noOptionsMessage === "function" ? noOptionsMessage(query) : noOptionsMessage;
 
@@ -202,11 +205,24 @@ export function MultiSelectField({
                 })
               )}
             </div>
-            {value.length > 0 ? (
-              <div className="shrink-0 border-t border-border bg-popover p-2">
-                <Button className="w-full" onClick={() => onChange([])} size="sm" type="button" variant="ghost">
-                  Clear selection
-                </Button>
+            {showSelectAll || value.length > 0 ? (
+              <div className="flex shrink-0 gap-2 border-t border-border bg-popover p-2">
+                {showSelectAll ? (
+                  <Button
+                    className="flex-1"
+                    onClick={() => onChange(dedupeStrings([...value, ...options.map((option) => option.value)]))}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    Select all
+                  </Button>
+                ) : null}
+                {value.length > 0 ? (
+                  <Button className="flex-1" onClick={() => onChange([])} size="sm" type="button" variant="ghost">
+                    Clear selection
+                  </Button>
+                ) : null}
               </div>
             ) : null}
           </PopoverContent>
