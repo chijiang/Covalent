@@ -9,7 +9,6 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from covalent.core.types import Capability, GenerationRequest, GenerationResponse, Message, ToolCall
-from covalent.infra.settings import AppSettings
 from covalent.model.base import ModelAdapter, ModelProviderError, ProviderConfig
 from covalent.model.utils import derive_openai_base_url, reasoning_level_kwargs
 from covalent.runtime.context_window import get_context_window
@@ -21,7 +20,6 @@ class OpenAICompatibleProvider(ModelAdapter):
         if not config.base_url:
             raise ValueError("OpenAI-compatible providers require base_url")
         super().__init__(config)
-        self._settings = AppSettings()
         self._client = self._build_client()
 
     @property
@@ -100,7 +98,7 @@ class OpenAICompatibleProvider(ModelAdapter):
     def _build_client(self) -> AsyncOpenAI:
         base_url = self._normalized_base_url(self.config.base_url)
         return AsyncOpenAI(
-            api_key=self.config.api_key or self._settings.default_api_key,
+            api_key=self.config.api_key,
             base_url=base_url,
             timeout=self.config.timeout_seconds,
         )

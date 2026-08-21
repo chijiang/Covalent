@@ -49,7 +49,6 @@ from covalent.infra.settings import AppSettings
 from covalent.mcp.client import McpSdkClient
 from covalent.mcp.spec import McpServerConfig, McpToolReference
 from covalent.model.base import ProviderConfig
-from covalent.model.factory import default_provider_config
 from covalent.registry.registry import FrameworkRegistry
 from covalent.runtime.backend import ExecutionBackend
 from covalent.skills.loader import SkillLoader, normalize_git_source_payload
@@ -66,6 +65,18 @@ DEFAULT_REASONING_PROMPT = (
     "repeat only as needed, and stop once you can answer confidently. Keep the final response clear, direct, "
     "and grounded in the evidence you observed."
 )
+
+# First-boot seed for the default agent (only when the agents table is empty).
+# The seeded agent's provider is an empty shell — it backfills at runtime from
+# whichever provider is registered in the Service Console, so a fresh
+# deployment is not pinned to any model vendor.
+DEFAULT_AGENT_DESCRIPTION = "General-purpose ReAct agent"
+DEFAULT_AGENT_SYSTEM_PROMPT = (
+    "You are a general-purpose ReAct assistant. Help the user by understanding the goal, "
+    "using available tools or delegates only when they improve accuracy or reduce uncertainty, "
+    "and providing clear, grounded final answers."
+)
+DEFAULT_AGENT_MAX_ITERATIONS = 10
 
 WORKSPACE_AGENT_TOOLS = (
     "list_workspace_files",
@@ -120,7 +131,7 @@ async def build_registry(
     settings.ensure_managed_skill_directories()
     registry = FrameworkRegistry()
     register_skill_meta_tools(registry, settings, backend)
-    mcp_payload = await config_store.ensure_document("mcp", _seed_mcp_payload(settings))
+    mcp_payload = await config_store.ensure_document("mcp", [])
     mcp_servers = _parse_mcp_servers(mcp_payload)
     if settings.enable_builtin_tools:
         register_builtin_tools(registry, settings, backend)
@@ -139,7 +150,7 @@ async def build_registry(
         registry.register_agent(agent)
 
     loader = SkillLoader(settings)
-    skill_source_payload = await config_store.ensure_document("skill_sources", _seed_skill_source_payload(settings))
+    skill_source_payload = await config_store.ensure_document("skill_sources", [])
     manifest_skills = loader.discover_local()
     for spec in manifest_skills:
         registry.register_manifest_skill(spec)
@@ -750,11 +761,36 @@ def _config_document_response(kind: ConfigKind, payload: list[dict[str, object]]
         label=label_map[kind],
         filePath=f"postgres://config/{kind}",
         raw=f"{json.dumps(normalized_payload, ensure_ascii=False, indent=2)}\n",
-        exampleRaw=_example_config_raw(kind, settings),
+        exampleRaw=_example_config_raw(kind),
         data=normalized_payload,
     )
 
-def _example_config_raw(kind: ConfigKind, settings: AppSettings) -> str:
+# Static config examples shown in the Service Console ("load example").
+# Agents, MCP servers, and skill sources are managed entirely in the console;
+# these are the same placeholder shapes the providers example uses.
+_STATIC_CONFIG_EXAMPLES: dict[str, list[dict[str, object]]] = {
+    "agents": [
+        {
+            "name": "my-agent",
+            "description": "Describe what this agent does",
+            "system_prompt": "You are a helpful assistant.",
+            "provider": {"provider": "openai_compatible", "model": "gpt-4.1", "base_url": "https://api.openai.com/v1", "api_key": "sk-..."},
+            "skills": [],
+            "local_tools": ["get_current_time"],
+            "capabilities": ["chat", "react", "tool_calling", "streaming"],
+            "max_iterations": 10,
+        }
+    ],
+    "mcp": [
+        {"name": "docs", "transport": "streamable_http", "url": "http://localhost:8001/mcp"}
+    ],
+    "skill_sources": [
+        {"source_type": "git", "name": "my-skill", "url": "https://github.com/owner/repo.git", "subdir": "skills/my-skill"}
+    ],
+}
+
+
+def _example_config_raw(kind: ConfigKind) -> str:
     if kind == "providers":
         example = {
             "name": "my-provider",
@@ -765,48 +801,25 @@ def _example_config_raw(kind: ConfigKind, settings: AppSettings) -> str:
             "position": 0,
         }
         return f"{json.dumps([example], ensure_ascii=False, indent=2)}\n"
-    raw_map = {
-        "agents": settings.agents_json,
-        "mcp": settings.mcp_servers_json,
-        "skill_sources": settings.skill_sources_json,
-    }
-    raw = raw_map[kind]
-    payload = json.loads(raw) if raw else []
-    if kind == "agents":
-        payload = _validate_config_payload("agents", payload or [], settings)
-    return f"{json.dumps(payload or [], ensure_ascii=False, indent=2)}\n"
+    return f"{json.dumps(_STATIC_CONFIG_EXAMPLES[kind], ensure_ascii=False, indent=2)}\n"
 
-def _seed_mcp_payload(settings: AppSettings) -> list[dict[str, object]]:
-    if not settings.mcp_servers_json:
-        return []
-    return json.loads(settings.mcp_servers_json)
-
-def _seed_skill_source_payload(settings: AppSettings) -> list[dict[str, object]]:
-    if not settings.skill_sources_json:
-        return []
-    raw = json.loads(settings.skill_sources_json)
-    return _validate_config_payload("skill_sources", raw)
 
 def _seed_agent_payload(
     settings: AppSettings,
     provider_config: ProviderConfig,
     mcp_servers: list[McpServerConfig],
 ) -> list[dict[str, object]]:
-    raw = json.loads(settings.agents_json) if settings.agents_json else None
-    if raw is not None:
-        return _validate_config_payload("agents", raw, settings)
-
     default_item = PersistedAgentConfig(
         name="default",
-        description=settings.agent_description,
-        system_prompt=settings.agent_system_prompt,
+        description=DEFAULT_AGENT_DESCRIPTION,
+        system_prompt=DEFAULT_AGENT_SYSTEM_PROMPT,
         reasoning_prompt=DEFAULT_REASONING_PROMPT,
         provider=provider_config,
         skills=[],
         local_tools=_default_agent_local_tools(settings),
         mcp_servers=[server.name for server in mcp_servers],
         capabilities={Capability.CHAT, Capability.REACT, Capability.TOOL_CALLING, Capability.STREAMING},
-        max_iterations=settings.default_max_iterations,
+        max_iterations=DEFAULT_AGENT_MAX_ITERATIONS,
     )
     return [default_item.model_dump(mode="json")]
 
@@ -1083,13 +1096,22 @@ async def _resolve_default_provider(
             cfg = PersistedProviderConfig.model_validate(item)
             return ProviderConfig(
                 provider=cfg.provider_type,
-                model=settings.default_model,
+                model="",
                 api_key=cfg.api_key,
                 base_url=cfg.base_url,
                 timeout_seconds=settings.request_timeout_seconds,
             )
 
-    return default_provider_config(settings)
+    # No providers registered in the console. Return an empty shell — the
+    # seeded default agent backfills model/key/base_url at runtime from
+    # whichever provider gets registered first (see _merge_provider_config).
+    return ProviderConfig(
+        provider="openai_compatible",
+        model="",
+        api_key=None,
+        base_url=None,
+        timeout_seconds=settings.request_timeout_seconds,
+    )
 
 def _format_api_key_masked(key: str) -> str:
     if len(key) <= 8:

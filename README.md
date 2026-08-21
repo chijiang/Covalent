@@ -94,16 +94,12 @@ Service Console routes include agent settings, provider settings, MCP services, 
 
 ## Configuration
 
-All settings are loaded from environment variables with the prefix `AGENT_FRAMEWORK_`, or from a `.env` file in the project root. In the `.env` file, use the full prefixed names (e.g. `AGENT_FRAMEWORK_DEFAULT_API_KEY`, not `DEFAULT_API_KEY`).
+All settings are loaded from environment variables with the prefix `AGENT_FRAMEWORK_`, or from a `.env` file in the project root. In the `.env` file, use the full prefixed names (e.g. `AGENT_FRAMEWORK_DATABASE_URL`, not `DATABASE_URL`).
 
 ### Core Settings
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENT_FRAMEWORK_DEFAULT_API_KEY` | — | Fallback LLM API key when no DB provider is configured |
-| `AGENT_FRAMEWORK_DEFAULT_BASE_URL` | `https://api.openai.com/v1` | Fallback OpenAI-compatible base URL |
-| `AGENT_FRAMEWORK_DEFAULT_MODEL` | `gpt-4o-mini` | Fallback model name |
-| `AGENT_FRAMEWORK_DEFAULT_MAX_ITERATIONS` | `10` | Max ReAct loop iterations for seeded/default agents |
 | `AGENT_FRAMEWORK_DATABASE_URL` | — | PostgreSQL connection string for persistent config |
 | `AGENT_FRAMEWORK_SKILLS_ROOT_DIR` | `skills` | Managed root for built-in, uploaded, authored, and git-synced skills |
 | `AGENT_FRAMEWORK_SKILLS_DIRECTORIES` | derived from `skills_root_dir` | Optional override for local skill scan roots |
@@ -138,20 +134,9 @@ Security settings that **must** be changed for any non-`dev` deployment:
 
 An initial admin is seeded on first boot from `AGENT_FRAMEWORK_CONSOLE_SEED_ADMIN_*` (enabled by default with `admin` / `admin123` — change the password). Self-service sign-up via `/auth/register` is controlled by `AGENT_FRAMEWORK_CONSOLE_SIGNUP_ENABLED`.
 
-Prefer registering providers in the Service Console. The `DEFAULT_*` model variables above are fallbacks used when the `providers` table is empty or an agent inherits the default route without an explicit provider override.
-
 ### Persistent Config
 
-Agents, MCP servers, skill sources, LLM providers, and chat sessions are stored in PostgreSQL and managed through the API or Service Console.
-
-Optional `.env` JSON values are only used as first-boot seed data when the corresponding database tables are empty:
-
-```bash
-# .env
-AGENT_FRAMEWORK_AGENTS_JSON=[{"name":"default","description":"Default agent","system_prompt":"You are a pragmatic assistant.","reasoning_prompt":"Think step by step when needed. Use tools only when they reduce uncertainty, then synthesize concise final answers from observations.","provider":{"provider":"openai_compatible","model":"gpt-4o-mini","base_url":"https://api.openai.com/v1","timeout_seconds":500.0},"skills":[],"local_tools":["get_current_time"],"capabilities":["chat","react","tool_calling","streaming"],"max_iterations":10}]
-AGENT_FRAMEWORK_MCP_SERVERS_JSON=[]
-AGENT_FRAMEWORK_SKILL_SOURCES_JSON=[]
-```
+Agents, MCP servers, skill sources, and LLM providers are stored in PostgreSQL and managed through the Service Console (agent settings, provider settings, MCP services, skill settings). There are no env-var seeds — register your providers and agents in the console after the first boot. A default agent is seeded once when the agents table is empty; its provider backfills at runtime from whichever provider is registered in the console.
 
 Use `GET/PUT /config/agents`, `GET/PUT /config/mcp`, `GET/PUT /config/skill_sources`, and `GET/PUT /config/providers` to inspect and update persisted config.
 Use `GET /providers/{provider_name}/models` to fetch the model catalog for a saved provider.

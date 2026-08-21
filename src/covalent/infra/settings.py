@@ -29,12 +29,10 @@ class AppSettings(BaseSettings):
 
     app_name: str = "Covalent"
     database_url: str | None = None
-    default_provider: str = "openai_compatible"
-    default_model: str = "gpt-4o-mini"
-    default_base_url: str = "https://api.openai.com/v1"
-    default_api_key: str | None = None
+    # Providers, agents, MCP servers, and skill sources are configured in the
+    # Service Console (persisted in PostgreSQL) — there are no env-var seeds
+    # or env-var provider fallbacks.
     request_timeout_seconds: float = 500.0
-    default_max_iterations: int = 10
     session_history_limit: int = 40
     context_token_budget: int | None = None
     context_compact_threshold: float = 0.75
@@ -43,7 +41,6 @@ class AppSettings(BaseSettings):
     enable_builtin_tools: bool = True
     mcp_enabled: bool = True
     mcp_timeout_seconds: float = 500.0
-    mcp_servers_json: str | None = None
     max_upload_bytes: int = 100 * 1024 * 1024  # 100 MB
     # Max simultaneous in-flight public agent runs (streaming + non-streaming)
     # per API token, enforced by an in-process semaphore PER WORKER PROCESS
@@ -74,14 +71,6 @@ class AppSettings(BaseSettings):
     console_seed_admin_password: str = DEFAULT_SEED_ADMIN_PASSWORD
     console_seed_admin_display_name: str = "Admin"
     console_seed_admin_workspace_name: str = "Default workspace"
-    agents_json: str | None = None
-    skill_sources_json: str | None = None
-    agent_system_prompt: str = (
-        "You are a general-purpose ReAct assistant. Help the user by understanding the goal, "
-        "using available tools or delegates only when they improve accuracy or reduce uncertainty, "
-        "and providing clear, grounded final answers."
-    )
-    agent_description: str = "General-purpose ReAct agent"
     workspace_root_dir: str = "."
     session_workspace_enabled: bool = True
     session_workspace_root_dir: str | None = None
