@@ -185,6 +185,15 @@ class SkillLoader:
         tool_names = [t.name for t in spec.tools]
         if len(tool_names) != len(set(tool_names)):
             raise SkillLoadError(f"Skill '{spec.name}': duplicate tool names in manifest")
+        # Tool names reach OpenAI-compatible providers verbatim as
+        # function.name; anything outside ^[a-zA-Z0-9_-]+$ makes the whole
+        # model request fail with a 400 before the agent can run.
+        invalid_tool_names = [name for name in tool_names if not re.fullmatch(r"[a-zA-Z0-9_-]+", name)]
+        if invalid_tool_names:
+            raise SkillLoadError(
+                f"Skill '{spec.name}': tool names must match ^[a-zA-Z0-9_-]+$ "
+                f"(letters, digits, '-', '_'); invalid: {', '.join(invalid_tool_names)}"
+            )
         script_names = [script.name for script in spec.scripts]
         if len(script_names) != len(set(script_names)):
             raise SkillLoadError(f"Skill '{spec.name}': duplicate script names in manifest")

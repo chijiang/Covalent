@@ -807,6 +807,12 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
       return;
     }
 
+    const trimmedName = form.name.trim();
+    if (trimmedName && !/^[a-zA-Z0-9_-]+$/.test(trimmedName)) {
+      setError("Agent names may only contain letters, digits, '-' and '_' — spaces, dots, and non-ASCII characters are rejected because the name becomes the delegate tool name.");
+      return;
+    }
+
     const nextProvider = { ...selectedAgent.provider };
     const providerEntry = providers.find((p) => p.name === form.providerName);
     const nextModel = form.model.trim();
@@ -1056,6 +1062,11 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
                           placeholder="Agent name"
                           value={form.name}
                         />
+                        {form.name.trim() && !/^[a-zA-Z0-9_-]+$/.test(form.name.trim()) ? (
+                          <p className="text-destructive text-xs">
+                            {"Letters, digits, '-' and '_' only (this name becomes the delegate tool name)."}
+                          </p>
+                        ) : null}
                       </div>
 
                       <div className="page-action-row skill-detail-actions">

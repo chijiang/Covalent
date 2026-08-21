@@ -394,5 +394,47 @@ class HealthzTests(unittest.TestCase):
         self.assertIn("sandbox", resp.json())
 
 
+class SkillManifestToolNameValidationTests(unittest.TestCase):
+    """Tool names in a skill manifest become OpenAI function.name verbatim
+    (ToolDeclaration.to_openai_tool_schema). Agents that expose a skill whose
+    tools have spaces, dots, or non-ASCII characters get a 400 from
+    OpenAI-compatible providers. The loader must reject such manifests."""
+
+    @staticmethod
+    def _validate(tool_names: list[str]) -> None:
+        from covalent.skills.loader import SkillLoader
+
+        loader = SkillLoader(AppSettings())
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = pathlib.Path(tmp) / "skill.py"
+            entry.write_text("def tool(): pass\n", encoding="utf-8")
+            spec = ManifestSkillSpec(
+                name="demo-skill",
+                description="demo",
+                runtime=SkillRuntime(type="python", entry_point="skill.py"),
+                tools=[{"name": name, "description": "t"} for name in tool_names],
+                source_dir=tmp,
+            )
+            loader._validate_manifest(spec, pathlib.Path(tmp))
+
+    def test_spaced_tool_name_is_rejected(self) -> None:
+        from covalent.skills.exceptions import SkillLoadError
+
+        with self.assertRaises(SkillLoadError):
+            self._validate(["Random Speech Maker"])
+
+    def test_dotted_tool_name_is_rejected(self) -> None:
+        from covalent.skills.exceptions import SkillLoadError
+
+        with self.assertRaises(SkillLoadError):
+            self._validate(["my.skill.do"])
+
+    def test_clean_tool_names_pass(self) -> None:
+        self._validate(["read_file", "write_file", "query_db_v2"])
+
+    def test_empty_allowed_tools_pass(self) -> None:
+        self._validate([])
+
+
 if __name__ == "__main__":
     unittest.main()

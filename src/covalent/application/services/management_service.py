@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -900,6 +901,18 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
         agent = PersistedAgentConfig.model_validate(normalized_item)
         if agent.name in seen_names:
             raise InvalidInputError(f"Duplicate agent name: {agent.name}")
+        # The runtime agent name (internal_name when set, else the public name)
+        # becomes delegate tool names (agent__<name>) that reach OpenAI-compatible
+        # providers verbatim; anything outside ^[a-zA-Z0-9_-]+$ fails the whole
+        # model request with a 400. A display name with spaces is fine as long
+        # as a valid internal_name carries the runtime identity.
+        runtime_name = (agent.internal_name or "").strip() or agent.name
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", runtime_name):
+            raise InvalidInputError(
+                f"Invalid agent name: '{agent.name}'. The runtime agent name (internal_name "
+                "when set, else name) may only contain letters, digits, '-' and '_' — no "
+                "spaces, dots, or non-ASCII characters."
+            )
         referenced_servers = {tool.server_name for tool in agent.mcp_tools}
         missing_server_refs = sorted(referenced_servers.difference(agent.mcp_servers))
         if missing_server_refs:

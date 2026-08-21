@@ -258,5 +258,46 @@ class AgentCrudTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status_code, 404)
 
 
+class AgentNameValidationTests(unittest.TestCase):
+    """Agent names become delegate tool names (agent__<name>) verbatim and must
+    stay inside the OpenAI function.name charset. Config saves carrying names
+    with spaces, dots, or non-ASCII characters must be rejected."""
+
+    @staticmethod
+    def _validated(name: str, internal_name: str | None = None) -> list[dict]:
+        from covalent.application.services.management_service import _validate_config_payload
+
+        payload = [dict(_AGENT_PAYLOAD[0], name=name, internal_name=internal_name)]
+        return _validate_config_payload("agents", payload, AppSettings())
+
+    def test_spaced_agent_name_is_rejected(self) -> None:
+        from covalent.application.errors import InvalidInputError
+
+        with self.assertRaises(InvalidInputError):
+            self._validated("Random Speech Maker")
+
+    def test_dotted_and_non_ascii_agent_names_are_rejected(self) -> None:
+        from covalent.application.errors import InvalidInputError
+
+        for name in ("my.agent", "研究助手", "agent!"):
+            with self.assertRaises(InvalidInputError, msg=name):
+                self._validated(name)
+
+    def test_spaced_display_name_passes_with_valid_internal_name(self) -> None:
+        validated = self._validated("Story Teller", internal_name="story-teller")
+        self.assertEqual(validated[0]["name"], "Story Teller")
+        self.assertEqual(validated[0]["internal_name"], "story-teller")
+
+    def test_spaced_display_name_with_spaced_internal_name_is_rejected(self) -> None:
+        from covalent.application.errors import InvalidInputError
+
+        with self.assertRaises(InvalidInputError):
+            self._validated("Story Teller", internal_name="story teller")
+
+    def test_clean_agent_names_pass(self) -> None:
+        validated = self._validated("random-speech-maker")
+        self.assertEqual(validated[0]["name"], "random-speech-maker")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 DELEGATE_TOOL_PREFIX = "agent__"
 DELEGATE_EVENT_PREFIX = "delegate_"
+# OpenAI-compatible providers reject tool/function names outside ^[a-zA-Z0-9_-]+$.
+# Delegate tools are built as agent__<name> from raw delegate_agents config;
+# names with spaces, dots, or non-ASCII characters must be sanitized before they
+# reach the model, and each sanitized name must resolve back to its delegate.
+_DELEGATE_SANITIZED_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 DELEGATE_FORWARDABLE_EVENTS = {
     "assistant",
     "final",
@@ -277,17 +282,54 @@ class ReactAgentRuntime(AgentRuntime):
         results = await asyncio.gather(*[_run_single(tc) for tc in tool_calls])
         return list(results)
 
+    @staticmethod
+    def _sanitize_delegate_name(name: str) -> str:
+        """Collapse a delegate agent name into the OpenAI-safe character set.
+
+        Non ``[a-zA-Z0-9_-]`` characters collapse to ``-``, runs of separators
+        compress to one, and leading/trailing separators are trimmed. A name
+        that sanitizes to empty (e.g. all non-Latin) falls back to ``delegate``
+        so the tool name is still valid."""
+        sanitized = _DELEGATE_SANITIZED_NAME_RE.sub("-", name).strip("-")
+        sanitized = re.sub(r"-{2,}", "-", sanitized)
+        return sanitized or "delegate"
+
+    @classmethod
+    def _delegate_name_maps(cls, delegate_agents: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+        """Deterministic sanitized-name maps for a delegate list.
+
+        Returns ``(sanitized→original, original→sanitized)``. Built from the
+        configured delegate list each call, so it is stateless and stable across
+        rebuilds: names that sanitize to the same value (``a.b`` / ``a b`` /
+        ``a_b`` → ``a-b``) get numeric suffixes by stable order so every tool
+        name resolves back to exactly one delegate."""
+        ordered = sorted(delegate_agents)
+        used: set[str] = set()
+        sanitized_to_original: dict[str, str] = {}
+        for original in ordered:
+            base = cls._sanitize_delegate_name(original)
+            candidate = base
+            suffix = 2
+            while candidate in used:
+                candidate = f"{base}-{suffix}"
+                suffix += 1
+            used.add(candidate)
+            sanitized_to_original[candidate] = original
+        return sanitized_to_original, {original: sanitized for sanitized, original in sanitized_to_original.items()}
+
     def _build_delegate_tools(self, agent: AgentSpec) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []
+        _, original_to_sanitized = self._delegate_name_maps(agent.delegate_agents)
         for delegate_name in agent.delegate_agents:
             if delegate_name not in self.registry.agents or delegate_name == agent.name:
                 continue
             delegate = self.registry.agents[delegate_name]
+            tool_name = f"{DELEGATE_TOOL_PREFIX}{original_to_sanitized[delegate_name]}"
             tools.append(
                 {
                     "type": "function",
                     "function": {
-                        "name": f"{DELEGATE_TOOL_PREFIX}{delegate_name}",
+                        "name": tool_name,
                         "description": (
                             f"Delegate work to agent '{delegate_name}'. "
                             f"Use when the task fits this agent: {delegate.description}"
@@ -320,7 +362,15 @@ class ReactAgentRuntime(AgentRuntime):
         )
 
     def _normalize_delegate_tool_name(self, agent: AgentSpec, tool_name: str) -> str:
+        # A sanitized tool name (model echo of agent__Random-Speech-Maker) must
+        # resolve back to the original delegate name before execution; a bare
+        # delegate name gains the prefix. Anything else is left untouched.
         if tool_name.startswith(DELEGATE_TOOL_PREFIX):
+            stripped = tool_name.removeprefix(DELEGATE_TOOL_PREFIX)
+            sanitized_to_original, _ = self._delegate_name_maps(agent.delegate_agents)
+            original = sanitized_to_original.get(stripped)
+            if original is not None:
+                return f"{DELEGATE_TOOL_PREFIX}{original}"
             return tool_name
         if tool_name in agent.delegate_agents:
             return f"{DELEGATE_TOOL_PREFIX}{tool_name}"

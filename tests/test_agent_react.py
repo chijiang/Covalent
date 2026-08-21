@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -1772,6 +1773,92 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
             actor=actor, delegate_run_id=started.run.id, input_text="again"
         )
         self.assertIs(resumed.context.execution_backend, backend)
+
+
+def _delegate_tool_name(delegate_name: str) -> str:
+    return f"agent__{delegate_name}"
+
+
+class DelegateToolNameSanitizationTests(unittest.IsolatedAsyncioTestCase):
+    """OpenAI-compatible providers reject function.name that is not
+    ^[a-zA-Z0-9_-]+$. Delegate tools are built as ``agent__<name>`` from raw
+    delegate_agents config; a dotted, spaced, or non-ASCII agent name must be
+    sanitized in the model-facing tool name, and the runtime must resolve a
+    sanitized tool_call back to the original delegate name."""
+
+    def _register_all(self, delegate_agents: list[str], agent: AgentSpec) -> FrameworkRegistry:
+        registry = make_test_registry(agent, model=ScriptedModelAdapter([]))
+        for delegate_name in delegate_agents:
+            child = make_test_agent(name=delegate_name, model=f"m-{delegate_name}")
+            registry.register_agent(child)
+            registry.model_providers[child.provider.cache_key()] = ScriptedModelAdapter([])
+        return registry
+
+    async def test_spaced_delegate_name_is_sanitized_in_tool_name(self) -> None:
+        agent = make_test_agent(name="parent").model_copy(update={"delegate_agents": ["Random Speech Maker"]})
+        runtime = make_test_runtime(self._register_all(["Random Speech Maker"], agent))
+        tools = runtime._build_delegate_tools(agent)
+        name = tools[0]["function"]["name"]
+        self.assertRegex(name, r"^[a-zA-Z0-9_-]+$")
+        self.assertEqual(name, "agent__Random-Speech-Maker")
+        self.assertNotIn(" ", name)
+
+    async def test_clean_delegate_name_is_unchanged(self) -> None:
+        name = self._clean_delegate_tool_name("child")
+        self.assertEqual(name, "agent__child")
+
+    def _clean_delegate_tool_name(self, delegate_name: str) -> str:
+        agent = make_test_agent(name="parent").model_copy(update={"delegate_agents": [delegate_name]})
+        runtime = make_test_runtime(self._register_all([delegate_name], agent))
+        return runtime._build_delegate_tools(agent)[0]["function"]["name"]
+
+    async def test_normalize_resolves_sanitized_call_back_to_original_name(self) -> None:
+        agent = make_test_agent(name="parent").model_copy(update={"delegate_agents": ["Random Speech Maker"]})
+        runtime = make_test_runtime(self._register_all(["Random Speech Maker"], agent))
+        self.assertEqual(
+            runtime._normalize_delegate_tool_name(agent, "agent__Random-Speech-Maker"),
+            "agent__Random Speech Maker",
+        )
+
+    async def test_collided_sanitized_names_get_distinct_suffixes(self) -> None:
+        agent = make_test_agent(name="parent").model_copy(update={"delegate_agents": ["a.b", "a b", "a_b"]})
+        runtime = make_test_runtime(self._register_all(["a.b", "a b", "a_b"], agent))
+        names = {t["function"]["name"] for t in runtime._build_delegate_tools(agent)}
+        self.assertEqual(len(names), 3, "collided names must stay distinct")
+        for name in names:
+            self.assertRegex(name, r"^agent__[a-zA-Z0-9_-]+$")
+        # Round-trips: each sanitized tool name resolves back to a delegate.
+        for name in names:
+            resolved = runtime._normalize_delegate_tool_name(agent, name)
+            self.assertIn(resolved.removeprefix("agent__"), {"a.b", "a b", "a_b"})
+
+    async def test_model_echo_of_sanitized_name_runs_the_delegate(self) -> None:
+        """The model only ever sees the sanitized tool name (agent__Random-Speech-
+        Maker). When it echoes that name back, the runtime must resolve it to the
+        original delegate and run it — the end-to-end shape of the reported 400."""
+        parent = make_test_agent(name="parent", model="m-parent").model_copy(
+            update={"delegate_agents": ["Random Speech Maker"]}
+        )
+        child = make_test_agent(name="Random Speech Maker", model="m-child")
+        parent_adapter = ScriptedModelAdapter([
+            tool_call_response("agent__Random-Speech-Maker", arguments={"input": "say it"}, call_id="dc-1"),
+            text_response("Delegated."),
+        ])
+        child_adapter = ScriptedModelAdapter([text_response("hello from the delegate")])
+        registry = make_test_registry(parent, model=parent_adapter)
+        registry.register_agent(child)
+        registry.model_providers[child.provider.cache_key()] = child_adapter
+        runtime = make_test_runtime(registry)
+
+        final = await runtime.run(parent, "go", RunContext(agent_name="parent", session_id="s1"))
+
+        self.assertEqual(final.output_text, "Delegated.")
+        # The sanitized tool name is what reached the model.
+        sent_names = {t["function"]["name"] for t in parent_adapter.received_requests[0].tools}
+        self.assertIn("agent__Random-Speech-Maker", sent_names)
+        self.assertTrue(all(re.match(r"^agent__[a-zA-Z0-9_-]+$", n) for n in sent_names))
+        # The delegate actually ran.
+        self.assertEqual(child_adapter.call_count, 1)
 
 
 if __name__ == "__main__":
