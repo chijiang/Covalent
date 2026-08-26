@@ -363,6 +363,18 @@ function buildAttachmentId(file: Pick<File, "name" | "size" | "lastModified">, d
   return `${file.name}-${file.size}-${file.lastModified}-${deliveryMode || "default"}`;
 }
 
+// Mirror of the backend TEXT_EXTENSIONS in src/covalent/core/attachment_processing.py.
+const INLINE_PARSED_TEXT_EXTENSIONS = new Set([".txt", ".md", ".json", ".py", ".yaml", ".yml", ".csv", ".tsv"]);
+
+function isInlineParsedByDefault(file: Pick<File, "name" | "type">): boolean {
+  if (file.type.startsWith("image/") || file.type.startsWith("text/")) {
+    return true;
+  }
+  const dot = file.name.lastIndexOf(".");
+  const suffix = dot === -1 ? "" : file.name.slice(dot).toLowerCase();
+  return INLINE_PARSED_TEXT_EXTENSIONS.has(suffix);
+}
+
 function normalizePastedImage(file: File, index: number): File {
   if (file.name.trim()) {
     return file;
@@ -631,6 +643,19 @@ function AskUserPromptSummary({ prompt }: { prompt: PendingQuestionRequest }) {
   );
 }
 
+function ChatThinkingIndicator() {
+  return (
+    <div className="chat-thinking-indicator" role="status">
+      <span>Thinking</span>
+      <span aria-hidden="true" className="chat-thinking-dots">
+        <span className="chat-thinking-dot" />
+        <span className="chat-thinking-dot" />
+        <span className="chat-thinking-dot" />
+      </span>
+    </div>
+  );
+}
+
 function ChatMessageBubble({
   message,
   sending,
@@ -657,8 +682,8 @@ function ChatMessageBubble({
   const canEdit = message.role === "user" && !sending && !isEditing && !message.askUserPrompt;
   const displayContent =
     message.askUserPrompt && isWaitingForAnswerContent(message.content) ? "" : message.content;
-  const markdownContent =
-    displayContent || (sending && message.role === "assistant" ? "Thinking..." : "");
+  const isThinking = sending && message.role === "assistant" && !displayContent && !message.askUserPrompt;
+  const markdownContent = displayContent;
   const messageTimestamp = getTimestampFromId(message.id, messageTimestampFallback);
 
   const editContainerStyle: CSSProperties = {
@@ -736,6 +761,8 @@ function ChatMessageBubble({
                 </button>
               </div>
             </div>
+          ) : isThinking ? (
+            <ChatThinkingIndicator />
           ) : (
             <ChatMarkdownContent content={markdownContent} tone={tone} />
           )}
@@ -2003,6 +2030,7 @@ export function ChatWorkspace() {
   const [editingDraft, setEditingDraft] = useState("");
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [attachmentDeliveryMode, setAttachmentDeliveryMode] = useState<AttachmentDeliveryMode>("workspace");
+  const [attachmentDeliveryModeTouched, setAttachmentDeliveryModeTouched] = useState(false);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [composerMultiline, setComposerMultiline] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2383,13 +2411,21 @@ export function ChatWorkspace() {
     setTracePanelWidth(clampTracePanelWidth(nextWidth, splitLayout.clientWidth));
   }
 
+  function resolveFileDeliveryMode(file: File): AttachmentDeliveryMode {
+    if (attachmentDeliveryModeTouched) {
+      return attachmentDeliveryMode;
+    }
+    return isInlineParsedByDefault(file) ? "parse" : "workspace";
+  }
+
   async function queueComposerFiles(incomingFiles: File[]) {
     if (incomingFiles.length === 0 || !activeThread) {
       return;
     }
 
+    const fileModes = new Map(incomingFiles.map((file) => [file, resolveFileDeliveryMode(file)]));
     const knownIds = new Set(draftAttachments.map((file) => file.id));
-    const uniqueFiles = incomingFiles.filter((file) => !knownIds.has(buildAttachmentId(file, attachmentDeliveryMode)));
+    const uniqueFiles = incomingFiles.filter((file) => !knownIds.has(buildAttachmentId(file, fileModes.get(file))));
     if (uniqueFiles.length === 0) {
       return;
     }
@@ -2397,9 +2433,19 @@ export function ChatWorkspace() {
     setError(null);
     setUploadingAttachments(true);
     try {
-      const uploaded = (await uploadChatAttachments(activeThread.sessionId, uniqueFiles, attachmentDeliveryMode)).files.map((file) =>
-        toUploadedComposerAttachment(file),
-      );
+      const modeGroups = new Map<AttachmentDeliveryMode, File[]>();
+      for (const file of uniqueFiles) {
+        const mode = fileModes.get(file) as AttachmentDeliveryMode;
+        const group = modeGroups.get(mode) || [];
+        group.push(file);
+        modeGroups.set(mode, group);
+      }
+      const uploadedFiles: AttachmentUploadItem[] = [];
+      for (const [mode, files] of modeGroups) {
+        const response = await uploadChatAttachments(activeThread.sessionId, files, mode);
+        uploadedFiles.push(...response.files);
+      }
+      const uploaded = uploadedFiles.map((file) => toUploadedComposerAttachment(file));
       setDraftAttachments((current) => {
         const existing = new Set(current.map((file) => file.id));
         return [...current, ...uploaded.filter((file) => !existing.has(file.id))];
@@ -3346,7 +3392,10 @@ export function ChatWorkspace() {
                           <label className="composer-gemini-menu-item composer-gemini-menu-check">
                             <input
                               checked={attachmentDeliveryMode === "parse"}
-                              onChange={() => setAttachmentDeliveryMode((current) => (current === "parse" ? "workspace" : "parse"))}
+                              onChange={() => {
+                                setAttachmentDeliveryModeTouched(true);
+                                setAttachmentDeliveryMode((current) => (current === "parse" ? "workspace" : "parse"));
+                              }}
                               type="checkbox"
                             />
                             <span>Parse uploads</span>
@@ -3416,7 +3465,10 @@ export function ChatWorkspace() {
                           <label className="composer-gemini-menu-item composer-gemini-menu-check">
                             <input
                               checked={attachmentDeliveryMode === "parse"}
-                              onChange={() => setAttachmentDeliveryMode((current) => (current === "parse" ? "workspace" : "parse"))}
+                              onChange={() => {
+                                setAttachmentDeliveryModeTouched(true);
+                                setAttachmentDeliveryMode((current) => (current === "parse" ? "workspace" : "parse"));
+                              }}
                               type="checkbox"
                             />
                             <span>Parse uploads</span>
@@ -3461,18 +3513,22 @@ export function ChatWorkspace() {
             ) : null}
             <p
               className={
-                attachmentDeliveryMode === "workspace"
-                  ? "helper-copy composer-mode-hint is-inactive"
-                  : "helper-copy composer-mode-hint is-active"
+                attachmentDeliveryMode === "workspace" && !attachmentDeliveryModeTouched
+                  ? "helper-copy composer-mode-hint is-active"
+                  : attachmentDeliveryMode === "workspace"
+                    ? "helper-copy composer-mode-hint is-inactive"
+                    : "helper-copy composer-mode-hint is-active"
               }
             >
               {activePendingQuestion
                 ? "The session is paused until you answer the pending questions."
                 : uploadingAttachments
                   ? "Processing attachments before they are sent to the agent."
-                  : attachmentDeliveryMode === "workspace"
-                    ? "Parsing is off. New uploads go to the agent workspace and are only announced with file paths."
-                    : "Parsing is on. New uploads are parsed into chat context when that format is supported."}
+                  : attachmentDeliveryMode === "workspace" && !attachmentDeliveryModeTouched
+                    ? "Parsing is off for most formats. Images and text files are still parsed into chat context by default."
+                    : attachmentDeliveryMode === "workspace"
+                      ? "Parsing is off. New uploads go to the agent workspace and are only announced with file paths."
+                      : "Parsing is on. New uploads are parsed into chat context when that format is supported."}
             </p>
           </div>
           </section>
