@@ -28,6 +28,7 @@ import {
   PanelRightClose,
   Pencil,
   Plus,
+  Square,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -36,13 +37,16 @@ import { useChatSessions } from "@/components/chat-sessions-provider";
 import { useAuth } from "@/components/auth-provider";
 
 import {
+  cancelAgentRun,
   getAgents,
   getChatSession,
   getHealth,
+  listAgentRuns,
   renameChatSession,
   replaceChatTranscript,
   sortAgentsForPicker,
-  streamAgent,
+  startAgentRun,
+  streamAgentRunEvents,
   StreamAbortedError,
   uploadChatAttachments,
 } from "@/lib/client-api";
@@ -2045,6 +2049,10 @@ export function ChatWorkspace() {
   // Tracks the in-flight agent run. A new run (or unmount) aborts the previous
   // one so its stream can no longer mutate thread state.
   const activeRunRef = useRef<{ id: number; controller: AbortController } | null>(null);
+  // The backend-side durable run backing the active stream. Unlike the SSE
+  // view (activeRunRef), this run keeps executing when the view disconnects —
+  // it must be cancelled explicitly before a new turn starts.
+  const activeBackendRunRef = useRef<{ runId: string; agentName: string } | null>(null);
   const undoInProgressRef = useRef(false);
 
   // Snapshot used by Task 8's undo toast: the original edited message and the
@@ -2197,6 +2205,18 @@ export function ChatWorkspace() {
         const hydratedThread = threadFromSession(session);
         upsertThread(hydratedThread);
         setSelectedAgent((current) => pickAvailableAgentName(agents, hydratedThread.agentName, defaultAgentName, current));
+        // If this session still has a background run executing (the user
+        // navigated away and came back), reattach and replay its events.
+        try {
+          const runAgentName = hydratedThread.agentName || defaultAgentName;
+          const runs = await listAgentRuns(runAgentName, activeThread.sessionId);
+          const openRun = runs.find((candidate) => candidate.status === "running" || candidate.status === "cancelling");
+          if (openRun && !cancelled && !activeRunRef.current) {
+            await reattachToRun(hydratedThread, runAgentName, openRun.id);
+          }
+        } catch {
+          // Runs listing unavailable — the session simply renders its persisted state.
+        }
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load conversation.");
@@ -2473,6 +2493,258 @@ export function ChatWorkspace() {
     }
   }
 
+  // Shared SSE-event applier for one assistant turn: appends token deltas,
+  // reconciles full-text events, and flags termination (final / error /
+  // input_required). Used by both the live send path and background-run
+  // reattachment so replayed events render identically.
+  function createRunEventApplier(threadId: string, assistantId: string) {
+    let currentAssistantIteration: number | null = null;
+    let deltasStreamedThisIteration = false;
+    const state = { terminated: false };
+    const apply = (event: string, payload: unknown) => {
+      if (event === "assistant_delta") {
+        const text = (payload as { text?: string })?.text || "";
+        if (!text) {
+          return;
+        }
+        // Token-level fragments: append within one iteration, but a new
+        // iteration's first delta replaces the prior iteration's text.
+        const iteration = (payload as { iteration?: number })?.iteration ?? 0;
+        const isNewIteration = iteration !== currentAssistantIteration;
+        currentAssistantIteration = iteration;
+        deltasStreamedThisIteration = true;
+        updateThread(threadId, (thread) => ({
+          ...thread,
+          updatedAt: Date.now(),
+          messages: thread.messages.map((message) =>
+            message.id === assistantId
+              ? { ...message, content: isNewIteration ? text : `${message.content}${text}` }
+              : message,
+          ),
+        }));
+        return;
+      }
+
+      if (event === "assistant") {
+        const text = (payload as { text?: string })?.text || "";
+        const iteration = (payload as { iteration?: number })?.iteration ?? 0;
+        // When the backend already streamed this iteration token-by-token
+        // (assistant_delta), the full text is a duplicate — skip it.
+        if (iteration === currentAssistantIteration && deltasStreamedThisIteration) {
+          return;
+        }
+        deltasStreamedThisIteration = false;
+        const isNewIteration = iteration !== currentAssistantIteration;
+        currentAssistantIteration = iteration;
+        updateThread(threadId, (thread) => ({
+          ...thread,
+          updatedAt: Date.now(),
+          messages: thread.messages.map((message) =>
+            message.id === assistantId
+              ? { ...message, content: isNewIteration ? text : `${message.content}${text}` }
+              : message,
+          ),
+        }));
+        return;
+      }
+
+      if (event === "final") {
+        state.terminated = true;
+        const text = (payload as { output_text?: string })?.output_text || "";
+        updateThread(threadId, (thread) => ({
+          ...thread,
+          updatedAt: Date.now(),
+          pendingQuestion: null,
+          messages: thread.messages.map((message) =>
+            message.id === assistantId ? { ...message, content: text || message.content } : message,
+          ),
+        }));
+        return;
+      }
+
+      if (event === "cancelled") {
+        state.terminated = true;
+        return;
+      }
+
+      if (event === "session") {
+        const sessionSummary = payload as ChatSessionSummary;
+        applySessionSummary(sessionSummary, threadId);
+        return;
+      }
+
+      // Contract: only the root input_required opens the answer form; delegate_waiting_parent is trace-only and never matches this exact-name check.
+      if (event === "input_required") {
+        state.terminated = true;
+        const pendingQuestion = normalizePendingQuestionRequest(payload);
+        updateThread(threadId, (thread) => ({
+          ...thread,
+          updatedAt: Date.now(),
+          pendingQuestion,
+          activity: [...thread.activity, { id: uid(event), title: event, payload }],
+          messages: thread.messages.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content: message.content || "Waiting for your answer…",
+                  askUserPrompt: pendingQuestion,
+                }
+              : message,
+          ),
+        }));
+        return;
+      }
+
+      if (event === "error") {
+        state.terminated = true;
+        const detail =
+          (payload as { detail?: string })?.detail ||
+          (payload as { message?: string })?.message ||
+          "Agent run failed.";
+        setError(detail);
+        updateThread(threadId, (thread) => ({
+          ...thread,
+          updatedAt: Date.now(),
+          activity: [...thread.activity, { id: uid(event), title: event, payload }],
+          messages: thread.messages.map((message) =>
+            message.id === assistantId
+              ? { ...message, content: message.content || detail }
+              : message,
+          ),
+        }));
+        return;
+      }
+
+      if (getBaseEventTitle(event) === "context_window") {
+        const ctxPayload = payload as { truncated_message_count?: number; compaction_method?: string; summarized_message_count?: number };
+        const truncated = Number(ctxPayload.truncated_message_count) || 0;
+        const summarized = Number(ctxPayload.summarized_message_count) || 0;
+        const method = typeof ctxPayload.compaction_method === "string" ? ctxPayload.compaction_method : null;
+        updateThread(threadId, (thread) => ({
+          ...thread,
+          updatedAt: Date.now(),
+          contextTruncated: (truncated > 0 || summarized > 0) ? true : thread.contextTruncated,
+          compactionMethod: method || thread.compactionMethod,
+          activity: [...thread.activity, { id: uid(event), title: event, payload }],
+        }));
+        return;
+      }
+
+      if (isTraceStreamEvent(event)) {
+        const publishedDownloads = getBaseEventTitle(event) === "tool_results" ? extractPublishedDownloadsFromPayload(payload) : [];
+        updateThread(threadId, (thread) => ({
+          ...thread,
+          updatedAt: Date.now(),
+          activity: [...thread.activity, { id: uid(event), title: event, payload }],
+          messages: publishedDownloads.length
+            ? thread.messages.map((message) =>
+                message.id === assistantId
+                  ? { ...message, attachments: mergeAttachments((message.attachments || []) as ComposerAttachment[], publishedDownloads) }
+                  : message,
+              )
+            : thread.messages,
+        }));
+        return;
+      }
+    };
+    return {
+      apply,
+      get terminated() {
+        return state.terminated;
+      },
+    };
+  }
+
+  // Cancels the live backend run (if any) and waits until the backend marks it
+  // terminal, so the next POST /runs doesn't trip the one-run-per-session 409.
+  async function cancelActiveBackendRun(sessionId: string | undefined) {
+    const active = activeBackendRunRef.current;
+    if (!active) {
+      return;
+    }
+    try {
+      await cancelAgentRun(active.agentName, active.runId);
+    } catch {
+      // Already terminal or unknown — nothing to wait for.
+    }
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (!sessionId) {
+        break;
+      }
+      try {
+        const runs = await listAgentRuns(active.agentName, sessionId);
+        const run = runs.find((candidate) => candidate.id === active.runId);
+        if (!run || (run.status !== "running" && run.status !== "cancelling")) {
+          break;
+        }
+      } catch {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    activeBackendRunRef.current = null;
+  }
+
+  async function handleStopRun() {
+    const active = activeBackendRunRef.current;
+    if (active) {
+      try {
+        await cancelAgentRun(active.agentName, active.runId);
+      } catch {
+        // The SSE view will still drain any terminal event already logged.
+      }
+    }
+    activeRunRef.current?.controller.abort();
+  }
+
+  // Reattach to a still-running background run after a page change/remount:
+  // rebuilds the turn from the run's full event replay (position 0).
+  async function reattachToRun(thread: ChatThread, agentName: string, runId: string) {
+    const threadId = thread.id;
+    const assistantId = uid("assistant");
+    setSending(true);
+    const runController = new AbortController();
+    const guardId = (activeRunRef.current?.id ?? 0) + 1;
+    activeRunRef.current = { id: guardId, controller: runController };
+    activeBackendRunRef.current = { runId, agentName };
+    updateThread(threadId, (current) => ({
+      ...current,
+      isLoaded: true,
+      messages: [...current.messages, { id: assistantId, role: "assistant", content: "" }],
+    }));
+    const applier = createRunEventApplier(threadId, assistantId);
+    try {
+      await streamAgentRunEvents(agentName, runId, {
+        after: 0,
+        onChunk: ({ event, payload }) => {
+          if (event === "run_started") {
+            const started = payload as { display_input?: string; user_message_id?: string };
+            const userId = started.user_message_id || uid("user");
+            updateThread(threadId, (current) =>
+              current.messages.some((message) => message.id === userId)
+                ? current
+                : {
+                    ...current,
+                    messages: [...current.messages, { id: userId, role: "user", content: started.display_input || "" }],
+                  },
+            );
+            return;
+          }
+          applier.apply(event, payload);
+        },
+        signal: runController.signal,
+      });
+    } catch {
+      // View-level failure (abort/network): the backend run keeps executing;
+      // the session will reflect the result when it finishes.
+    } finally {
+      if (activeRunRef.current?.id === guardId) {
+        activeBackendRunRef.current = null;
+        setSending(false);
+      }
+    }
+  }
+
   async function runThreadRequest(params: {
     thread: ChatThread;
     requestInput: string | AgentInputPart[];
@@ -2508,9 +2780,7 @@ export function ChatWorkspace() {
     const runController = new AbortController();
     const runId = (activeRunRef.current?.id ?? 0) + 1;
     activeRunRef.current = { id: runId, controller: runController };
-    // Tracks the iteration of the last "assistant" event seen, so a new ReAct
-    // iteration's full text replaces (not appends to) the prior iteration's text.
-    let currentAssistantIteration: number | null = null;
+    let streamTerminatedCleanly = false;
 
     updateThread(threadId, (thread) => ({
       ...thread,
@@ -2526,10 +2796,13 @@ export function ChatWorkspace() {
       messages: [...thread.messages, userMessage, { id: assistantId, role: "assistant", content: "" }],
     }));
 
-    let streamTerminatedCleanly = false;
+    const applier = createRunEventApplier(threadId, assistantId);
 
     try {
-      await streamAgent(
+      // The backend allows one live run per session: cancel any leftover
+      // background run from a previous turn (or another tab) first.
+      await cancelActiveBackendRun(params.thread.sessionId);
+      const handle = await startAgentRun(
         selectedAgent,
         {
           input: params.requestInput,
@@ -2542,124 +2815,17 @@ export function ChatWorkspace() {
             ...(params.metadata || {}),
           },
         },
-        ({ event, payload }) => {
-          if (event === "assistant") {
-            const text = (payload as { text?: string })?.text || "";
-            const iteration = (payload as { iteration?: number })?.iteration ?? 0;
-            // The backend sends the FULL output_text for each ReAct iteration
-            // (not a delta chunk). Within one iteration multiple chunks would
-            // append, but a new iteration must replace the prior text so
-            // multi-turn ReAct doesn't concatenate per-iteration texts.
-            const isNewIteration = iteration !== currentAssistantIteration;
-            currentAssistantIteration = iteration;
-            updateThread(threadId, (thread) => ({
-              ...thread,
-              updatedAt: Date.now(),
-              messages: thread.messages.map((message) =>
-                message.id === assistantId
-                  ? { ...message, content: isNewIteration ? text : `${message.content}${text}` }
-                  : message,
-              ),
-            }));
-            return;
-          }
-
-          if (event === "final") {
+      );
+      activeBackendRunRef.current = { runId: handle.run_id, agentName: selectedAgent };
+      await streamAgentRunEvents(selectedAgent, handle.run_id, {
+        onChunk: ({ event, payload }) => {
+          applier.apply(event, payload);
+          if (applier.terminated) {
             streamTerminatedCleanly = true;
-            const text = (payload as { output_text?: string })?.output_text || "";
-            updateThread(threadId, (thread) => ({
-              ...thread,
-              updatedAt: Date.now(),
-              pendingQuestion: null,
-              messages: thread.messages.map((message) =>
-                message.id === assistantId ? { ...message, content: text || message.content } : message,
-              ),
-            }));
-            return;
-          }
-
-          if (event === "session") {
-            const sessionSummary = payload as ChatSessionSummary;
-            applySessionSummary(sessionSummary, threadId);
-            return;
-          }
-
-          // Contract: only the root input_required opens the answer form; delegate_waiting_parent is trace-only and never matches this exact-name check.
-          if (event === "input_required") {
-            streamTerminatedCleanly = true;
-            const pendingQuestion = normalizePendingQuestionRequest(payload);
-            updateThread(threadId, (thread) => ({
-              ...thread,
-              updatedAt: Date.now(),
-              pendingQuestion,
-              activity: [...thread.activity, { id: uid(event), title: event, payload }],
-              messages: thread.messages.map((message) =>
-                message.id === assistantId
-                  ? {
-                      ...message,
-                      content: message.content || "Waiting for your answer…",
-                      askUserPrompt: pendingQuestion,
-                    }
-                  : message,
-              ),
-            }));
-            return;
-          }
-
-          if (event === "error") {
-            streamTerminatedCleanly = true;
-            const detail =
-              (payload as { detail?: string })?.detail ||
-              (payload as { message?: string })?.message ||
-              "Agent run failed.";
-            setError(detail);
-            updateThread(threadId, (thread) => ({
-              ...thread,
-              updatedAt: Date.now(),
-              activity: [...thread.activity, { id: uid(event), title: event, payload }],
-              messages: thread.messages.map((message) =>
-                message.id === assistantId
-                  ? { ...message, content: message.content || detail }
-                  : message,
-              ),
-            }));
-            return;
-          }
-
-          if (getBaseEventTitle(event) === "context_window") {
-            const ctxPayload = payload as { truncated_message_count?: number; compaction_method?: string; summarized_message_count?: number };
-            const truncated = Number(ctxPayload.truncated_message_count) || 0;
-            const summarized = Number(ctxPayload.summarized_message_count) || 0;
-            const method = typeof ctxPayload.compaction_method === "string" ? ctxPayload.compaction_method : null;
-            updateThread(threadId, (thread) => ({
-              ...thread,
-              updatedAt: Date.now(),
-              contextTruncated: (truncated > 0 || summarized > 0) ? true : thread.contextTruncated,
-              compactionMethod: method || thread.compactionMethod,
-              activity: [...thread.activity, { id: uid(event), title: event, payload }],
-            }));
-            return;
-          }
-
-          if (isTraceStreamEvent(event)) {
-            const publishedDownloads = getBaseEventTitle(event) === "tool_results" ? extractPublishedDownloadsFromPayload(payload) : [];
-            updateThread(threadId, (thread) => ({
-              ...thread,
-              updatedAt: Date.now(),
-              activity: [...thread.activity, { id: uid(event), title: event, payload }],
-              messages: publishedDownloads.length
-                ? thread.messages.map((message) =>
-                    message.id === assistantId
-                      ? { ...message, attachments: mergeAttachments((message.attachments || []) as ComposerAttachment[], publishedDownloads) }
-                      : message,
-                  )
-                : thread.messages,
-            }));
-            return;
           }
         },
-        runController.signal,
-      );
+        signal: runController.signal,
+      });
 
       if (!streamTerminatedCleanly) {
         // If this run was superseded (a newer run started) or aborted (unmount /
@@ -2702,6 +2868,7 @@ export function ChatWorkspace() {
       // Only release the "sending" lock if this run is still the active one;
       // a newer run is managing its own lock.
       if (activeRunRef.current?.id === runId) {
+        activeBackendRunRef.current = null;
         setSending(false);
       }
     }
@@ -3234,12 +3401,12 @@ export function ChatWorkspace() {
                       variant="default"
                       size="icon"
                       className="composer-gemini-send"
-                      disabled={!currentAgent || (!input.trim() && attachmentDrafts.length === 0) || sending || uploadingAttachments || Boolean(activePendingQuestion)}
-                      onClick={handleSend}
+                      disabled={sending ? false : !currentAgent || (!input.trim() && attachmentDrafts.length === 0) || uploadingAttachments || Boolean(activePendingQuestion)}
+                      onClick={sending ? () => void handleStopRun() : handleSend}
                       type="button"
-                      aria-label="Send message"
+                      aria-label={sending ? "Stop generating" : "Send message"}
                     >
-                      {uploadingAttachments ? <Loader2 className="size-4 animate-spin" /> : sending ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+                      {sending ? <Square className="size-4" /> : uploadingAttachments ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
                     </Button>
                   )}
                 </div>
@@ -3284,12 +3451,12 @@ export function ChatWorkspace() {
                       variant="default"
                       size="icon"
                       className="composer-gemini-send"
-                      disabled={!currentAgent || (!input.trim() && attachmentDrafts.length === 0) || sending || uploadingAttachments || Boolean(activePendingQuestion)}
-                      onClick={handleSend}
+                      disabled={sending ? false : !currentAgent || (!input.trim() && attachmentDrafts.length === 0) || uploadingAttachments || Boolean(activePendingQuestion)}
+                      onClick={sending ? () => void handleStopRun() : handleSend}
                       type="button"
-                      aria-label="Send message"
+                      aria-label={sending ? "Stop generating" : "Send message"}
                     >
-                      {uploadingAttachments ? <Loader2 className="size-4 animate-spin" /> : sending ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+                      {sending ? <Square className="size-4" /> : uploadingAttachments ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
                     </Button>
                   </div>
                 )}

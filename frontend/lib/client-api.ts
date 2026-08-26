@@ -462,6 +462,184 @@ export class StreamAbortedError extends Error {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Durable agent runs: execution is decoupled from the SSE connection, so the
+// stream can be reattached (Last-Event-ID style) and cancelled explicitly.
+// ---------------------------------------------------------------------------
+
+export type AgentRunHandle = {
+  run_id: string;
+  session_id: string;
+};
+
+export type AgentRunSummary = {
+  id: string;
+  session_id: string;
+  agent_name: string;
+  status: "running" | "cancelling" | "completed" | "cancelled" | "failed";
+  created_at: string;
+  finished_at: string | null;
+};
+
+export type RunStreamEvent = {
+  id: number;
+  event: string;
+  payload: unknown;
+};
+
+export async function startAgentRun(
+  agentName: string,
+  request: AgentRunRequest,
+): Promise<AgentRunHandle> {
+  const response = await fetch(buildPath(`agents/${encodeURIComponent(agentName)}/runs`), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw await readError(response);
+  }
+  return (await response.json()) as AgentRunHandle;
+}
+
+export async function listAgentRuns(agentName: string, sessionId: string): Promise<AgentRunSummary[]> {
+  const query = `session_id=${encodeURIComponent(sessionId)}`;
+  const response = await fetch(buildPath(`agents/${encodeURIComponent(agentName)}/runs?${query}`), {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw await readError(response);
+  }
+  return (await response.json()) as AgentRunSummary[];
+}
+
+export async function cancelAgentRun(agentName: string, runId: string): Promise<{ status: string }> {
+  const response = await fetch(
+    buildPath(`agents/${encodeURIComponent(agentName)}/runs/${encodeURIComponent(runId)}/cancel`),
+    {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+    },
+  );
+  if (!response.ok) {
+    throw await readError(response);
+  }
+  return (await response.json()) as { status: string };
+}
+
+function consumeRunEventBlock(block: string): RunStreamEvent | null {
+  const lines = block.split("\n");
+  let event = "message";
+  let id = 0;
+  const dataLines: string[] = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line) {
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim();
+      continue;
+    }
+    if (line.startsWith("id:")) {
+      id = Number.parseInt(line.slice("id:".length).trim(), 10) || 0;
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return null;
+  }
+  const data = dataLines.join("\n");
+  try {
+    return { id, event, payload: JSON.parse(data) };
+  } catch {
+    return { id, event, payload: data };
+  }
+}
+
+/**
+ * SSE view over a background agent run. `after` is the last event id the
+ * caller processed (0 replays everything). Aborting the signal only closes
+ * the view — the backend run keeps executing.
+ */
+export async function streamAgentRunEvents(
+  agentName: string,
+  runId: string,
+  options: {
+    after?: number;
+    onChunk: (event: RunStreamEvent) => void;
+    signal?: AbortSignal;
+  },
+): Promise<void> {
+  const { after = 0, onChunk, signal } = options;
+  const query = after > 0 ? `?after=${after}` : "";
+  const response = await fetch(
+    buildStreamPath(`agents/${encodeURIComponent(agentName)}/runs/${encodeURIComponent(runId)}/events${query}`),
+    {
+      headers: { accept: "text/event-stream" },
+      credentials: "include",
+      cache: "no-store",
+      signal,
+    },
+  );
+  if (!response.ok) {
+    throw await readError(response);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    return;
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
+      for (const part of parts) {
+        const event = consumeRunEventBlock(part);
+        if (event) {
+          onChunk(event);
+        }
+      }
+    }
+    if (buffer.trim()) {
+      const event = consumeRunEventBlock(buffer);
+      if (event) {
+        onChunk(event);
+      }
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new StreamAbortedError();
+    }
+    if (signal?.aborted) {
+      throw new StreamAbortedError();
+    }
+    throw error;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released — ignore.
+    }
+  }
+}
+
 export function uploadChatAttachments(
   sessionId: string,
   files: File[],

@@ -95,6 +95,115 @@ class OpenAICompatibleProvider(ModelAdapter):
         except Exception as exc:
             raise self._translate_error(exc) from exc
 
+    async def stream_generation(
+        self, request: GenerationRequest
+    ) -> AsyncIterator[tuple[str, "GenerationResponse | str"]]:
+        payload = self._build_payload(request)
+        payload["stream"] = True
+        role = "assistant"
+        content_text_parts: list[str] = []
+        structured_content_parts: list[Any] = []
+        reasoning_parts: list[str] = []
+        tool_calls_by_index: dict[int, dict[str, Any]] = {}
+        usage_data: dict[str, Any] = {}
+        saw_choices = False
+        try:
+            stream = await self._client.chat.completions.create(**payload)
+            async for chunk in stream:
+                data = self._model_dump(chunk)
+                for choice in data.get("choices") or []:
+                    saw_choices = True
+                    delta = choice.get("delta") or {}
+                    if delta.get("role"):
+                        role = str(delta["role"])
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        content_text_parts.append(content)
+                        yield ("delta", content)
+                    elif isinstance(content, list):
+                        for item in content:
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "text"
+                                and isinstance(item.get("text"), str)
+                            ):
+                                content_text_parts.append(item["text"])
+                                yield ("delta", item["text"])
+                            else:
+                                structured_content_parts.append(item)
+                    reasoning = delta.get("reasoning_content")
+                    if isinstance(reasoning, str) and reasoning:
+                        reasoning_parts.append(reasoning)
+                    for raw_call in delta.get("tool_calls") or []:
+                        if not isinstance(raw_call, dict):
+                            continue
+                        raw_index = raw_call.get("index")
+                        index = 0 if raw_index is None else int(raw_index)
+                        entry = tool_calls_by_index.setdefault(
+                            index, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
+                        )
+                        if raw_call.get("id"):
+                            entry["id"] = raw_call["id"]
+                        function = raw_call.get("function")
+                        if isinstance(function, dict):
+                            # Name arrives whole on the first fragment; arguments
+                            # arrive as string fragments to concatenate.
+                            if function.get("name"):
+                                entry["function"]["name"] = str(function["name"])
+                            if function.get("arguments"):
+                                entry["function"]["arguments"] += str(function["arguments"])
+                chunk_usage = data.get("usage")
+                if isinstance(chunk_usage, dict) and chunk_usage.get("total_tokens"):
+                    usage_data = chunk_usage
+        except Exception as exc:
+            raise self._translate_error(exc) from exc
+
+        if not saw_choices:
+            raise ModelProviderError(self.config.provider, "Upstream returned no choices")
+
+        text = "".join(content_text_parts)
+        if structured_content_parts:
+            content: Any = ([{"type": "text", "text": text}] if text else []) + structured_content_parts
+        else:
+            content = text
+        normalized_content = self._normalize_content_parts(content)
+        raw_tool_calls = [tool_calls_by_index[index] for index in sorted(tool_calls_by_index)]
+        tool_calls = [
+            ToolCall(
+                id=self._raw_tool_call_id(raw_call),
+                name=self._raw_tool_call_name(raw_call),
+                arguments=self._parse_arguments(
+                    self._raw_tool_call_arguments(raw_call),
+                    provider=self.config.provider,
+                    tool_name=self._raw_tool_call_name(raw_call),
+                ),
+                raw=raw_call,
+            )
+            for raw_call in raw_tool_calls
+            if self._raw_tool_call_name(raw_call)
+        ]
+        usage = None
+        if usage_data.get("total_tokens"):
+            from covalent.core.types import TokenUsage
+            usage = TokenUsage(
+                prompt_tokens=int(usage_data.get("prompt_tokens", 0)),
+                completion_tokens=int(usage_data.get("completion_tokens", 0)),
+                total_tokens=int(usage_data.get("total_tokens", 0)),
+            )
+        response = GenerationResponse(
+            output_text=self._extract_text(normalized_content),
+            tool_calls=tool_calls,
+            assistant_message=Message(
+                role=role,
+                content=normalized_content,
+                tool_calls=raw_tool_calls,
+                reasoning_content="".join(reasoning_parts),
+            ),
+            raw_response={"aggregated_stream": {"content": normalized_content, "tool_calls": raw_tool_calls}},
+            usage=usage,
+        )
+        yield ("response", response)
+
     def _build_client(self) -> AsyncOpenAI:
         base_url = self._normalized_base_url(self.config.base_url)
         return AsyncOpenAI(

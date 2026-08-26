@@ -58,5 +58,21 @@ class ModelAdapter(ABC):
     async def stream(self, request: GenerationRequest) -> AsyncIterator[str]:
         raise NotImplementedError("Streaming not implemented for this provider")
 
+    async def stream_generation(
+        self, request: GenerationRequest
+    ) -> AsyncIterator[tuple[str, "GenerationResponse | str"]]:
+        """Streaming variant of ``generate``.
+
+        Yields ``("delta", text)`` fragments as they arrive and finishes with
+        exactly one ``("response", GenerationResponse)`` item aggregated to the
+        same shape ``generate`` produces. The base implementation falls back to
+        a single whole-text delta so callers need no capability branching.
+        """
+        response = await self.generate(request)
+        text = response.output_text or ""
+        if text:
+            yield ("delta", text)
+        yield ("response", response)
+
     async def aclose(self) -> None:
         return None

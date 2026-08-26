@@ -36,6 +36,7 @@ from covalent.infra.sandbox_repository import SandboxRepository
 from covalent.infra.settings import AppSettings
 from covalent.runtime.backend import make_backend
 from covalent.runtime.react import ReactAgentRuntime
+from covalent.runtime.run_manager import RunManager
 from covalent.runtime.sandbox_image_validator import DockerImageValidator
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,14 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("Delegate startup sweeps failed", exc_info=True)
     app.state.agent_invocation = AgentInvocationService(registry, app.state.runtime)
+
+    # Durable chat runs: background execution decoupled from SSE connections.
+    run_manager = RunManager(db_manager.session_factory)
+    app.state.run_manager = run_manager
+    try:
+        await run_manager.sweep_orphans()
+    except Exception:
+        logger.warning("Chat run orphan sweep failed", exc_info=True)
 
     yield
     reaper_task.cancel()

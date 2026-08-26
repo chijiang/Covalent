@@ -10,7 +10,7 @@ from typing import Any
 
 from covalent.application.errors import ApplicationError
 from covalent.core.agent import AgentSpec
-from covalent.core.types import DelegateRunResult, GenerationRequest, GenerationResponse, Message, ParentInputRequest, PromptContent, ResumedToolResult, RunContext, ToolCall, ToolResult, UserInputRequest
+from covalent.core.types import Capability, DelegateRunResult, GenerationRequest, GenerationResponse, Message, ParentInputRequest, PromptContent, ResumedToolResult, RunContext, ToolCall, ToolResult, UserInputRequest
 from covalent.infra.memory import SessionStore
 from covalent.model.base import ModelProviderError
 from covalent.registry.registry import FrameworkRegistry
@@ -1624,7 +1624,27 @@ class ReactAgentRuntime(AgentRuntime):
             )
             started_at = perf_counter()
             try:
-                response = await adapter.generate(request)
+                response: GenerationResponse | None = None
+                if adapter.supports(Capability.STREAMING):
+                    # Token-level streaming: text fragments flow out as
+                    # assistant_delta events; the aggregated response arrives
+                    # as the final ("response", ...) item. The base-adapter
+                    # fallback yields one whole-text delta, so behavior for
+                    # non-streaming providers is unchanged.
+                    async for item in adapter.stream_generation(request):
+                        tag, value = item
+                        if tag == "delta":
+                            if value:
+                                yield {"event": "assistant_delta", "payload": {"text": value, "iteration": iteration}}
+                        else:
+                            response = value
+                    if response is None:
+                        raise ModelProviderError(
+                            agent.provider.provider,
+                            "Streaming generation ended without an aggregated response",
+                        )
+                else:
+                    response = await adapter.generate(request)
             except ModelProviderError as exc:
                 elapsed_ms = round((perf_counter() - started_at) * 1000)
                 yield {

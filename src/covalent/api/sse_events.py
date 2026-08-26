@@ -5,6 +5,7 @@ names without creating an import cycle.
 """
 
 SSE_EVENT_ASSISTANT = "assistant"
+SSE_EVENT_ASSISTANT_DELTA = "assistant_delta"
 SSE_EVENT_FINAL = "final"
 SSE_EVENT_TOOL_CALLS = "tool_calls"
 SSE_EVENT_TOOL_RESULTS = "tool_results"

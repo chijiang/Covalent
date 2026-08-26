@@ -521,6 +521,55 @@ class ChatActivityRow(Base):
     )
 
 
+class ChatRunRow(TimestampMixin, Base):
+    """One durable chat turn execution (background worker driven)."""
+
+    __tablename__ = "chat_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running','cancelling','completed','cancelled','failed')",
+            name="ck_chat_runs_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    owner_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_json: Mapped[dict[str, Any]] = mapped_column("input", JSONB, nullable=False, default=dict)
+    error_json: Mapped[dict[str, Any]] = mapped_column("error", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ChatRunEventRow(Base):
+    """Replayable SSE event log; ``position`` is the per-run SSE event id."""
+
+    __tablename__ = "chat_run_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "position", name="uq_chat_run_events_run_position"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("chat_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    event: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 async def run_session_operation(
     session_factory: async_sessionmaker[AsyncSession],
     operation: Callable[[AsyncSession], Awaitable[_T]],
