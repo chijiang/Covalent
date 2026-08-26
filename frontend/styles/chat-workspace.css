@@ -1566,10 +1566,29 @@
   justify-content: flex-start;
 }
 
+.chat-message-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: min(880px, 86%);
+}
+
+.chat-message-row.outbound .chat-message-stack {
+  align-items: flex-end;
+}
+
+.chat-message-row.inbound .chat-message-stack {
+  align-items: flex-start;
+}
+
+.chat-message-stack-editing {
+  width: min(720px, 86%);
+}
+
 .chat-bubble {
   position: relative;
   width: fit-content;
-  max-width: min(880px, 86%);
+  max-width: 100%;
   padding: 12px 16px;
   border-radius: 18px;
   border: 0;
@@ -1578,19 +1597,54 @@
   box-shadow: none;
 }
 
-.chat-bubble-copy {
+.chat-message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 26px;
+  padding: 4px 2px 0;
+  color: var(--fg-muted);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 150ms ease;
+  transform: translateY(-2px);
+  transition: opacity 150ms ease, transform 150ms ease;
 }
 
-.chat-bubble:hover .chat-bubble-copy,
-.chat-bubble:focus-within .chat-bubble-copy {
+.chat-message-row:hover .chat-message-actions,
+.chat-message-row:focus-within .chat-message-actions {
   opacity: 1;
   pointer-events: auto;
+  transform: translateY(0);
 }
 
-.chat-bubble-copy:focus-visible {
+.chat-message-time {
+  margin-right: 5px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.chat-message-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.chat-message-action:hover {
+  background: color-mix(in oklab, var(--fg-primary) 8%, transparent);
+  color: var(--fg-secondary);
+}
+
+.chat-message-action:focus-visible {
   outline: 2px solid currentColor;
   outline-offset: 2px;
 }
@@ -1630,7 +1684,7 @@
    instead of inheriting the original message's fit-content bubble width. */
 .chat-bubble.outbound.chat-bubble-editing {
   box-sizing: border-box;
-  width: min(720px, 86%);
+  width: 100%;
 }
 
 .chat-bubble-edit,
@@ -1643,6 +1697,11 @@
 }
 
 @media (max-width: 640px) {
+  .chat-message-stack-editing {
+    width: 100%;
+    max-width: 100%;
+  }
+
   .chat-bubble.outbound.chat-bubble-editing {
     width: 100%;
     max-width: 100%;

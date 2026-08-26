@@ -409,10 +409,9 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
-function ChatBubbleCopy({ content, tone }: { content: string; tone: "inbound" | "outbound" }) {
+function ChatBubbleCopy({ content }: { content: string }) {
   const copyResetRef = useRef<number | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
-  const isOutbound = tone === "outbound";
 
   useEffect(() => {
     return () => {
@@ -440,37 +439,18 @@ function ChatBubbleCopy({ content, tone }: { content: string; tone: "inbound" | 
 
   return (
     <button
-      className="chat-bubble-copy"
+      className="chat-message-action"
       onClick={handleCopy}
       type="button"
       aria-label="Copy message"
-      style={{
-        position: "absolute",
-        top: 6,
-        right: 6,
-        zIndex: 2,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: 28,
-        height: 28,
-        borderRadius: 6,
-        border: isOutbound ? "1px solid rgba(255, 255, 255, 0.32)" : "1px solid var(--border-soft)",
-        background: isOutbound ? "rgba(255, 255, 255, 0.22)" : "var(--surface-primary)",
-        boxShadow: isOutbound ? "0 6px 14px rgba(0, 0, 0, 0.16)" : "0 6px 14px rgba(16, 16, 16, 0.1)",
-        color: isOutbound ? "var(--fg-inverse)" : "var(--fg-primary)",
-        cursor: "pointer",
-        fontSize: 13,
-        lineHeight: 1,
-        padding: 0,
-      } satisfies CSSProperties}
+      title={copyState === "copied" ? "Copied" : "Copy message"}
     >
       {copyState === "copied" ? (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="20 6 9 17 4 12" />
         </svg>
       ) : (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
           <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
         </svg>
@@ -654,6 +634,7 @@ function AskUserPromptSummary({ prompt }: { prompt: PendingQuestionRequest }) {
 function ChatMessageBubble({
   message,
   sending,
+  messageTimestampFallback,
   editingMessageId,
   editingDraft,
   onEditStart,
@@ -663,6 +644,7 @@ function ChatMessageBubble({
 }: {
   message: Message;
   sending: boolean;
+  messageTimestampFallback: number;
   editingMessageId: string | null;
   editingDraft: string;
   onEditStart: (message: Message) => void;
@@ -677,27 +659,7 @@ function ChatMessageBubble({
     message.askUserPrompt && isWaitingForAnswerContent(message.content) ? "" : message.content;
   const markdownContent =
     displayContent || (sending && message.role === "assistant" ? "Thinking..." : "");
-
-  const editTriggerStyle: CSSProperties = {
-    position: "absolute",
-    top: 6,
-    right: 38,
-    zIndex: 2,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-    border: "1px solid rgba(255, 255, 255, 0.32)",
-    background: "rgba(255, 255, 255, 0.22)",
-    boxShadow: "0 6px 14px rgba(0, 0, 0, 0.16)",
-    color: "var(--fg-inverse)",
-    cursor: "pointer",
-    fontSize: 13,
-    lineHeight: 1,
-    padding: 0,
-  };
+  const messageTimestamp = getTimestampFromId(message.id, messageTimestampFallback);
 
   const editContainerStyle: CSSProperties = {
     display: "flex",
@@ -721,74 +683,80 @@ function ChatMessageBubble({
 
   return (
     <article className={message.role === "user" ? "chat-message-row outbound" : "chat-message-row inbound"}>
-      <div
-        className={
-          message.role === "user"
-            ? `chat-bubble outbound${isEditing ? " chat-bubble-editing" : ""}`
-            : "chat-bubble inbound"
-        }
-      >
-        <ChatBubbleCopy content={displayContent || ""} tone={tone} />
-        {canEdit ? (
-          <button
-            className="chat-bubble-copy"
-            onClick={() => onEditStart(message)}
-            type="button"
-            aria-label="Edit message"
-            title="Edit message"
-            style={editTriggerStyle}
-          >
-            <Pencil width={14} height={14} />
-          </button>
-        ) : null}
-        {message.askUserPrompt ? <AskUserPromptSummary prompt={message.askUserPrompt} /> : null}
-        {message.attachments?.length ? (
-          <div className="chat-attachment-list">
-            {message.attachments.map((file) =>
-              file.downloadUrl ? (
-                <a className="chat-attachment-chip chat-attachment-chip-link" download href={file.downloadUrl} key={file.id}>
-                  <span className="chat-attachment-topline">
-                    <strong>{file.name}</strong>
-                    <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
+      <div className={`chat-message-stack${isEditing ? " chat-message-stack-editing" : ""}`}>
+        <div
+          className={
+            message.role === "user"
+              ? `chat-bubble outbound${isEditing ? " chat-bubble-editing" : ""}`
+              : "chat-bubble inbound"
+          }
+        >
+          {message.askUserPrompt ? <AskUserPromptSummary prompt={message.askUserPrompt} /> : null}
+          {message.attachments?.length ? (
+            <div className="chat-attachment-list">
+              {message.attachments.map((file) =>
+                file.downloadUrl ? (
+                  <a className="chat-attachment-chip chat-attachment-chip-link" download href={file.downloadUrl} key={file.id}>
+                    <span className="chat-attachment-topline">
+                      <strong>{file.name}</strong>
+                      <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
+                    </span>
+                    <span className="chat-attachment-meta">{formatAttachmentMeta(file)}</span>
+                    {file.summary ? <span className="chat-attachment-summary">{file.summary}</span> : null}
+                    <span className="chat-attachment-action">Download</span>
+                  </a>
+                ) : (
+                  <span className="chat-attachment-chip" key={file.id}>
+                    <span className="chat-attachment-topline">
+                      <strong>{file.name}</strong>
+                      <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
+                    </span>
+                    <span className="chat-attachment-meta">{formatAttachmentMeta(file)}</span>
+                    {file.summary ? <span className="chat-attachment-summary">{file.summary}</span> : null}
                   </span>
-                  <span className="chat-attachment-meta">{formatAttachmentMeta(file)}</span>
-                  {file.summary ? <span className="chat-attachment-summary">{file.summary}</span> : null}
-                  <span className="chat-attachment-action">Download</span>
-                </a>
-              ) : (
-                <span className="chat-attachment-chip" key={file.id}>
-                  <span className="chat-attachment-topline">
-                    <strong>{file.name}</strong>
-                    <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
-                  </span>
-                  <span className="chat-attachment-meta">{formatAttachmentMeta(file)}</span>
-                  {file.summary ? <span className="chat-attachment-summary">{file.summary}</span> : null}
-                </span>
-              ),
-            )}
-          </div>
-        ) : null}
-        {isEditing ? (
-          <div className="chat-bubble-edit" style={editContainerStyle}>
-            <textarea
-              className="chat-bubble-edit-input"
-              value={editingDraft}
-              onChange={(event) => onEditChange(event.target.value)}
-              rows={3}
-              style={editInputStyle}
-            />
-            <div className="chat-bubble-edit-actions" style={editActionsStyle}>
-              <button type="button" onClick={onEditCancel}>
-                Cancel
-              </button>
-              <button type="button" onClick={onEditSubmit} disabled={!editingDraft.trim()}>
-                Save &amp; resend
-              </button>
+                ),
+              )}
             </div>
-          </div>
-        ) : (
-          <ChatMarkdownContent content={markdownContent} tone={tone} />
-        )}
+          ) : null}
+          {isEditing ? (
+            <div className="chat-bubble-edit" style={editContainerStyle}>
+              <textarea
+                className="chat-bubble-edit-input"
+                value={editingDraft}
+                onChange={(event) => onEditChange(event.target.value)}
+                rows={3}
+                style={editInputStyle}
+              />
+              <div className="chat-bubble-edit-actions" style={editActionsStyle}>
+                <button type="button" onClick={onEditCancel}>
+                  Cancel
+                </button>
+                <button type="button" onClick={onEditSubmit} disabled={!editingDraft.trim()}>
+                  Save &amp; resend
+                </button>
+              </div>
+            </div>
+          ) : (
+            <ChatMarkdownContent content={markdownContent} tone={tone} />
+          )}
+        </div>
+        <div aria-label="Message actions" className="chat-message-actions" role="group">
+          <time className="chat-message-time" dateTime={new Date(messageTimestamp).toISOString()}>
+            {formatMessageTimestamp(messageTimestamp)}
+          </time>
+          <ChatBubbleCopy content={displayContent || ""} />
+          {canEdit ? (
+            <button
+              className="chat-message-action"
+              onClick={() => onEditStart(message)}
+              type="button"
+              aria-label="Edit message"
+              title="Edit message"
+            >
+              <Pencil width={13} height={13} />
+            </button>
+          ) : null}
+        </div>
       </div>
     </article>
   );
@@ -1382,6 +1350,15 @@ function formatTime(value: number): string {
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
+  }).format(value);
+}
+
+function formatMessageTimestamp(value: number): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
   }).format(value);
 }
 
@@ -3222,6 +3199,7 @@ export function ChatWorkspace() {
                   key={message.id}
                   message={message}
                   sending={sending}
+                  messageTimestampFallback={activeThread?.updatedAt || 0}
                   editingMessageId={editingMessageId}
                   editingDraft={editingDraft}
                   onEditStart={(m) => {
