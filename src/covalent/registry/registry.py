@@ -347,12 +347,18 @@ class FrameworkRegistry:
                 parameters = {key: value for key, value in parameters.items() if key != "type"}
                 parameters["type"] = "object"
                 parameters.setdefault("properties", {})
+            exported_name = self._encode_mcp_tool_name(server.name, tool.tool_name)
+            description = tool.description or f"MCP tool '{tool.tool_name}' from server '{server.name}'"
+            if exported_name != f"mcp__{server.name}__{tool.tool_name}":
+                # The exported id is encoded (base64/sanitized) and unreadable to
+                # the model; surface the real names so tool choice keeps semantics.
+                description = f"[{server.name}.{tool.tool_name}] {description}"
             exported.append(
                 {
                     "type": "function",
                     "function": {
-                        "name": self._encode_mcp_tool_name(server.name, tool.tool_name),
-                        "description": tool.description or f"MCP tool '{tool.tool_name}' from server '{server.name}'",
+                        "name": exported_name,
+                        "description": description,
                         "parameters": parameters,
                     },
                 }
@@ -428,9 +434,32 @@ class FrameworkRegistry:
             return None
         return parsed if isinstance(parsed, expected) else None
 
-    @staticmethod
-    def _encode_mcp_tool_name(server_name: str, tool_name: str) -> str:
-        return f"mcp__{FrameworkRegistry._encode_name_part(server_name)}__{FrameworkRegistry._encode_name_part(tool_name)}"
+    # Literal name parts must satisfy provider tool-name charsets
+    # (OpenAI/Anthropic: [A-Za-z0-9_-]) and must not contain the "__" separator.
+    _MCP_LITERAL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+    @classmethod
+    def _mcp_name_part(cls, value: str) -> str:
+        """Encode one name segment for the ``mcp__<server>__<tool>`` id.
+
+        A segment stays literal (human-readable to the model) only when it is
+        already provider-compliant, contains no ``__``, and cannot be mistaken
+        for base64 (a literal that round-trips as base64 of another string would
+        be ambiguous on decode). Everything else falls back to base64 so the
+        mapping stays injective, deterministic, and stateless.
+        """
+        if (
+            value
+            and cls._MCP_LITERAL_NAME_RE.fullmatch(value)
+            and "__" not in value
+            and cls._try_decode_name_part(value) is None
+        ):
+            return value
+        return cls._encode_name_part(value)
+
+    @classmethod
+    def _encode_mcp_tool_name(cls, server_name: str, tool_name: str) -> str:
+        return f"mcp__{cls._mcp_name_part(server_name)}__{cls._mcp_name_part(tool_name)}"
 
     @staticmethod
     def _decode_mcp_tool_name(name: str) -> tuple[str | None, str]:
@@ -438,28 +467,25 @@ class FrameworkRegistry:
             return None, name
         try:
             _, server_name, tool_name = name.split("__", 2)
-            decoded_server_name = FrameworkRegistry._decode_name_part(server_name)
-            decoded_tool_name = FrameworkRegistry._try_decode_name_part(tool_name)
-            return decoded_server_name, decoded_tool_name if decoded_tool_name is not None else tool_name
-        except (ValueError, UnicodeDecodeError):
+        except ValueError:
             return None, name
+        # Per-part decode with literal fallback: segments that are not valid
+        # base64 round-trips are preserved verbatim (see `_mcp_name_part`).
+        decoded_server_name = FrameworkRegistry._try_decode_name_part(server_name)
+        decoded_tool_name = FrameworkRegistry._try_decode_name_part(tool_name)
+        return (
+            decoded_server_name if decoded_server_name is not None else server_name,
+            decoded_tool_name if decoded_tool_name is not None else tool_name,
+        )
 
     @staticmethod
     def normalize_mcp_tool_name(name: str) -> str:
         if not name.startswith("mcp__"):
             return name
-        try:
-            _, server_name, tool_name = name.split("__", 2)
-        except ValueError:
+        server_name, tool_name = FrameworkRegistry._decode_mcp_tool_name(name)
+        if not server_name:
             return name
-        decoded_server_name = FrameworkRegistry._try_decode_name_part(server_name)
-        if decoded_server_name is None:
-            return name
-        decoded_tool_name = FrameworkRegistry._try_decode_name_part(tool_name)
-        return FrameworkRegistry._encode_mcp_tool_name(
-            decoded_server_name,
-            decoded_tool_name if decoded_tool_name is not None else tool_name,
-        )
+        return FrameworkRegistry._encode_mcp_tool_name(server_name, tool_name)
 
     @staticmethod
     def display_mcp_tool_name(name: str) -> str:
