@@ -116,6 +116,7 @@ class AgentRepository:
                     mcp_tools=_translate_tool_refs(mcp_tool_map.get(row.name, []), mcp_public_map),
                     capabilities={Capability(value) for value in capability_map.get(row.name, [])},
                     max_iterations=row.max_iterations,
+                    context_window=row.context_window,
                     metadata=row.metadata_json or {},
                     enabled=row.enabled,
                     **_resource_metadata_from_row(row),
@@ -227,6 +228,7 @@ class AgentRepository:
                     row.provider_timeout_seconds = agent.provider.timeout_seconds
                     row.provider_extra = agent.provider.extra
                     row.max_iterations = agent.max_iterations
+                    row.context_window = agent.context_window
                     row.metadata_json = dict(agent.metadata)
                     _apply_resource_metadata(
                         row,

@@ -69,6 +69,7 @@ export type AgentConfig = {
   mcp_tools?: McpToolReference[];
   capabilities: Capability[];
   max_iterations?: number;
+  context_window?: number;
   metadata?: Record<string, unknown>;
 } & ResourcePublicationMetadata;
 

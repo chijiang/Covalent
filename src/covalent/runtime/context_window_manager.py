@@ -15,11 +15,13 @@ from typing import Any
 from covalent.core.agent import AgentSpec
 from covalent.core.types import GenerationRequest, Message
 from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.context_window import get_context_window
 
 logger = logging.getLogger(__name__)
 
 CHARS_PER_TOKEN_ESTIMATE = 3.5
+
+# Fallback token budget when the agent does not define ``context_window``.
+DEFAULT_CONTEXT_WINDOW = 128_000
 
 COMPACTION_SUMMARY_PROMPT = """\
 You are summarizing a conversation between a user and an AI agent that uses a ReAct (Reason+Act) loop \
@@ -64,7 +66,6 @@ class ContextWindowManager:
         runtime: Any,
         *,
         session_history_limit: int,
-        context_token_budget: int | None,
         context_compact_threshold: float,
         context_recent_messages: int,
         context_summary_char_budget: int,
@@ -76,7 +77,6 @@ class ContextWindowManager:
         self._runtime = runtime
         self.registry: FrameworkRegistry = runtime.registry
         self.session_history_limit = session_history_limit
-        self.context_token_budget = context_token_budget
         self.context_compact_threshold = max(min(context_compact_threshold, 0.95), 0.5)
         self.context_recent_messages = max(context_recent_messages, 5)
         self.context_summary_char_budget = max(context_summary_char_budget, 6000)
@@ -254,9 +254,7 @@ class ContextWindowManager:
         return Message(role="system", content=content)
 
     def _effective_token_budget(self, agent: AgentSpec) -> int:
-        if self.context_token_budget:
-            return self.context_token_budget
-        return get_context_window(agent.provider.model)
+        return agent.context_window or DEFAULT_CONTEXT_WINDOW
 
     def _estimate_tokens_from_chars(self, messages: list[Message]) -> int:
         total_chars = sum(self._estimate_message_chars(m) for m in messages)

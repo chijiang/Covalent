@@ -1054,6 +1054,7 @@ def _build_agent_specs(
                 mcp_tools=persisted.mcp_tools,
                 capabilities=persisted.capabilities,
                 max_iterations=persisted.max_iterations,
+                context_window=persisted.context_window,
                 metadata=dict(persisted.metadata),
             )
         )

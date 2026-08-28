@@ -340,6 +340,7 @@ class AgentSummaryResponse(BaseModel):
     delegate_agents: list[str]
     capabilities: set[Capability]
     max_iterations: int
+    context_window: int | None = None
     provider: ProviderSummaryResponse
 
 

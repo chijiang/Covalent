@@ -11,7 +11,6 @@ from openai import AsyncOpenAI
 from covalent.core.types import Capability, GenerationRequest, GenerationResponse, Message, ToolCall
 from covalent.model.base import ModelAdapter, ModelProviderError, ProviderConfig
 from covalent.model.utils import derive_openai_base_url, reasoning_level_kwargs
-from covalent.runtime.context_window import get_context_window
 
 
 
@@ -230,9 +229,7 @@ class OpenAICompatibleProvider(ModelAdapter):
         }
         if request.max_tokens is not None:
             key = "max_completion_tokens" if self._uses_max_completion_tokens(request.model) else "max_tokens"
-            context_window = min(request.max_tokens or 1000000, get_context_window(request.model))
-            if context_window:
-                payload[key] = context_window
+            payload[key] = request.max_tokens
         if request.tools:
             payload["tools"] = request.tools
         return payload

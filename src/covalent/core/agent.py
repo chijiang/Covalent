@@ -31,4 +31,6 @@ class AgentSpec(BaseModel):
     mcp_tools: list[McpToolReference] = Field(default_factory=list)
     capabilities: set[Capability] = Field(default_factory=lambda: {Capability.CHAT, Capability.REACT})
     max_iterations: int = 6
+    # Per-agent token budget for context compaction. None = 128_000 default.
+    context_window: int | None = Field(default=None, gt=0)
     metadata: dict[str, Any] = Field(default_factory=dict)

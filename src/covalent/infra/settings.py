@@ -34,7 +34,6 @@ class AppSettings(BaseSettings):
     # or env-var provider fallbacks.
     request_timeout_seconds: float = 500.0
     session_history_limit: int = 40
-    context_token_budget: int | None = None
     context_compact_threshold: float = 0.75
     context_summary_model: str | None = None
     enable_llm_summarization: bool = True

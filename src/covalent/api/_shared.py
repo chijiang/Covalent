@@ -222,6 +222,7 @@ def to_agent_summary(agent: AgentSpec) -> AgentSummaryResponse:
         delegate_agents=agent.delegate_agents,
         capabilities=agent.capabilities,
         max_iterations=agent.max_iterations,
+        context_window=agent.context_window,
         provider=ProviderSummaryResponse(
             model=agent.provider.model,
             timeout_seconds=agent.provider.timeout_seconds,

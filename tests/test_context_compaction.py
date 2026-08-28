@@ -53,6 +53,7 @@ def _manager_with_budget(
         description="d",
         system_prompt="s",
         provider=ProviderConfig(provider="test", model="test-model"),
+        context_window=token_budget,
     )
     registry.register_agent(agent)
     registry.model_providers[agent.provider.cache_key()] = adapter
@@ -62,7 +63,6 @@ def _manager_with_budget(
     mgr = ContextWindowManager(
         stub,  # type: ignore[arg-type]
         session_history_limit=1000,
-        context_token_budget=token_budget,
         context_compact_threshold=compact_threshold,
         context_recent_messages=recent_messages,
         context_summary_char_budget=2000,

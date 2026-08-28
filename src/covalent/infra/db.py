@@ -84,6 +84,7 @@ class AgentRow(TimestampMixin, Base):
     provider_timeout_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=500.0)
     provider_extra: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False, default=dict)
     max_iterations: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
+    context_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     reasoning_level: Mapped[str] = mapped_column(String(32), nullable=False, default="none")
     sandbox_profile_id: Mapped[str | None] = mapped_column(

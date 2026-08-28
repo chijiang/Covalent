@@ -188,7 +188,6 @@ async def lifespan(app: FastAPI):
         registry,
         session_store=app.state.session_store,
         session_history_limit=settings.session_history_limit,
-        context_token_budget=settings.context_token_budget,
         context_compact_threshold=settings.context_compact_threshold,
         context_summary_model=settings.context_summary_model,
         enable_llm_summarization=settings.enable_llm_summarization,

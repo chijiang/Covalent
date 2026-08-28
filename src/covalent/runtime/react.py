@@ -118,7 +118,6 @@ class ReactAgentRuntime(AgentRuntime):
         session_store: SessionStore | None = None,
         memory_store: RuntimeMemoryStore | None = None,
         session_history_limit: int = 40,
-        context_token_budget: int | None = None,
         context_compact_threshold: float = 0.75,
         context_recent_messages: int = 12,
         context_summary_char_budget: int = 12_000,
@@ -141,7 +140,6 @@ class ReactAgentRuntime(AgentRuntime):
         # through the coordinator (stateful runs, JSON envelopes, ask_parent)
         # instead of the legacy inline streaming path.
         self.delegate_coordinator = delegate_coordinator
-        self.context_token_budget = context_token_budget
         self.context_compact_threshold = max(min(context_compact_threshold, 0.95), 0.5)
         self.context_recent_messages = max(context_recent_messages, 5)
         self.context_summary_char_budget = max(context_summary_char_budget, 6_000)
@@ -152,7 +150,6 @@ class ReactAgentRuntime(AgentRuntime):
         self._context_window = ContextWindowManager(
             self,
             session_history_limit=session_history_limit,
-            context_token_budget=context_token_budget,
             context_compact_threshold=context_compact_threshold,
             context_recent_messages=context_recent_messages,
             context_summary_char_budget=context_summary_char_budget,

@@ -44,6 +44,7 @@ type AgentFormState = {
   model: string;
   maxIterations: number;
   timeoutSeconds: number;
+  contextWindow: string;
 };
 
 const DEFAULT_AGENT_DESCRIPTION = "General-purpose ReAct agent";
@@ -63,6 +64,9 @@ const MAX_ITERATIONS_MIN = 1;
 const MAX_ITERATIONS_MAX = 50;
 const TIMEOUT_SECONDS_MIN = 1;
 const TIMEOUT_SECONDS_MAX = 3600;
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 128000;
+const CONTEXT_WINDOW_MIN = 1024;
+const CONTEXT_WINDOW_MAX = 2000000;
 
 const FALLBACK_LOCAL_TOOLS = ["get_current_time"];
 const FALLBACK_LOCAL_TOOL_SUMMARIES: LocalToolSummary[] = FALLBACK_LOCAL_TOOLS.map((name) => ({
@@ -259,6 +263,7 @@ function toAgentForm(
     model: agent?.provider?.model || "",
     maxIterations: agent?.max_iterations ?? DEFAULT_AGENT_MAX_ITERATIONS,
     timeoutSeconds: agent?.provider?.timeout_seconds ?? DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+    contextWindow: agent?.context_window != null ? String(agent.context_window) : "",
   };
 }
 
@@ -313,6 +318,18 @@ function coerceLimitInt(value: number, fallback: number, min: number, max: numbe
     return fallback;
   }
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function coerceOptionalInt(value: string, min: number, max: number): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return Math.min(max, Math.max(min, Math.round(parsed)));
 }
 
 export function AgentsWorkspace() {
@@ -851,6 +868,7 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
         MAX_ITERATIONS_MIN,
         MAX_ITERATIONS_MAX,
       ),
+      context_window: coerceOptionalInt(form.contextWindow, CONTEXT_WINDOW_MIN, CONTEXT_WINDOW_MAX),
       provider: nextProvider,
       skills: dedupeStrings(form.skills),
       local_tools: dedupeStrings(form.localTools),
@@ -1297,6 +1315,24 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
                           step={1}
                           value={form.timeoutSeconds || ""}
                           onChange={(event) => setForm((current) => ({ ...current, timeoutSeconds: Number(event.target.value) }))}
+                        />
+                      </div>
+                      <div className="form-field">
+                        <FieldLabel
+                          htmlFor="agent-context-window"
+                          help={`Token budget for context compaction (${CONTEXT_WINDOW_MIN}-${CONTEXT_WINDOW_MAX}). Leave blank to use the default of ${DEFAULT_CONTEXT_WINDOW_TOKENS}.`}
+                        >
+                          Context window (tokens)
+                        </FieldLabel>
+                        <Input
+                          id="agent-context-window"
+                          type="number"
+                          min={CONTEXT_WINDOW_MIN}
+                          max={CONTEXT_WINDOW_MAX}
+                          step={1}
+                          placeholder={String(DEFAULT_CONTEXT_WINDOW_TOKENS)}
+                          value={form.contextWindow}
+                          onChange={(event) => setForm((current) => ({ ...current, contextWindow: event.target.value }))}
                         />
                       </div>
                     </FormSection>
