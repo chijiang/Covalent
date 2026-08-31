@@ -34,6 +34,8 @@ class McpSdkClient(McpClient):
     @asynccontextmanager
     async def _session(self, server: McpServerConfig):
         try:
+            import httpx
+            from contextlib import AsyncExitStack
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.sse import sse_client
             from mcp.client.stdio import stdio_client
@@ -54,12 +56,26 @@ class McpSdkClient(McpClient):
         if not server.url:
             raise ValueError(f"MCP server '{server.name}' is missing a URL")
 
+        # HTTP transports have no process environment; the configured env
+        # key/value pairs are sent as request headers instead.
+        headers = dict(server.env) if server.env else None
+
         if server.transport == "streamable_http":
             # mcp SDK 1.x yields (read, write, get_session_id); 2.0.0 yields
             # (read, write). Unpack shape-agnostically — a fixed 3-tuple unpack
             # raises ValueError inside the SDK's TaskGroup, which the API layer
             # then reports as an opaque "unhandled errors in a TaskGroup".
-            async with streamable_http_client(server.url) as streams:
+            async with AsyncExitStack() as stack:
+                http_client = None
+                if headers:
+                    # streamable_http_client only accepts headers through a
+                    # pre-configured httpx client, which the SDK does NOT close.
+                    http_client = await stack.enter_async_context(
+                        httpx.AsyncClient(headers=headers)
+                    )
+                streams = await stack.enter_async_context(
+                    streamable_http_client(server.url, http_client=http_client)
+                )
                 read, write = streams[0], streams[1]
                 async with ClientSession(read, write) as session:
                     await session.initialize()
@@ -67,7 +83,7 @@ class McpSdkClient(McpClient):
             return
 
         if server.transport == "sse":
-            async with sse_client(server.url) as (read, write):
+            async with sse_client(server.url, headers=headers) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     yield session

@@ -10,7 +10,7 @@ unpack ``ValueError`` surfaces as an opaque
 from __future__ import annotations
 
 import unittest
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 from unittest import mock
 
@@ -52,24 +52,38 @@ class _FakeClientSession:
         return SimpleNamespace(tools=[tool])
 
 
-def _patch_transports(yield_shape: int):
+@contextmanager
+def _patch_transports(yield_shape: int, *, capture: dict | None = None):
     """Patch the mcp SDK entry points used by McpSdkClient._session.
 
     ``yield_shape`` controls how many values the fake streamable_http_client
-    context yields (2 for SDK 2.x, 3 for SDK 1.x).
+    context yields (2 for SDK 2.x, 3 for SDK 1.x). ``capture`` collects the
+    kwargs the client passed to the fakes for assertions.
     """
 
     @asynccontextmanager
-    async def fake_streamable_http(url):
+    async def fake_streamable_http(url, **kwargs):
+        if capture is not None:
+            capture.update(kwargs)
         if yield_shape == 2:
             yield ("READ", "WRITE")
         else:
             yield ("READ", "WRITE", lambda: None)
 
-    return mock.patch.multiple(
+    @asynccontextmanager
+    async def fake_sse(url, *, headers=None, **kwargs):
+        if capture is not None:
+            capture["headers"] = headers
+        yield ("READ", "WRITE")
+
+    with mock.patch.multiple(
         "mcp.client.streamable_http",
         streamable_http_client=fake_streamable_http,
-    )
+    ), mock.patch.multiple(
+        "mcp.client.sse",
+        sse_client=fake_sse,
+    ):
+        yield
 
 
 class StreamableHttpYieldShapeTests(unittest.IsolatedAsyncioTestCase):
@@ -95,6 +109,51 @@ class StreamableHttpYieldShapeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([t.tool_name for t in tools], ["search_instances"])
         session = _FakeClientSession.instances[-1]
         self.assertEqual((session.read, session.write), ("READ", "WRITE"))
+
+
+class TransportHeaderForwardingTests(unittest.IsolatedAsyncioTestCase):
+    """HTTP transports have no process environment: configured env key/values
+    must be sent as request headers (e.g. X-API-Key auth on remote MCP servers)."""
+
+    def setUp(self) -> None:
+        _FakeClientSession.instances = []
+        self._session_patch = mock.patch("mcp.ClientSession", _FakeClientSession)
+        self._session_patch.start()
+
+    def tearDown(self) -> None:
+        self._session_patch.stop()
+
+    async def test_streamable_http_env_sent_as_httpx_client_headers(self) -> None:
+        server = McpServerConfig(
+            name="query-server",
+            transport="streamable_http",
+            url="http://localhost:8012/mcp",
+            env={"X-API-Key": "mnk_secret"},
+        )
+        capture: dict = {}
+        with _patch_transports(yield_shape=2, capture=capture):
+            await McpSdkClient().list_tools(server)
+        http_client = capture.get("http_client")
+        self.assertIsNotNone(http_client, "env-configured server must pass a pre-configured httpx client")
+        self.assertEqual(http_client.headers.get("x-api-key"), "mnk_secret")
+
+    async def test_streamable_http_without_env_passes_no_http_client(self) -> None:
+        capture: dict = {}
+        with _patch_transports(yield_shape=2, capture=capture):
+            await McpSdkClient().list_tools(_streamable_server())
+        self.assertIsNone(capture.get("http_client"))
+
+    async def test_sse_env_sent_as_headers(self) -> None:
+        server = McpServerConfig(
+            name="query-server",
+            transport="sse",
+            url="http://localhost:8012/sse",
+            env={"X-API-Key": "mnk_secret"},
+        )
+        capture: dict = {}
+        with _patch_transports(yield_shape=2, capture=capture):
+            await McpSdkClient().list_tools(server)
+        self.assertEqual(capture.get("headers"), {"X-API-Key": "mnk_secret"})
 
 
 class RegistrySchemaNormalizationTests(unittest.IsolatedAsyncioTestCase):
