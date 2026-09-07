@@ -24,6 +24,7 @@ dependencies = [
     "sqlalchemy>=2.0.40",
     "uvicorn>=0.34.0",
     "docker>=7.2.0",
+    "typer>=0.12.0",
 ]
 
 [build-system]
@@ -32,3 +33,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/covalent"]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

@@ -92,6 +92,40 @@ The frontend proxies the FastAPI backend and assumes `http://127.0.0.1:5170` by 
 
 Service Console routes include agent settings, provider settings, MCP services, skill settings, and sandbox monitoring under `frontend/app/service-console/`.
 
+## CLI
+
+`main.py` is a [typer](https://typer.tiangolo.com/) CLI. It always uses `AGENT_FRAMEWORK_DATABASE_URL` (from the environment or `.env`) and talks to the database directly — the server does not need to be running.
+
+```bash
+# Export the full platform configuration (agents, providers, MCP servers,
+# sandbox profiles, users/workspaces, skills) into a single zip bundle.
+# Provider API keys are exported in plaintext — store the bundle securely.
+uv run python main.py config export -o bundle.zip
+
+# Inspect what an import would change without writing anything
+uv run python main.py config import bundle.zip --dry-run
+
+# Import into another environment (e.g. production). Rows are upserted by
+# natural key; rows not present in the bundle are left untouched.
+uv run python main.py migrate
+uv run python main.py config import bundle.zip                 # overwrite conflicts
+uv run python main.py config import bundle.zip --on-conflict skip
+uv run python main.py config import bundle.zip --strict        # abort on unresolved references
+uv run python main.py config import bundle.zip --no-skills     # skip bundled skill files
+
+# User administration
+uv run python main.py users list
+uv run python main.py users create --email ops@example.com --username ops --role admin
+uv run python main.py users set-role ops@example.com member
+uv run python main.py users reset-password ops@example.com
+
+# Provider administration
+uv run python main.py providers list                            # keys are masked
+echo "sk-..." | uv run python main.py providers set-key my-provider --stdin
+```
+
+Migration workflow: configure locally → `config export` → on the target host run `migrate` then `config import` → start the server. Local skills (`uploaded`/`authored`) are bundled with their files; git-synced skills re-sync from their exported `skill_sources` entries.
+
 ## Configuration
 
 All settings are loaded from environment variables with the prefix `AGENT_FRAMEWORK_`, or from a `.env` file in the project root. In the `.env` file, use the full prefixed names (e.g. `AGENT_FRAMEWORK_DATABASE_URL`, not `DATABASE_URL`).

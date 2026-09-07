@@ -69,6 +69,7 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 - Backend setup: `uv sync`
 - Backend serve: `uv run python main.py serve --port 5170` or `./dev.sh backend`
 - Backend schema migrations: `uv run python main.py migrate` (run explicitly — the web lifespan does not auto-migrate, to avoid multi-replica startup races). `alembic/env.py` reads `AGENT_FRAMEWORK_DATABASE_URL`.
+- CLI: `main.py` is a typer app (serve / migrate / config / users / providers). `config export|import` moves the full platform configuration between environments as a zip bundle (natural-key upsert, plaintext provider keys — never commit bundles). Bundle service logic lives in `src/covalent/application/services/config_bundle_service.py`; commands in `src/covalent/cli/`.
 - Backend tests: `uv run python -m pytest tests/`. Set `TEST_DATABASE_URL=postgresql+asyncpg://...` to also run the real-DB integration tests (auto-skipped otherwise).
 - Backend lint gate: `uvx ruff check --select F src/ main.py` — catches undefined names / redefinitions / unused imports left by extractions. Keep it green.
 - Local full stack: `./dev.sh both`
