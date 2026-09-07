@@ -123,7 +123,7 @@ async def put_config(request: Request, kind: str, update_request: ConfigDocument
     try:
         validated = _validate_config_payload(normalized, raw_payload)
     except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=exc.errors()) from exc
+        raise HTTPException(status_code=400, detail=exc.errors(include_input=False, include_context=False)) from exc
     if normalized == "agents":
         profile_service = getattr(request.app.state, "sandbox_profile_service", None)
         if profile_service is not None:
@@ -148,7 +148,10 @@ async def put_config(request: Request, kind: str, update_request: ConfigDocument
                 renamed_from=set(agent_renames or {}),
                 principal=principal.config,
             )
-    payload = await config_store.save_document(normalized, validated, principal=principal.config, agent_renames=agent_renames)
+    try:
+        payload = await config_store.save_document(normalized, validated, principal=principal.config, agent_renames=agent_renames)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid provider connection settings or missing credentials" if normalized == "providers" else "Invalid configuration") from exc
     global_payload = await config_store.get_document(normalized)
     await _apply_runtime_config(request.app.state.registry, request.app.state.config_store, request.app.state.settings, request.app.state.skill_loader, request.app.state.execution_backend, normalized, global_payload)
     return _config_document_response(normalized, payload, settings)

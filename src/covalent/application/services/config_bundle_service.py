@@ -691,6 +691,7 @@ async def _upsert_providers(
         row.provider_type = config.provider_type
         row.base_url = config.base_url
         row.api_key = config.api_key
+        row.apih_config = config.apih.model_dump(mode="json") if config.apih else None
         row.default_model = config.default_model
         row.is_default = config.is_default
         row.position = config.position

@@ -26,15 +26,15 @@ async def _apply_runtime_config(
     payload: list[dict[str, object]],
 ) -> None:
     from .management_service import _resolve_default_provider, _build_agent_specs, _parse_mcp_servers
-    provider_config = await _resolve_default_provider(settings, config_store)
+    providers_payload = payload if kind == "providers" else await config_store.get_document("providers")
+    provider_config = await _resolve_default_provider(settings, config_store, providers_payload)
 
     if kind == "providers":
         mcp_payload = await config_store.get_document("mcp")
         agent_payload = await config_store.get_document("agents")
-        provider_config = await _resolve_default_provider(settings, config_store, payload)
         registry.agents = {
             agent.name: agent
-            for agent in _build_agent_specs(agent_payload, provider_config, _parse_mcp_servers(mcp_payload), settings, mcp_payload=mcp_payload)
+            for agent in _build_agent_specs(agent_payload, provider_config, _parse_mcp_servers(mcp_payload), settings, mcp_payload=mcp_payload, providers_payload=providers_payload)
         }
         return
 
@@ -43,10 +43,9 @@ async def _apply_runtime_config(
         # step fails, the live registry is left untouched (no half-applied state).
         new_servers = {server.name: server for server in _parse_mcp_servers(payload)}
         agent_payload = await config_store.get_document("agents")
-        provider_config = await _resolve_default_provider(settings, config_store)
         new_agents = {
             agent.name: agent
-            for agent in _build_agent_specs(agent_payload, provider_config, _parse_mcp_servers(payload), settings, mcp_payload=payload)
+            for agent in _build_agent_specs(agent_payload, provider_config, _parse_mcp_servers(payload), settings, mcp_payload=payload, providers_payload=providers_payload)
         }
         if settings.mcp_enabled and registry.mcp_client is None:
             registry.set_mcp_client(McpSdkClient())
@@ -60,9 +59,8 @@ async def _apply_runtime_config(
 
     if kind == "agents":
         mcp_payload = await config_store.get_document("mcp")
-        provider_config = await _resolve_default_provider(settings, config_store)
         registry.agents = {
             agent.name: agent
-            for agent in _build_agent_specs(payload, provider_config, _parse_mcp_servers(mcp_payload), settings, mcp_payload=mcp_payload)
+            for agent in _build_agent_specs(payload, provider_config, _parse_mcp_servers(mcp_payload), settings, mcp_payload=mcp_payload, providers_payload=providers_payload)
         }
         return

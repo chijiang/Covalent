@@ -141,12 +141,13 @@ async def build_registry(
         for server in mcp_servers:
             registry.register_mcp_server(server)
 
-    provider_config = await _resolve_default_provider(settings, config_store)
+    providers_payload = await config_store.get_document("providers")
+    provider_config = await _resolve_default_provider(settings, config_store, providers_payload)
     agent_payload = await config_store.ensure_document(
         "agents",
         _seed_agent_payload(settings, provider_config, mcp_servers),
     )
-    for agent in _build_agent_specs(agent_payload, provider_config, mcp_servers, settings, mcp_payload=mcp_payload):
+    for agent in _build_agent_specs(agent_payload, provider_config, mcp_servers, settings, mcp_payload=mcp_payload, providers_payload=providers_payload):
         registry.register_agent(agent)
 
     loader = SkillLoader(settings)
@@ -1022,6 +1023,7 @@ def _build_agent_specs(
     settings: AppSettings,
     *,
     mcp_payload: list[dict[str, object]] | None = None,
+    providers_payload: list[dict[str, object]] | None = None,
 ) -> list[AgentSpec]:
     mcp_by_name = {server.name: server for server in mcp_servers}
     mcp_internal_by_public = _runtime_internal_name_map(mcp_payload or [])
@@ -1036,6 +1038,27 @@ def _build_agent_specs(
             agent_internal_by_public=agent_internal_by_public,
         )
         persisted = PersistedAgentConfig.model_validate(_normalize_agent_payload_item(runtime_item, settings))
+        selected_provider = provider_config
+        if persisted.provider.base_url:
+            for candidate in providers_payload or []:
+                if (
+                    candidate.get("provider_type") == persisted.provider.provider
+                    and str(candidate.get("base_url", "")).rstrip("/") == persisted.provider.base_url.rstrip("/")
+                    and (
+                        not candidate.get("owner_user_id")
+                        or candidate.get("owner_user_id") == item.get("owner_user_id")
+                        or (candidate.get("visibility") == "public" and candidate.get("publication_status") == "approved")
+                    )
+                ):
+                    selected_provider = ProviderConfig(
+                        provider=str(candidate["provider_type"]),
+                        model=str(candidate.get("default_model") or ""),
+                        base_url=str(candidate["base_url"]),
+                        api_key=candidate.get("api_key"),
+                        apih=candidate.get("apih"),
+                        timeout_seconds=settings.request_timeout_seconds,
+                    )
+                    break
         resolved_mcp = [mcp_by_name[name] for name in persisted.mcp_servers if name in mcp_by_name]
         agents.append(
             AgentSpec(
@@ -1044,7 +1067,7 @@ def _build_agent_specs(
                 system_prompt=persisted.system_prompt,
                 reasoning_prompt=persisted.reasoning_prompt,
                 reasoning_level=persisted.reasoning_level,
-                provider=_merge_provider_config(persisted.provider, provider_config),
+                provider=_merge_provider_config(persisted.provider, selected_provider),
                 skills=persisted.skills,
                 local_tools=[t for t in _dedupe_strings(persisted.local_tools) if t != "echo"],
                 allowed_outbound=_dedupe_strings(getattr(persisted, "allowed_outbound", []) or []),
@@ -1087,6 +1110,7 @@ async def _resolve_default_provider(
             return ProviderConfig(
                 provider=cfg.provider_type,
                 model=default_model,
+                apih=cfg.apih,
                 api_key=cfg.api_key,
                 base_url=cfg.base_url,
                 timeout_seconds=settings.request_timeout_seconds,
@@ -1098,6 +1122,7 @@ async def _resolve_default_provider(
             return ProviderConfig(
                 provider=cfg.provider_type,
                 model="",
+                apih=cfg.apih,
                 api_key=cfg.api_key,
                 base_url=cfg.base_url,
                 timeout_seconds=settings.request_timeout_seconds,
@@ -1121,6 +1146,8 @@ def _format_api_key_masked(key: str) -> str:
 
 def _mask_provider_api_key(item: dict[str, object]) -> dict[str, object]:
     masked = dict(item)
+    if isinstance(masked.get("apih"), dict):
+        masked["apih"] = {**masked["apih"], "password": None, "has_password": bool(masked["apih"].get("password"))}
     if masked.get("api_key"):
         key = str(masked["api_key"])
         masked["has_api_key"] = bool(key)
@@ -1135,12 +1162,24 @@ def _merge_provider_config(
     provider: ProviderConfig,
     default_provider: ProviderConfig,
 ) -> ProviderConfig:
+    # Console agents with no endpoint inherit the entire connection, including
+    # its auth type. Never send APIH credentials to an explicit other endpoint.
+    inherits = not provider.base_url
+    same_connection = (
+        provider.provider == default_provider.provider
+        and (provider.base_url or "").rstrip("/") == (default_provider.base_url or "").rstrip("/")
+    )
     return ProviderConfig(
-        provider=provider.provider or default_provider.provider,
+        provider=default_provider.provider if inherits else provider.provider or default_provider.provider,
         model=provider.model or default_provider.model,
-        api_key=provider.api_key or default_provider.api_key,
+        api_key=provider.api_key or (
+            default_provider.api_key if inherits or same_connection or (
+                provider.provider != "apih" and default_provider.provider != "apih"
+            ) else None
+        ),
         base_url=provider.base_url or default_provider.base_url,
         timeout_seconds=provider.timeout_seconds or default_provider.timeout_seconds,
         extra={**default_provider.extra, **provider.extra},
+        apih=default_provider.apih if inherits or same_connection else None,
     )
 

@@ -4,6 +4,17 @@ export type ConfigKind = "agents" | "mcp" | "skill_sources" | "providers";
 export type ManagementKind = "agents" | "mcp" | "skills";
 export type ManagementExportFormat = "yaml" | "json";
 
+export type APIHConfig = {
+  token_url: string;
+  username: string;
+  password?: string | null;
+  has_password?: boolean;
+  password_is_urlencoded?: boolean;
+  verify_tls?: boolean;
+  token_timeout_seconds?: number;
+  token_max_retries?: number;
+};
+
 export type ProviderEntry = {
   name: string;
   provider_type: string;
@@ -11,6 +22,7 @@ export type ProviderEntry = {
   api_key?: string | null;
   has_api_key?: boolean;
   api_key_masked?: string | null;
+  apih?: APIHConfig | null;
   default_model?: string | null;
   is_default: boolean;
   position: number;

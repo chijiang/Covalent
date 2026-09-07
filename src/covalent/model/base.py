@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from hashlib import sha256
 
 from pydantic import BaseModel, Field
 
 from covalent.core.types import Capability, GenerationRequest, GenerationResponse
+from covalent.model.apih_config import APIHConfig
 
 
 class ProviderConfig(BaseModel):
@@ -15,6 +17,8 @@ class ProviderConfig(BaseModel):
     base_url: str | None = None
     timeout_seconds: float = 500.0
     extra: dict[str, str] = Field(default_factory=dict)
+    # Runtime-only: credentials are resolved from the providers store, not agents.
+    apih: APIHConfig | None = Field(default=None, exclude=True, repr=False)
 
     def cache_key(self) -> str:
         extra_items = tuple(sorted(self.extra.items()))
@@ -26,6 +30,7 @@ class ProviderConfig(BaseModel):
                 self.api_key or "",
                 f"{self.timeout_seconds}",
                 repr(extra_items),
+                sha256(self.apih.model_dump_json().encode()).hexdigest() if self.apih else "",
             ]
         )
 
@@ -76,3 +81,6 @@ class ModelAdapter(ABC):
 
     async def aclose(self) -> None:
         return None
+
+    async def list_models(self) -> list[str]:
+        raise NotImplementedError("Model catalog not implemented for this provider")

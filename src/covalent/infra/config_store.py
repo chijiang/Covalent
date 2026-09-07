@@ -20,6 +20,7 @@ from covalent.infra.db import (
 )
 from covalent.mcp.spec import McpServerConfig, McpToolReference
 from covalent.model.base import ProviderConfig
+from covalent.model.apih_config import APIHConfig, apih_base_url
 
 ConfigKind = Literal["agents", "mcp", "skill_sources", "providers"]
 ResourceVisibility = Literal["private", "public"]
@@ -262,9 +263,10 @@ class PersistedSkillSourceConfig(BaseModel):
 class PersistedProviderConfig(BaseModel):
     name: str = "default"
     internal_name: str | None = None
-    provider_type: str = "openai_compatible"
+    provider_type: Literal["openai_compatible", "apih"] = "openai_compatible"
     base_url: str = ""
     api_key: str | None = None
+    apih: APIHConfig | None = None
     default_model: str = ""
     is_default: bool = False
     position: int = 0
@@ -289,6 +291,19 @@ class PersistedMcpServerMetadata(BaseModel):
 
 
 def _resolve_provider_config(existing_row: ProviderRow | None, config: PersistedProviderConfig) -> PersistedProviderConfig:
+    if config.provider_type == "apih":
+        if config.apih is None:
+            raise ValueError("APIH connection settings are required")
+        apih_base_url(config.base_url)
+        stored = getattr(existing_row, "apih_config", None) or {}
+        apih = config.apih.model_copy(update={
+            "password": config.apih.password if config.apih.password is not None else stored.get("password"),
+        })
+        api_key = config.api_key if config.api_key is not None else getattr(existing_row, "api_key", None)
+        apih.require_credentials(api_key)
+        config = config.model_copy(update={"apih": apih})
+    else:
+        config = config.model_copy(update={"apih": None})
     if existing_row is None:
         return config
     return PersistedProviderConfig(
@@ -296,6 +311,7 @@ def _resolve_provider_config(existing_row: ProviderRow | None, config: Persisted
         provider_type=config.provider_type,
         base_url=config.base_url,
         api_key=config.api_key if config.api_key is not None else existing_row.api_key,
+        apih=config.apih,
         default_model=config.default_model,
         is_default=config.is_default,
         position=config.position,
@@ -430,6 +446,7 @@ class ConfigStore:
                     provider_type=row.provider_type,
                     base_url=row.base_url,
                     api_key=row.api_key,
+                    apih=row.apih_config,
                     default_model=row.default_model,
                     is_default=row.is_default,
                     position=row.position,
@@ -461,6 +478,7 @@ class ConfigStore:
                     row.provider_type = config.provider_type
                     row.base_url = config.base_url
                     row.api_key = config.api_key
+                    row.apih_config = config.apih.model_dump(mode="json") if config.apih else None
                     row.default_model = config.default_model
                     row.is_default = config.is_default
                     row.position = config.position

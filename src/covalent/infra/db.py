@@ -208,6 +208,7 @@ class ProviderRow(TimestampMixin, Base):
     publication_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     publication_reviewed_by_user_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     provider_type: Mapped[str] = mapped_column(String(100), nullable=False, default="openai_compatible")
+    apih_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
     api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     default_model: Mapped[str] = mapped_column(Text, nullable=False, default="")

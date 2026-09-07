@@ -32,6 +32,11 @@ type ProviderFormState = {
   base_url: string;
   api_key: string;
   default_model: string;
+  token_url: string;
+  username: string;
+  password: string;
+  password_is_urlencoded: boolean;
+  verify_tls: boolean;
 };
 
 type ProviderInventoryFilter = "all" | "default" | "missing_key";
@@ -49,11 +54,17 @@ function toFormState(entry: Partial<ProviderEntry> | null): ProviderFormState {
     base_url: entry?.base_url ?? "",
     api_key: "",
     default_model: entry?.default_model ?? "",
+    token_url: entry?.apih?.token_url ?? "",
+    username: entry?.apih?.username ?? "",
+    password: "",
+    password_is_urlencoded: entry?.apih?.password_is_urlencoded ?? true,
+    verify_tls: entry?.apih?.verify_tls ?? true,
   };
 }
 
 function buildNewProviderDraft(index: number): ProviderFormState {
   return {
+    ...toFormState(null),
     name: `provider-${Date.now()}-${index + 1}`,
     provider_type: "openai_compatible",
     base_url: "",
@@ -260,6 +271,18 @@ export function ProviderWorkspace() {
         throw new Error(`Provider "${nextName}" already exists.`);
       }
 
+      const apih = form.provider_type === "apih" ? {
+        ...selectedProvider?.apih,
+        token_url: form.token_url.trim(),
+        username: form.username.trim(),
+        password: form.password || null,
+        password_is_urlencoded: form.password_is_urlencoded,
+        verify_tls: form.verify_tls,
+      } : null;
+      if (apih && (!apih.token_url || !apih.username || (!form.password && !selectedProvider?.apih?.has_password))) {
+        throw new Error("APIH requires a token URL, username and password (or a stored password).");
+      }
+
       if (isCreatingProvider || !selectedName) {
         const updatedExisting = nextDefaultModel
           ? providers.map((provider) => ({ ...provider, default_model: "", is_default: false }))
@@ -267,6 +290,7 @@ export function ProviderWorkspace() {
         const newProvider: ProviderEntry = {
           name: nextName,
           provider_type: form.provider_type,
+          apih,
           base_url: nextBaseUrl,
           api_key: form.api_key.trim() || null,
           default_model: nextDefaultModel,
@@ -284,6 +308,7 @@ export function ProviderWorkspace() {
             ...provider,
             name: nextName,
             provider_type: form.provider_type,
+            apih,
             base_url: nextBaseUrl,
             api_key: form.api_key.trim() || provider.api_key || null,
             default_model: nextDefaultModel,
@@ -537,6 +562,7 @@ export function ProviderWorkspace() {
                               </SelectTrigger>
                               <SelectContent align="start" alignItemWithTrigger>
                                 <SelectItem value="openai_compatible">OpenAI Compatible</SelectItem>
+                                <SelectItem value="apih">APIH</SelectItem>
                               </SelectContent>
                             </Select>
                           </Label>
@@ -544,7 +570,7 @@ export function ProviderWorkspace() {
 
                         <FormSection title="Connection">
                           <Label className="form-field">
-                            <span>Base URL</span>
+                            <span>{form.provider_type === "apih" ? "Chat URL / Base URL" : "Base URL"}</span>
                             <Input
                               onChange={(event) => handleFormChange("base_url", event.target.value)}
                               placeholder="https://api.openai.com/v1"
@@ -553,7 +579,7 @@ export function ProviderWorkspace() {
                             />
                           </Label>
                           <Label className="form-field">
-                            <span>API key</span>
+                            <span>{form.provider_type === "apih" ? "X-API-KEY" : "API key"}</span>
                             <Input
                               aria-label={showingStoredApiKeyPreview ? `Stored API key ${storedApiKeyPreview}` : "API key"}
                               autoComplete="off"
@@ -584,6 +610,30 @@ export function ProviderWorkspace() {
                                   : "Save a key before loading the provider model catalog."}
                             </small>
                           </Label>
+                          {form.provider_type === "apih" ? (
+                            <>
+                              <Label className="form-field">
+                                <span>Token URL</span>
+                                <Input type="url" value={form.token_url} onChange={(event) => handleFormChange("token_url", event.target.value)} placeholder="https://gateway.example/token" />
+                              </Label>
+                              <Label className="form-field">
+                                <span>Username</span>
+                                <Input autoComplete="off" value={form.username} onChange={(event) => handleFormChange("username", event.target.value)} />
+                              </Label>
+                              <Label className="form-field">
+                                <span>Password</span>
+                                <Input type="password" autoComplete="new-password" value={form.password} onChange={(event) => handleFormChange("password", event.target.value)} placeholder={selectedProvider?.apih?.has_password ? "Stored — leave blank to keep" : "APIH password"} />
+                              </Label>
+                              <Label className="form-field">
+                                <span><input type="checkbox" checked={form.password_is_urlencoded} onChange={(event) => handleFormChange("password_is_urlencoded", event.target.checked)} /> Password is already URL-encoded (Agent format)</span>
+                              </Label>
+                              <Label className="form-field">
+                                <span><input type="checkbox" checked={form.verify_tls} onChange={(event) => handleFormChange("verify_tls", event.target.checked)} /> Verify TLS certificates</span>
+                                {!form.verify_tls ? <small className="entity-meta">Warning: certificate verification is disabled. Use only for explicitly trusted test environments.</small> : null}
+                              </Label>
+                              <small className="entity-meta">APIH may not expose a model catalog. You can enter the model ID manually without loading models.</small>
+                            </>
+                          ) : null}
                           <Label className="form-field console-form-select">
                             <span>Default model</span>
                             {modelList.length > 0 ? (

@@ -388,6 +388,13 @@ class OpenAICompatibleProvider(ModelAdapter):
             detail = class_name
         return ModelProviderError(self.config.provider, detail=detail, status_code=status_code)
 
+    async def list_models(self) -> list[str]:
+        try:
+            result = await self._client.models.list()
+            return sorted(model.id for model in result.data if model.id)
+        except Exception as exc:
+            raise self._translate_error(exc) from exc
+
     async def aclose(self) -> None:
         close_method = getattr(self._client, "close", None)
         if not callable(close_method):
