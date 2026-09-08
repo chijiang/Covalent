@@ -310,6 +310,31 @@ class AuditLogResponse(BaseModel):
     created_at: datetime
 
 
+class QueryStatDay(BaseModel):
+    date: str
+    query_count: int = 0
+    denied_count: int = 0
+    failed_count: int = 0
+
+
+class UserQueryStat(BaseModel):
+    user_id: str
+    email: str | None = None
+    display_name: str | None = None
+    total_query_count: int = 0
+    total_denied_count: int = 0
+    total_failed_count: int = 0
+    last_query_at: datetime | None = None
+    daily: list[QueryStatDay] = Field(default_factory=list)
+
+
+class QueryStatsResponse(BaseModel):
+    days: int
+    starts_at: datetime
+    ends_at: datetime
+    users: list[UserQueryStat] = Field(default_factory=list)
+
+
 class PublicationReviewRequest(BaseModel):
     status: Literal["approved", "rejected"]
 

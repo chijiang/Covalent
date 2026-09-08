@@ -4,6 +4,7 @@ import type {
   AgentRunRequest,
   AgentSummary,
   AuditLog,
+  AuditQueryStats,
   ApiTokenCreateRequest,
   ApiTokenCreateResponse,
   ApiTokenSummary,
@@ -336,6 +337,12 @@ export function listAuditLogs(params: { limit?: number; action?: string; outcome
     searchParams.set("target_type", params.targetType);
   }
   return apiFetchJson<AuditLog[]>(`audit-logs?${searchParams.toString()}`, { method: "GET" });
+}
+
+export function getAuditQueryStats(days = 30): Promise<AuditQueryStats> {
+  return apiFetchJson<AuditQueryStats>(`audit-logs/query-stats?days=${encodeURIComponent(String(days))}`, {
+    method: "GET",
+  });
 }
 
 type StreamEvent = {

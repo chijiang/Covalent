@@ -11,8 +11,12 @@ from typing import Any
 
 from covalent.api._auth_helpers import _resolve_console_principal
 from covalent.api._shared import _augment_sandbox_snapshot, _record_audit_log
-from covalent.application.services.audit_service import AuditLogEntry, list_audit_logs as _list_audit_logs
-from covalent.application.schemas import AuditLogResponse
+from covalent.application.services.audit_service import (
+    AuditLogEntry,
+    get_user_query_stats as _get_user_query_stats,
+    list_audit_logs as _list_audit_logs,
+)
+from covalent.application.schemas import AuditLogResponse, QueryStatsResponse
 from covalent.infra.db import DatabaseManager
 from covalent.infra.memory import SessionStore
 from covalent.registry.registry import FrameworkRegistry
@@ -164,3 +168,10 @@ async def list_audit_logs(
         target_type=target_type,
     )
     return [_audit_dto(e) for e in entries]
+
+
+@router.get("/audit-logs/query-stats")
+async def get_audit_query_stats(request: Request, days: int = 30) -> QueryStatsResponse:
+    db_manager: DatabaseManager = request.app.state.db_manager
+    principal = await _resolve_console_principal(request, db_manager)
+    return await _get_user_query_stats(db_manager, principal, days=days)

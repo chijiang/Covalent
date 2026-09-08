@@ -612,3 +612,28 @@ export type AuditLog = {
   metadata: Record<string, unknown>;
   created_at: string;
 };
+
+export type AuditQueryStatDay = {
+  date: string;
+  query_count: number;
+  denied_count: number;
+  failed_count: number;
+};
+
+export type AuditQueryStatUser = {
+  user_id: string;
+  email?: string | null;
+  display_name?: string | null;
+  total_query_count: number;
+  total_denied_count: number;
+  total_failed_count: number;
+  last_query_at?: string | null;
+  daily: AuditQueryStatDay[];
+};
+
+export type AuditQueryStats = {
+  days: number;
+  starts_at: string;
+  ends_at: string;
+  users: AuditQueryStatUser[];
+};
