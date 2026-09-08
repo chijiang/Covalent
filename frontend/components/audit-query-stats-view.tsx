@@ -16,6 +16,14 @@ import type { AuditQueryStats } from "@/lib/types";
 
 const DAY_OPTIONS = [7, 14, 30, 90] as const;
 
+type StatsView = "users" | "daily" | "full";
+
+const VIEW_LABELS: Record<StatsView, string> = {
+  users: "User summary",
+  daily: "Daily totals",
+  full: "Full matrix",
+};
+
 function formatDate(value?: string | null): string {
   if (!value) {
     return "n/a";
@@ -36,27 +44,7 @@ function csvCell(value: string): string {
   return safe;
 }
 
-// Flat date-per-row layout; days with no activity for a user are omitted.
-function buildQueryStatsCsv(stats: AuditQueryStats): string {
-  const header = ["date", "user_id", "email", "display_name", "query_count", "denied_count", "failed_count"];
-  const rows: string[][] = [];
-  for (const user of stats.users) {
-    for (const day of user.daily) {
-      if (!day.query_count && !day.denied_count && !day.failed_count) {
-        continue;
-      }
-      rows.push([
-        day.date,
-        user.user_id,
-        user.email ?? "",
-        user.display_name ?? "",
-        String(day.query_count),
-        String(day.denied_count),
-        String(day.failed_count),
-      ]);
-    }
-  }
-  rows.sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : left[2].localeCompare(right[2])));
+function buildCsv(header: string[], rows: string[][]): string {
   const lines = [header.join(",")];
   for (const row of rows) {
     lines.push(row.map(csvCell).join(","));
@@ -64,8 +52,64 @@ function buildQueryStatsCsv(stats: AuditQueryStats): string {
   return `${lines.join("\r\n")}\r\n`;
 }
 
+function buildUserSummaryCsv(stats: AuditQueryStats): string {
+  const rows = stats.users.map((user) => [
+    user.user_id,
+    user.email ?? "",
+    user.display_name ?? "",
+    String(user.total_query_count),
+    String(user.total_denied_count),
+    String(user.total_failed_count),
+    user.last_query_at ?? "",
+  ]);
+  return buildCsv(
+    ["user_id", "email", "display_name", "query_count", "denied_count", "failed_count", "last_query_at"],
+    rows,
+  );
+}
+
+function buildDailyTotalsCsv(dailyTotals: DailyTotal[]): string {
+  const rows = dailyTotals.map((day) => [
+    day.date,
+    String(day.query_count),
+    String(day.denied_count),
+    String(day.failed_count),
+  ]);
+  return buildCsv(["date", "query_count", "denied_count", "failed_count"], rows);
+}
+
+// Dense user × day matrix; zero-activity days are included.
+function buildFullMatrixCsv(stats: AuditQueryStats): string {
+  const rows: string[][] = [];
+  for (const user of stats.users) {
+    for (const day of user.daily) {
+      rows.push([
+        user.user_id,
+        user.email ?? "",
+        user.display_name ?? "",
+        day.date,
+        String(day.query_count),
+        String(day.denied_count),
+        String(day.failed_count),
+      ]);
+    }
+  }
+  return buildCsv(
+    ["user_id", "email", "display_name", "date", "query_count", "denied_count", "failed_count"],
+    rows,
+  );
+}
+
+type DailyTotal = {
+  date: string;
+  query_count: number;
+  denied_count: number;
+  failed_count: number;
+};
+
 export function AuditQueryStatsView() {
   const [days, setDays] = useState<number>(30);
+  const [view, setView] = useState<StatsView>("users");
   const { data: stats, loading, refreshing, error, refresh } = useAsyncResource(
     () => getAuditQueryStats(days),
     [days],
@@ -79,14 +123,28 @@ export function AuditQueryStatsView() {
     }),
     [users],
   );
+  const dailyTotals = useMemo<DailyTotal[]>(() => {
+    const byDate = new Map<string, DailyTotal>();
+    for (const user of users) {
+      for (const day of user.daily) {
+        const agg = byDate.get(day.date) ?? { date: day.date, query_count: 0, denied_count: 0, failed_count: 0 };
+        agg.query_count += day.query_count;
+        agg.denied_count += day.denied_count;
+        agg.failed_count += day.failed_count;
+        byDate.set(day.date, agg);
+      }
+    }
+    return Array.from(byDate.values()).sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0));
+  }, [users]);
 
   function handleExportCsv() {
     if (!stats) {
       return;
     }
+    const content = view === "users" ? buildUserSummaryCsv(stats) : view === "daily" ? buildDailyTotalsCsv(dailyTotals) : buildFullMatrixCsv(stats);
     const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     // UTF-8 BOM keeps CJK display names readable when opened in Excel.
-    downloadTextFile(`query-stats-${stamp}.csv`, `\uFEFF${buildQueryStatsCsv(stats)}`, "text/csv;charset=utf-8");
+    downloadTextFile(`query-stats-${view}-${stamp}.csv`, `\uFEFF${content}`, "text/csv;charset=utf-8");
   }
 
   return (
@@ -104,7 +162,17 @@ export function AuditQueryStatsView() {
             ]}
           />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="audit-log-heading-actions">
+          <Select onValueChange={(value) => setView(value as StatsView)} value={view}>
+            <SelectTrigger aria-label="Stats view" className="w-[150px]">
+              <SelectValue>{VIEW_LABELS[view]}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="users">User summary</SelectItem>
+              <SelectItem value="daily">Daily totals</SelectItem>
+              <SelectItem value="full">Full matrix</SelectItem>
+            </SelectContent>
+          </Select>
           <Select onValueChange={(value) => setDays(Number(value))} value={String(days)}>
             <SelectTrigger aria-label="Stats time range" className="w-[132px]">
               <SelectValue />
@@ -135,7 +203,7 @@ export function AuditQueryStatsView() {
         {!loading && users.length === 0 ? (
           <p className="empty-copy padded-empty">No agent queries recorded in the selected range.</p>
         ) : null}
-        {!loading && users.length > 0 ? (
+        {!loading && users.length > 0 && view === "users" ? (
           <table className="w-full text-sm">
             <thead className="border-b text-left">
               <tr>
@@ -160,6 +228,58 @@ export function AuditQueryStatsView() {
                   <td className="p-3">{formatDate(user.last_query_at)}</td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+        ) : null}
+        {!loading && users.length > 0 && view === "daily" ? (
+          <table className="w-full text-sm">
+            <thead className="border-b text-left">
+              <tr>
+                <th className="p-3 font-medium">Date</th>
+                <th className="p-3 text-right font-medium">Queries</th>
+                <th className="p-3 text-right font-medium">Denied</th>
+                <th className="p-3 text-right font-medium">Failed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dailyTotals.map((day) => (
+                <tr className="border-b last:border-0" key={day.date}>
+                  <td className="p-3 font-medium">{day.date}</td>
+                  <td className="p-3 text-right font-medium">{day.query_count.toLocaleString()}</td>
+                  <td className="p-3 text-right">{day.denied_count.toLocaleString()}</td>
+                  <td className="p-3 text-right">{day.failed_count.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+        {!loading && users.length > 0 && view === "full" ? (
+          <table className="w-full text-sm">
+            <thead className="border-b text-left">
+              <tr>
+                <th className="p-3 font-medium">User</th>
+                <th className="p-3 font-medium">Email</th>
+                <th className="p-3 font-medium">Date</th>
+                <th className="p-3 text-right font-medium">Queries</th>
+                <th className="p-3 text-right font-medium">Denied</th>
+                <th className="p-3 text-right font-medium">Failed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.flatMap((user) =>
+                user.daily.map((day) => (
+                  <tr className="border-b last:border-0" key={`${user.user_id}-${day.date}`}>
+                    <td className="p-3">
+                      <span className="font-medium">{user.display_name || user.user_id}</span>
+                    </td>
+                    <td className="p-3">{user.email || "—"}</td>
+                    <td className="p-3">{day.date}</td>
+                    <td className="p-3 text-right font-medium">{day.query_count.toLocaleString()}</td>
+                    <td className="p-3 text-right">{day.denied_count.toLocaleString()}</td>
+                    <td className="p-3 text-right">{day.failed_count.toLocaleString()}</td>
+                  </tr>
+                )),
+              )}
             </tbody>
           </table>
         ) : null}

@@ -356,6 +356,14 @@
   gap: 2px;
 }
 
+.audit-log-panel-heading > .audit-log-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .audit-log-eyebrow {
   color: var(--fg-muted);
   font-size: 10px;
@@ -377,6 +385,21 @@
 
 .audit-log-feed-scroll,
 .audit-log-detail-scroll {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.audit-query-stats-panel {
+  display: grid;
+  flex: 1 1 0%;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.audit-query-stats-scroll {
   min-width: 0;
   min-height: 0;
   height: 100%;
