@@ -115,7 +115,11 @@ async def replace_transcript(
             raise HTTPException(status_code=400, detail="message ids must be unique")
         new_messages = [
             ChatTranscriptMessage(
-                id=m.id, role=m.role, content=m.content, attachments=list(m.attachments)
+                id=m.id,
+                role=m.role,
+                content=m.content,
+                reasoning_content=m.reasoning_content,
+                attachments=list(m.attachments),
             )
             for m in update_request.messages
         ]

@@ -6,20 +6,26 @@ from fastapi import APIRouter
 
 from fastapi import HTTPException
 from fastapi import Request
+import logging
 from sqlalchemy import text
 from typing import Any
 
 from covalent.api._auth_helpers import _resolve_console_principal
 from covalent.api._shared import _augment_sandbox_snapshot, _record_audit_log
+from covalent.api.auth import authenticate_api_token
 from covalent.application.services.audit_service import (
     AuditLogEntry,
     get_user_query_stats as _get_user_query_stats,
     list_audit_logs as _list_audit_logs,
 )
+from covalent.application.services.runtime_apply import _reload_runtime_from_database
 from covalent.application.schemas import AuditLogResponse, QueryStatsResponse
-from covalent.infra.db import DatabaseManager
+from covalent.infra.db import DatabaseManager, UserRow
 from covalent.infra.memory import SessionStore
+from covalent.infra.settings import AppSettings
 from covalent.registry.registry import FrameworkRegistry
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Ops"])
 
@@ -64,6 +70,48 @@ async def healthz(request: Request) -> dict[str, Any]:
             checks["status"] = "degraded"
 
     return checks
+
+@router.post("/v1/ops/reload")
+async def reload_runtime_registry(request: Request) -> dict[str, Any]:
+    """Rebuild the live registry (agents/MCP/skills) from the database.
+
+    For out-of-band config writers (CLI ``config import`` / ``--reload``) so
+    changes become visible without a process restart. The path sits under /v1,
+    so it is authenticated by admin-owned API token (Bearer) rather than the
+    console cookie.
+    """
+    settings: AppSettings = request.app.state.settings
+    db_manager: DatabaseManager = request.app.state.db_manager
+    principal = await authenticate_api_token(
+        request,
+        settings=settings,
+        session_factory=db_manager.session_factory,
+    )
+    async with db_manager.session_factory() as session:
+        owner = await session.get(UserRow, principal.user_id)
+    if owner is None or owner.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin token required to reload the runtime registry")
+
+    registry: FrameworkRegistry = request.app.state.registry
+    summary = await _reload_runtime_from_database(
+        registry,
+        request.app.state.config_store,
+        settings,
+        request.app.state.skill_loader,
+        request.app.state.execution_backend,
+    )
+    try:
+        await _record_audit_log(
+            db_manager,
+            action="runtime.registry.reload",
+            target_type="runtime_registry",
+            api_principal=principal,
+            request=request,
+            metadata={"agents": summary.get("agents")},
+        )
+    except Exception:
+        logger.warning("Failed to record runtime registry reload audit log", exc_info=True)
+    return {"status": "reloaded", **summary}
 
 @router.get("/sandbox/status")
 async def sandbox_status(request: Request) -> dict[str, Any]:

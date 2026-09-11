@@ -39,6 +39,24 @@ RUN_TERMINAL_EVENTS = {"final", "error", "cancelled", "session", "parent_input_r
 _DELTA_MAX_FRAGMENTS = 32
 _DELTA_MAX_CHARS = 512
 
+#: 思考片段粒度更细（常为单字符），用更大的阈值合并，避免逐 token 落库。
+_REASONING_MAX_FRAGMENTS = 128
+_REASONING_MAX_CHARS = 2048
+
+
+def _group_reasoning_fragments(
+    fragments: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """合并相邻同名思考片段，保持事件到达顺序（reasoning_delta 与
+    delegate_reasoning_delta 各保留自己的事件名）。"""
+    grouped: list[tuple[str, list[str]]] = []
+    for name, text in fragments:
+        if grouped and grouped[-1][0] == name:
+            grouped[-1][1].append(text)
+        else:
+            grouped.append((name, [text]))
+    return [(name, merged) for name, texts in grouped if (merged := "".join(texts))]
+
 
 class RunManagerError(RuntimeError):
     pass
@@ -51,6 +69,7 @@ class RunManager:
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
         self._next_position: dict[str, int] = {}
         self._delta_buffers: dict[str, list[str]] = {}
+        self._reasoning_buffers: dict[str, list[tuple[str, str]]] = {}
 
     # -- run lifecycle ---------------------------------------------------
 
@@ -86,6 +105,7 @@ class RunManager:
                 row = last.first()
                 self._next_position[run_id] = (row[0] + 1) if row is not None else 1
         self._delta_buffers[run_id] = []
+        self._reasoning_buffers[run_id] = []
 
     def start_run(self, run_id: str, worker: Callable[[], Awaitable[None]]) -> None:
         task = asyncio.create_task(self._run_worker(run_id, worker))
@@ -113,6 +133,10 @@ class RunManager:
         buffer = self._delta_buffers.pop(run_id, None)
         if buffer:
             await self._persist_event(run_id, "assistant_delta", {"text": "".join(buffer)})
+        reasoning_buffer = self._reasoning_buffers.pop(run_id, None)
+        if reasoning_buffer:
+            for name, merged in _group_reasoning_fragments(reasoning_buffer):
+                await self._persist_event(run_id, name, {"text": merged})
         now = datetime.now(UTC)
         async with self._session_factory() as session:
             async with session.begin():
@@ -134,6 +158,8 @@ class RunManager:
 
     async def append_event(self, run_id: str, event_name: str, payload: dict[str, Any]) -> None:
         if event_name == "assistant_delta":
+            # 冲刷思考缓冲在前，保证落库位置时序与事件到达顺序一致。
+            await self._flush_reasoning_buffer(run_id)
             buffer = self._delta_buffers.setdefault(run_id, [])
             text = str(payload.get("text") or "")
             if text:
@@ -141,7 +167,19 @@ class RunManager:
             if len(buffer) >= _DELTA_MAX_FRAGMENTS or sum(map(len, buffer)) >= _DELTA_MAX_CHARS:
                 await self._flush_delta_buffer(run_id)
             return
+        if event_name in ("reasoning_delta", "delegate_reasoning_delta"):
+            # 两个名字共用一份缓冲（保留各自事件名，flush 时按到达顺序分组），
+            # 否则带前缀的 child 思考会逐 token 落库并逐条推给前端。
+            await self._flush_delta_buffer(run_id)
+            buffer = self._reasoning_buffers.setdefault(run_id, [])
+            text = str(payload.get("text") or "")
+            if text:
+                buffer.append((event_name, text))
+            if len(buffer) >= _REASONING_MAX_FRAGMENTS or sum(len(t) for _, t in buffer) >= _REASONING_MAX_CHARS:
+                await self._flush_reasoning_buffer(run_id)
+            return
         await self._flush_delta_buffer(run_id)
+        await self._flush_reasoning_buffer(run_id)
         await self._append_event(run_id, event_name, payload)
 
     async def _flush_delta_buffer(self, run_id: str) -> None:
@@ -152,6 +190,14 @@ class RunManager:
         buffer.clear()
         if text:
             await self._append_event(run_id, "assistant_delta", {"text": text})
+
+    async def _flush_reasoning_buffer(self, run_id: str) -> None:
+        buffer = self._reasoning_buffers.get(run_id)
+        if not buffer:
+            return
+        pending, buffer[:] = list(buffer), []
+        for name, merged in _group_reasoning_fragments(pending):
+            await self._append_event(run_id, name, {"text": merged})
 
     async def _append_event(self, run_id: str, event_name: str, payload: dict[str, Any]) -> None:
         position = self._next_position.get(run_id, 1)

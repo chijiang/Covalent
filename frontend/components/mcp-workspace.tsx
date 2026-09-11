@@ -8,7 +8,6 @@ import { ConsolePanel } from "@/components/console/console-panel";
 import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
 import { ConsoleMetaRail, PanelHeader } from "@/components/console/panel-header";
-import { PublicationControls } from "@/components/console/publication-controls";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { callMcpTool, exportManagementConfig, getConfig, importManagementConfig, inspectMcpServer, saveConfig } from "@/lib/client-api";
@@ -803,15 +802,6 @@ export function McpWorkspace() {
                           {busyAction === "delete" ? "Deleting" : "Delete service"}
                         </Button>
                       </div>
-                      <PublicationControls
-                        disabled={!!busyAction}
-                        kind="mcp"
-                        metadata={selectedServer}
-                        onError={(nextError) => setError(nextError || null)}
-                        onMessage={setMessage}
-                        onUpdated={refresh}
-                        resourceName={selectedServer.internal_name || selectedServer.name}
-                      />
                     </div>
 
                     <div className="skill-meta-rail" role="list" aria-label="MCP service metadata">

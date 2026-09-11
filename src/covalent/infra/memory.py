@@ -17,9 +17,10 @@ SessionTitleSource = Literal["auto", "manual"]
 
 
 class ChatTranscriptMessage(BaseModel):
-    id: str 
+    id: str
     role: Literal["user", "assistant"]
     content: str
+    reasoning_content: str = ""
     attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -232,6 +233,7 @@ class PersistentSessionStore(SessionStore):
                             session_id=record.id,
                             role=message.role,
                             content=message.content,
+                            reasoning_content=message.reasoning_content,
                             attachments=list(message.attachments),
                             position=position,
                         )
@@ -303,6 +305,7 @@ class PersistentSessionStore(SessionStore):
                 id=row.id,
                 role=row.role,
                 content=row.content,
+                reasoning_content=row.reasoning_content or "",
                 attachments=list(row.attachments or []),
             )
             for row in rows

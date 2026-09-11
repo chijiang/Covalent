@@ -15,7 +15,7 @@ import { useResizablePanel } from "@/components/use-resizable-panel";
 import { downloadTextFile } from "@/lib/download";
 import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
 import { exportManagementConfig, fetchProviderModels, getAgentLocalTools, getAgents, getConfig, getHealth, getSkills, importManagementConfig, inspectMcpServer, listSandboxProfiles, saveConfig, sortAgentsForPicker } from "@/lib/client-api";
-import type { AgentConfig, AgentDetail, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, ResourceVisibility, SandboxProfile, SkillSummary } from "@/lib/types";
+import type { AgentConfig, AgentDetail, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, SandboxProfile, SkillSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -28,10 +28,10 @@ type AgentFormState = {
   name: string;
   description: string;
   enabled: boolean;
-  visibility: ResourceVisibility;
   systemPrompt: string;
   reasoningPrompt: string;
   reasoningLevel: string;
+  explicitThinking: boolean;
   skills: string[];
   localTools: string[];
   allowedOutbound: string[];
@@ -247,10 +247,10 @@ function toAgentForm(
     name: agent?.name || "",
     description: agent?.description || "",
     enabled: isAgentEnabled(agent),
-    visibility: agentVisibilityIntent(agent),
     systemPrompt: agent?.system_prompt || "",
     reasoningPrompt: agent?.reasoning_prompt || "",
     reasoningLevel: agent?.reasoning_level || "none",
+    explicitThinking: agent?.metadata?.explicit_thinking !== false,
     skills: agent?.skills || [],
     localTools: agent?.local_tools || [],
     allowedOutbound: agent?.allowed_outbound || [],
@@ -273,23 +273,6 @@ function isAgentEnabled(agent: AgentConfig | null | undefined): boolean {
 
 function agentStatusLabel(isEnabled: boolean): string {
   return isEnabled ? "Active" : "Inactive";
-}
-
-function agentVisibilityIntent(agent: AgentConfig | null | undefined): ResourceVisibility {
-  if (!agent) {
-    return "private";
-  }
-  if (agent.publication_status === "pending") {
-    return "public";
-  }
-  return agent.visibility === "public" && agent.publication_status === "approved" ? "public" : "private";
-}
-
-function formVisibilityLabel(visibility: ResourceVisibility, agent: AgentConfig | null | undefined): string {
-  if (visibility === "private") {
-    return "Private";
-  }
-  return agent?.publication_status === "pending" ? "Public pending" : "Public";
 }
 
 function FieldLabel({
@@ -857,11 +840,13 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
       name: form.name.trim() || selectedAgent.name,
       description: form.description.trim(),
       enabled: form.enabled,
-      visibility: form.visibility,
-      publication_status: form.visibility === "public" ? "approved" : "draft",
       system_prompt: form.systemPrompt.trim(),
       reasoning_prompt: form.reasoningPrompt.trim(),
       reasoning_level: form.reasoningLevel,
+      metadata: {
+        ...(selectedAgent?.metadata ?? {}),
+        explicit_thinking: form.explicitThinking,
+      },
       max_iterations: coerceLimitInt(
         form.maxIterations,
         DEFAULT_AGENT_MAX_ITERATIONS,
@@ -1110,9 +1095,6 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
                     </div>
 
                     <div className="skill-meta-rail" role="list" aria-label="Agent metadata">
-                      <div className="skill-meta-chip" role="listitem" aria-label={`Visibility ${formVisibilityLabel(form.visibility, selectedAgent)}`} title={`Visibility ${formVisibilityLabel(form.visibility, selectedAgent)}`}>
-                        <Badge variant={form.visibility === "public" ? "default" : "outline"}>{formVisibilityLabel(form.visibility, selectedAgent)}</Badge>
-                      </div>
                       <div
                         className="skill-meta-chip"
                         role="listitem"
@@ -1237,30 +1219,6 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
                             {loadingModels && <small className="entity-meta">Loading models...</small>}
                           </div>
                           <div className="form-field">
-                            <FieldLabel
-                              htmlFor="agent-visibility"
-                              help={
-                                form.visibility === "public"
-                                  ? "Public access may require approval depending on your role."
-                                  : "Private agents are visible only to the owner and admins."
-                              }
-                            >
-                              Visibility
-                            </FieldLabel>
-                            <ShadcnSelect
-                              value={form.visibility}
-                              onValueChange={(value) => setForm((current) => ({ ...current, visibility: value as ResourceVisibility }))}
-                            >
-                              <SelectTrigger className="console-select-trigger w-full">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent align="start">
-                                <SelectItem value="private">Private</SelectItem>
-                                <SelectItem value="public">Public</SelectItem>
-                              </SelectContent>
-                            </ShadcnSelect>
-                          </div>
-                          <div className="form-field">
                             <FieldLabel htmlFor="agent-reasoning-level" help="Controls the model reasoning setting for this agent.">
                               Reasoning level
                             </FieldLabel>
@@ -1277,6 +1235,31 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
                                 ))}
                               </SelectContent>
                             </ShadcnSelect>
+                          </div>
+                          <div className="form-field">
+                            <FieldLabel
+                              help="For models without native reasoning: ask for a short <think> plan before each tool call (the runtime strips it into the reasoning stream). Turn off to skip that instruction."
+                            >
+                              Explicit thinking
+                            </FieldLabel>
+                            <div className="agent-segmented-control" role="group" aria-label="Explicit thinking">
+                              <button
+                                aria-pressed={form.explicitThinking}
+                                className={form.explicitThinking ? "is-active" : undefined}
+                                onClick={() => setForm((current) => ({ ...current, explicitThinking: true }))}
+                                type="button"
+                              >
+                                On
+                              </button>
+                              <button
+                                aria-pressed={!form.explicitThinking}
+                                className={!form.explicitThinking ? "is-active" : undefined}
+                                onClick={() => setForm((current) => ({ ...current, explicitThinking: false }))}
+                                type="button"
+                              >
+                                Off
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </FormSection>

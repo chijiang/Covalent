@@ -43,6 +43,7 @@ DELEGATE_FORWARDABLE_EVENTS = {
     "final",
     "input_required",
     "iteration",
+    "reasoning_delta",
     "thought",
     "tool_calls",
     "tool_results",
@@ -101,6 +102,80 @@ WORKSPACE_CONFINEMENT_POLICY = (
     "When you need temporary or scratch files, create a tmp folder inside the workspace "
     "and use that instead."
 )
+
+#: Prompt-driven thinking preamble for models without native reasoning
+#: (agent.metadata explicit_thinking, default on). The runtime strips the
+#: blocks from the visible answer and streams them as reasoning_delta.
+EXPLICIT_THINKING_POLICY = (
+    "When you need to plan before acting, write exactly one short <think>...</think> block "
+    "BEFORE any tool_calls response. Keep it under 500 characters: state the goal, the data "
+    "you need, and the tool sequence. Never write <think> blocks around or inside your final "
+    "answer to the user; the final answer must contain no <think> tags."
+)
+
+_THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+_THINK_OPEN_TAIL_RE = re.compile(r"<think>(.*)\Z", re.DOTALL)
+
+
+def strip_think_blocks(text: str) -> tuple[str, str]:
+    """剥离完整与未闭合的 <think> 块。返回 (清理后文本, 捕获的思考内容)。"""
+    captured: list[str] = []
+    text = _THINK_BLOCK_RE.sub(lambda m: (captured.append(m.group(1)) or ""), text)
+    m = _THINK_OPEN_TAIL_RE.search(text)
+    if m:
+        captured.append(m.group(1))
+        text = text[: m.start()]
+    return text, "".join(captured)
+
+
+class ThinkTagSplitter:
+    """流式 <think> 标签状态机：把增量文本切分为 (可见, 思考) 两路。
+
+    缓冲已到达但不足以判定标签完整性的尾部（最长 len(tag)-1 个字符），
+    由 flush() 收尾释放；未闭合的 <think> 余量归入思考。
+    """
+
+    OPEN, CLOSE = "<think>", "</think>"
+
+    def __init__(self) -> None:
+        self.inside = False
+        self._buf = ""
+
+    @staticmethod
+    def _held_tail(buf: str, tag: str) -> int:
+        """buf 后缀中最长的 tag 真前缀长度（可能是被撕裂的标签头）。"""
+        return max(
+            (k for k in range(min(len(buf), len(tag) - 1), 0, -1) if buf.endswith(tag[:k])),
+            default=0,
+        )
+
+    def feed(self, text: str) -> tuple[str, str]:
+        self._buf += text
+        visible: list[str] = []
+        reasoning: list[str] = []
+        while True:
+            tag, sink = (self.CLOSE, reasoning) if self.inside else (self.OPEN, visible)
+            idx = self._buf.find(tag)
+            if idx >= 0:
+                if idx:
+                    sink.append(self._buf[:idx])
+                self._buf = self._buf[idx + len(tag) :]
+                self.inside = not self.inside
+                continue
+            keep = self._held_tail(self._buf, tag)
+            emit, self._buf = self._buf[: len(self._buf) - keep], self._buf[len(self._buf) - keep :]
+            if emit:
+                sink.append(emit)
+            break
+        return "".join(visible), "".join(reasoning)
+
+    def flush(self) -> tuple[str, str]:
+        tail, self._buf = self._buf, ""
+        if self.inside:
+            return "", tail
+        return tail, ""
+
+
 TOOL_CALL_LIMIT_EXCEEDED_MESSAGE = (
     "Tool call limit exceeded. Do not call any more tools. "
     "Use the observations already collected to answer the user directly. "
@@ -224,6 +299,10 @@ class ReactAgentRuntime(AgentRuntime):
         prompt_sections.append(WORKSPACE_CONFINEMENT_POLICY)
         if self.delegate_coordinator is not None and agent.delegate_agents:
             prompt_sections.append(DELEGATE_LIFECYCLE_POLICY)
+        # 缺省开启（metadata 未配置时视为 true）：要求模型在动作前写一段
+        # <think> 规划，runtime 会把它剥离出正文并作为 reasoning 流出。
+        if bool(agent.metadata.get("explicit_thinking", True)):
+            prompt_sections.append(EXPLICIT_THINKING_POLICY)
         if skill_blocks:
             prompt_sections.append(
                 "Available skills (progressive disclosure): detailed instruction bodies are not preloaded. "
@@ -231,6 +310,38 @@ class ReactAgentRuntime(AgentRuntime):
                 + "\n\n".join(skill_blocks)
             )
         return "\n\n".join(section for section in prompt_sections if section)
+
+    @staticmethod
+    def _apply_explicit_thinking(response: GenerationResponse, fallback_think: str = "") -> str:
+        """剥离聚合响应中的 <think> 块并合并 reasoning_content，返回思考文本。
+
+        流式路径已实时发出 reasoning_delta，这里对落库字段做权威清理；
+        非流式路径的返回值作为单条 reasoning_delta 发出。
+        """
+        output_text, think = strip_think_blocks(response.output_text or "")
+        response.output_text = output_text
+        message = response.assistant_message
+        if message is not None:
+            content = message.content
+            if isinstance(content, str):
+                message.content = strip_think_blocks(content)[0]
+            elif isinstance(content, list):
+                cleaned_parts: list[Any] = []
+                for part in content:
+                    if (
+                        isinstance(part, dict)
+                        and part.get("type") == "text"
+                        and isinstance(part.get("text"), str)
+                    ):
+                        cleaned_parts.append({**part, "text": strip_think_blocks(part["text"])[0]})
+                    else:
+                        cleaned_parts.append(part)
+                message.content = cleaned_parts
+            if not think:
+                think = fallback_think
+            native = message.reasoning_content or ""
+            message.reasoning_content = "\n\n".join(x for x in (native, think) if x)
+        return think
 
     async def _execute_tool_calls(
         self,
@@ -1620,6 +1731,12 @@ class ReactAgentRuntime(AgentRuntime):
                 metadata=(context.metadata if context else {}),
             )
             started_at = perf_counter()
+            explicit_thinking = bool(agent.metadata.get("explicit_thinking", True))
+            splitter = (
+                ThinkTagSplitter()
+                if explicit_thinking and adapter.supports(Capability.STREAMING)
+                else None
+            )
             try:
                 response: GenerationResponse | None = None
                 if adapter.supports(Capability.STREAMING):
@@ -1627,21 +1744,52 @@ class ReactAgentRuntime(AgentRuntime):
                     # assistant_delta events; the aggregated response arrives
                     # as the final ("response", ...) item. The base-adapter
                     # fallback yields one whole-text delta, so behavior for
-                    # non-streaming providers is unchanged.
+                    # non-streaming providers is unchanged. With explicit
+                    # thinking on, <think> blocks are split out of the delta
+                    # stream and re-emitted as reasoning_delta events; native
+                    # ("reasoning", ...) items pass through untouched.
+                    think_parts: list[str] = []
                     async for item in adapter.stream_generation(request):
                         tag, value = item
-                        if tag == "delta":
-                            if value:
+                        if tag == "reasoning":
+                            if isinstance(value, str) and value:
+                                yield {"event": "reasoning_delta", "payload": {"text": value, "iteration": iteration}}
+                        elif tag == "delta":
+                            if not isinstance(value, str) or not value:
+                                continue
+                            if splitter is None:
                                 yield {"event": "assistant_delta", "payload": {"text": value, "iteration": iteration}}
+                            else:
+                                visible, reasoning = splitter.feed(value)
+                                if reasoning:
+                                    think_parts.append(reasoning)
+                                    yield {"event": "reasoning_delta", "payload": {"text": reasoning, "iteration": iteration}}
+                                if visible:
+                                    yield {"event": "assistant_delta", "payload": {"text": visible, "iteration": iteration}}
                         else:
                             response = value
+                    if splitter is not None:
+                        visible, reasoning = splitter.flush()
+                        if reasoning:
+                            think_parts.append(reasoning)
+                            yield {"event": "reasoning_delta", "payload": {"text": reasoning, "iteration": iteration}}
+                        if visible:
+                            yield {"event": "assistant_delta", "payload": {"text": visible, "iteration": iteration}}
                     if response is None:
                         raise ModelProviderError(
                             agent.provider.provider,
                             "Streaming generation ended without an aggregated response",
                         )
+                    if explicit_thinking:
+                        # 权威清理：剥离聚合响应里的 <think> 并合并 reasoning_content。
+                        self._apply_explicit_thinking(response, "".join(think_parts))
                 else:
                     response = await adapter.generate(request)
+                    if explicit_thinking:
+                        # 聚合响应仍带 <think> 原文：这里做权威剥离并合并 reasoning_content。
+                        think_text = self._apply_explicit_thinking(response)
+                        if think_text:
+                            yield {"event": "reasoning_delta", "payload": {"text": think_text, "iteration": iteration}}
             except ModelProviderError as exc:
                 elapsed_ms = round((perf_counter() - started_at) * 1000)
                 yield {

@@ -201,9 +201,6 @@ function SessionDetails({ session }: { session: SandboxSessionSummary }) {
         <DetailItem label="Chat messages" value={session.chat_message_count} />
         <DetailItem label="Session created" value={formatIsoDateTime(session.session_created_at)} />
         <DetailItem label="Session updated" value={formatIsoDateTime(session.session_updated_at)} />
-        <DetailItem label="Owner user" value={session.owner_user_id} />
-        <DetailItem label="Workspace" value={session.workspace_id} />
-        <DetailItem label="Token" value={session.created_by_token_id} />
         <DetailItem label="Exit / error" value={session.error || (session.exit_code ?? "-")} />
       </div>
     </div>

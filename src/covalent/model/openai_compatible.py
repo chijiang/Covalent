@@ -133,6 +133,8 @@ class OpenAICompatibleProvider(ModelAdapter):
                     reasoning = delta.get("reasoning_content")
                     if isinstance(reasoning, str) and reasoning:
                         reasoning_parts.append(reasoning)
+                        # 原生推理片段实时流出；聚合响应仍携带完整 reasoning_content。
+                        yield ("reasoning", reasoning)
                     for raw_call in delta.get("tool_calls") or []:
                         if not isinstance(raw_call, dict):
                             continue

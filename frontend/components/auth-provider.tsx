@@ -1,14 +1,32 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { createContext, useContext, useMemo } from "react";
 
-import { getCurrentUser, loginConsoleUser, logoutConsoleUser, registerConsoleUser } from "@/lib/client-api";
 import type { ConsoleLoginRequest, ConsoleRegisterRequest, ConsoleUser } from "@/lib/types";
 
+/**
+ * Lite 版固定身份：无登录、无用户体系。
+ *
+ * 所有请求以同一个内部身份执行（后端 `application/identity.py` 用同值），
+ * 因此这里不再调用 `/me`、不做登录跳转——首帧即给出非空 user 且
+ * isLoading=false，避免 app-shell 停在 "Checking session..."。
+ */
+export const SYSTEM_USER: ConsoleUser = {
+  user_id: "pm-workspace-system",
+  username: "system",
+  email: "system@local",
+  display_name: "PM Workspace",
+  avatar_url: null,
+  preferences: { language: "en", timezone: "UTC", default_agent: null },
+  role: "admin",
+  workspace_id: "default",
+  workspace_name: "Default workspace",
+  workspace_role: "admin",
+};
+
 type AuthState = {
-  user: ConsoleUser | null;
+  user: ConsoleUser;
   isLoading: boolean;
   login: (request: ConsoleLoginRequest) => Promise<ConsoleUser>;
   register: (request: ConsoleRegisterRequest) => Promise<ConsoleUser>;
@@ -17,84 +35,26 @@ type AuthState = {
 };
 
 const AuthContext = createContext<AuthState | null>(null);
-const AUTH_PATHS = new Set(["/login", "/register"]);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const [user, setUser] = useState<ConsoleUser | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-
-  const refresh = useCallback(async () => {
-    try {
-      const currentUser = await getCurrentUser();
-      setUser(currentUser);
-      return currentUser;
-    } catch {
-      setUser(null);
-      return null;
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    setIsLoading(true);
-    getCurrentUser()
-      .then((currentUser) => {
-        if (!cancelled) {
-          setUser(currentUser);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setUser(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (isLoading) {
-      return;
-    }
-    const isAuthPath = AUTH_PATHS.has(pathname);
-    if (!user && !isAuthPath) {
-      router.replace(`/login?next=${encodeURIComponent(pathname || "/")}`);
-    }
-    if (user && isAuthPath) {
-      router.replace("/");
-    }
-  }, [isLoading, pathname, router, user]);
-
   const value = useMemo<AuthState>(
     () => ({
-      user,
-      isLoading,
-      async login(request) {
-        const currentUser = await loginConsoleUser(request);
-        setUser(currentUser);
-        return currentUser;
+      user: SYSTEM_USER,
+      isLoading: false,
+      async login() {
+        return SYSTEM_USER;
       },
-      async register(request) {
-        const currentUser = await registerConsoleUser(request);
-        setUser(currentUser);
-        return currentUser;
+      async register() {
+        return SYSTEM_USER;
       },
       async logout() {
-        await logoutConsoleUser();
-        setUser(null);
-        router.replace("/login");
+        // Lite 版无会话：登出为空操作。
       },
-      refresh,
+      async refresh() {
+        return SYSTEM_USER;
+      },
     }),
-    [isLoading, refresh, router, user],
+    [],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

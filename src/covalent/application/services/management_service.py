@@ -18,7 +18,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from covalent.application.errors import (ForbiddenError, InvalidInputError, NotFoundError)
+from covalent.application.errors import (ConflictError, ForbiddenError, InvalidInputError, NotFoundError)
 from covalent.application._utils import RESOURCE_METADATA_FIELDS, _dedupe_strings, _new_chat_item_id
 from covalent.application.audit import RequestMetadata, record_audit
 from covalent.application.principal import Principal as ConsolePrincipalContext
@@ -42,8 +42,9 @@ from covalent.core.agent import AgentSpec
 from covalent.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
 from covalent.core.types import Capability, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
 from covalent.core.workspace_tools import register_workspace_tools
-from covalent.infra.config_store import ConfigKind, ConfigStore, PersistedAgentConfig, PersistedSkillSourceConfig
+from covalent.infra.config_store import ConfigKind, ConfigStore, ConfigPrincipal, PersistedAgentConfig, PersistedSkillSourceConfig, _scoped_resource_name
 from covalent.infra.db import AgentRow, DatabaseManager, McpServerRow, ProviderRow, SkillSourceRow
+from covalent.infra.delegate_repository import DelegateRunRecord, DelegateRunStore
 from covalent.infra.memory import ChatSessionRecord
 from covalent.infra.settings import AppSettings
 from covalent.mcp.client import McpSdkClient
@@ -122,6 +123,56 @@ def _normalize_agent_payload_item(item: dict[str, object], settings: AppSettings
     normalized["reasoning_prompt"] = reasoning_prompt
     normalized["reasoning_level"] = reasoning_level
     return normalized
+
+async def enforce_agent_delegate_run_checks(
+    run_store: DelegateRunStore,
+    *,
+    payload_names: set[str],
+    current_document: list[dict[str, object]],
+    renamed_from: set[str],
+    principal: ConfigPrincipal | None = None,
+) -> None:
+    """Reject agent removals/renames that would strand active delegate runs.
+
+    Spec v1 choice: conflict, not migrate. A name being removed (present in
+    the current document but absent from the payload) or renamed away (an
+    ``agent_renames`` old_name) with any ACTIVE delegate run raises a
+    ConflictError listing each run id and status compactly; terminal runs are
+    audit rows only and never block the save.
+
+    Run rows store registry-INTERNAL agent names — the public name for
+    admin-owned agents, ``public__user_<suffix>`` for user-owned ones — so
+    each affected public name is mapped through the current document's
+    ``internal_name`` (falling back to the save path's scoped-name rule)
+    before querying the run store, and the raw public name is queried too
+    (identity for admins, belt-and-braces for renamed rows).
+    """
+    internal_by_public: dict[str, str] = {}
+    current_names: set[str] = set()
+    for item in current_document:
+        public = str(item.get("name") or "").strip()
+        if not public:
+            continue
+        current_names.add(public)
+        internal = str(item.get("internal_name") or "").strip()
+        internal_by_public[public] = internal or _scoped_resource_name(public, principal)
+    affected = (current_names - payload_names) | renamed_from
+    for name in sorted(affected):
+        candidates = {internal_by_public.get(name, name), name}
+        active: list[DelegateRunRecord] = []
+        seen: set[str] = set()
+        for candidate in sorted(candidates):
+            for record in await run_store.list_active_for_agent(candidate):
+                if record.id not in seen:
+                    seen.add(record.id)
+                    active.append(record)
+        if not active:
+            continue
+        listing = ", ".join(f"{record.id}({record.status.value})" for record in active)
+        raise ConflictError(
+            f"Agent '{name}' has active delegate runs: {listing}. "
+            "Release them before renaming or removing the agent."
+        )
 
 async def build_registry(
     settings: AppSettings,

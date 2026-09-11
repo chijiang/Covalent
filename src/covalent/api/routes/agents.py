@@ -24,10 +24,12 @@ from covalent.application.schemas import AgentSummaryResponse
 from covalent.application.schemas import LocalToolSummaryResponse
 from covalent.api.sse_events import SSE_EVENT_ASSISTANT
 from covalent.api.sse_events import SSE_EVENT_ASSISTANT_DELTA
+from covalent.api.sse_events import SSE_EVENT_DELEGATE_REASONING_DELTA
 from covalent.api.sse_events import SSE_EVENT_DELEGATE_TOOL_RESULTS
 from covalent.api.sse_events import SSE_EVENT_ERROR
 from covalent.api.sse_events import SSE_EVENT_FINAL
 from covalent.api.sse_events import SSE_EVENT_INPUT_RESOLVED
+from covalent.api.sse_events import SSE_EVENT_REASONING_DELTA
 from covalent.api.sse_events import SSE_EVENT_SESSION
 from covalent.api.sse_events import SSE_EVENT_TOOL_RESULTS
 from covalent.api.sse_events import TRACE_ACTIVITY_EVENTS
@@ -45,6 +47,7 @@ from covalent.application.services.session_service import _generate_session_titl
 from covalent.application.services.session_service import _payload_output_text
 from covalent.application.services.session_service import _published_download_attachments_from_tool_results
 from covalent.application.services.session_service import _replace_assistant_transcript
+from covalent.application.services.session_service import _upsert_assistant_reasoning
 from covalent.application.services.session_service import _upsert_assistant_transcript
 from covalent.infra.config_store import ConfigStore
 from covalent.infra.db import DatabaseManager
@@ -261,6 +264,13 @@ def _build_chat_run_worker(
                     if text:
                         deltas_streamed = True
                         _upsert_assistant_transcript(transcript_messages, assistant_message_id, text)
+                elif event_name in (SSE_EVENT_REASONING_DELTA, SSE_EVENT_DELEGATE_REASONING_DELTA):
+                    # 思考片段（原生推理或 <think> 前奏；delegate_ 前缀来自子代理）
+                    # 累积进 transcript 的 assistant 消息，供会话回放展示；
+                    # reasoning 常先于可见 delta 到达，helper 内部懒创建消息。
+                    text = _payload_text(payload)
+                    if text:
+                        _upsert_assistant_reasoning(transcript_messages, assistant_message_id, text)
                 elif event_name == SSE_EVENT_ASSISTANT:
                     text = _payload_text(payload)
                     # Deltas already carried this iteration's text fragment by

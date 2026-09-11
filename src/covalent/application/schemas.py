@@ -379,6 +379,7 @@ class ChatSessionMessageResponse(BaseModel):
     id: str
     role: Literal["user", "assistant"]
     content: str
+    reasoning_content: str = ""
     attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -432,6 +433,7 @@ class ChatTranscriptMessageInput(BaseModel):
     id: str
     role: Literal["user", "assistant"]
     content: str
+    reasoning_content: str = ""
     attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 

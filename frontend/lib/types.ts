@@ -151,6 +151,7 @@ export type ChatSessionMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  reasoning_content?: string;
   attachments: Record<string, unknown>[];
 };
 

@@ -9,23 +9,16 @@ import {
   Box,
   Cable,
   ChevronDown,
-  ChevronUp,
   Cpu,
   Layers,
-  LogOut,
   MessageSquare,
   Plus,
-  Settings,
-  ShieldCheck,
   Sparkles,
-  UsersRound,
 } from "lucide-react";
 
 import { useAuth } from "@/components/auth-provider";
 import { ChatSidebarSessions } from "@/components/chat-sidebar-sessions";
 import { useChatSessions } from "@/components/chat-sessions-provider";
-import { Badge } from "@/components/ui/badge";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Sidebar,
   SidebarContent,
@@ -50,18 +43,12 @@ const CONSOLE_ITEMS = [
   { href: "/service-console/provider-settings", label: "Provider settings", icon: Cpu },
   { href: "/service-console/mcp-services", label: "MCP services", icon: Cable },
   { href: "/service-console/skill-settings", label: "Skill settings", icon: Sparkles },
-] as const;
-
-const ADMIN_ITEMS = [
-  { href: "/service-console/users", label: "Users", icon: UsersRound },
-  { href: "/service-console/audit-logs", label: "Audit logs", icon: ShieldCheck },
   { href: "/service-console/sandbox", label: "Sandbox", icon: Box },
   { href: "/service-console/sandbox-profiles", label: "Sandbox profiles", icon: Layers },
 ] as const;
 
 const SIDEBAR_SECTION_STORAGE_KEYS = {
   console: "covalent.sidebar.service-console-open.v2",
-  administration: "covalent.sidebar.administration-open.v2",
   chatSessions: "covalent.sidebar.recent-chats-open.v2",
 } as const;
 
@@ -149,20 +136,15 @@ function SidebarSectionToggle({
 
 export function AppSidebar() {
   const pathname = usePathname();
-  const { logout, user } = useAuth();
+  const { user } = useAuth();
   const { chatHref, handleNewChat } = useChatSessions();
   const isChatPage = pathname === "/";
   const isConsoleSettingsPage =
     pathname === "/service-console" || CONSOLE_ITEMS.some((item) => isNavActive(pathname, item.href));
-  const isAdministrationPage = ADMIN_ITEMS.some((item) => isNavActive(pathname, item.href));
   const initials = userInitials(user?.display_name || user?.email || "U");
   const [consoleOpen, setConsoleOpen] = usePersistedDisclosure(
     SIDEBAR_SECTION_STORAGE_KEYS.console,
     isConsoleSettingsPage,
-  );
-  const [administrationOpen, setAdministrationOpen] = usePersistedDisclosure(
-    SIDEBAR_SECTION_STORAGE_KEYS.administration,
-    isAdministrationPage,
   );
   const [chatSessionsOpen, setChatSessionsOpen] = usePersistedDisclosure(
     SIDEBAR_SECTION_STORAGE_KEYS.chatSessions,
@@ -180,12 +162,6 @@ export function AppSidebar() {
       setConsoleOpen(true);
     }
   }, [isConsoleSettingsPage, setConsoleOpen]);
-
-  useEffect(() => {
-    if (isAdministrationPage) {
-      setAdministrationOpen(true);
-    }
-  }, [isAdministrationPage, setAdministrationOpen]);
 
   return (
     <Sidebar className="border-r border-sidebar-border/80" collapsible="icon" variant="sidebar">
@@ -298,86 +274,20 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        {user?.role === "admin" ? (
-          <SidebarGroup className="shrink-0 px-2 py-1">
-            <SidebarSectionToggle
-              label="Administration"
-              onToggle={() => setAdministrationOpen(!administrationOpen)}
-              open={administrationOpen}
-            />
-            <SidebarGroupContent
-              className={cn(
-                !administrationOpen && "hidden group-data-[collapsible=icon]:block",
-              )}
-            >
-              <SidebarMenu>
-                {ADMIN_ITEMS.map((item) => {
-                  const active = isNavActive(pathname, item.href);
-                  const Icon = item.icon;
-                  return (
-                    <SidebarMenuItem key={item.href}>
-                      <SidebarMenuButton
-                        className={navButtonClass(active)}
-                        isActive={active}
-                        render={<Link href={item.href} />}
-                        tooltip={item.label}
-                      >
-                        <Icon />
-                        <span>{item.label}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        ) : null}
       </SidebarContent>
       {user ? (
         <SidebarFooter className="border-t border-sidebar-border/70">
-          <Popover>
-            <PopoverTrigger
-              className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
-              type="button"
-            >
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
-                {initials}
+          <div className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
+              {initials}
+            </span>
+            <span className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
+              <span className="block truncate text-sm font-medium text-sidebar-foreground">
+                {user.display_name || user.email}
               </span>
-              <span className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
-                <span className="block truncate text-sm font-medium text-sidebar-foreground">
-                  {user.display_name || user.email}
-                </span>
-                <span className="block truncate text-[11px] text-muted-foreground">{user.email}</span>
-              </span>
-              <ChevronUp className="size-4 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-64 p-1.5" side="top">
-              <div className="border-b border-border/70 px-2 py-2">
-                <p className="truncate text-sm font-medium">{user.display_name || user.email}</p>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  <Badge variant="outline">{user.role === "admin" ? "Administrator" : "Member"}</Badge>
-                  <Badge variant="outline">{user.workspace_name}</Badge>
-                </div>
-              </div>
-              <div className="grid gap-0.5 pt-1">
-                <Link
-                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted"
-                  href="/account"
-                >
-                  <Settings className="size-4 text-muted-foreground" />
-                  Personal settings
-                </Link>
-                <button
-                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted"
-                  onClick={() => void logout()}
-                  type="button"
-                >
-                  <LogOut className="size-4 text-muted-foreground" />
-                  Sign out
-                </button>
-              </div>
-            </PopoverContent>
-          </Popover>
+              <span className="block truncate text-[11px] text-muted-foreground">{user.workspace_name}</span>
+            </span>
+          </div>
         </SidebarFooter>
       ) : null}
       <SidebarRail />

@@ -13,7 +13,6 @@ import { ConsolePanel } from "@/components/console/console-panel";
 import { FilterToggleGroup } from "@/components/console/filter-toggle-group";
 import { InventoryListItem } from "@/components/console/inventory-list-item";
 import { ConsoleMetaRail, PanelHeader } from "@/components/console/panel-header";
-import { PublicationControls } from "@/components/console/publication-controls";
 import { PageHeaderActions } from "@/components/page-shell-context";
 import { useResizablePanel } from "@/components/use-resizable-panel";
 import { SkillFileExplorer } from "@/components/skills/skill-file-explorer";
@@ -412,17 +411,6 @@ export function SkillsWorkspace() {
                       </div>
 
                       <div className="page-action-row skill-detail-actions">
-                        {selectedSkill.publication_resource_name ? (
-                          <PublicationControls
-                            kind="skill_sources"
-                            resourceName={selectedSkill.publication_resource_name}
-                            metadata={selectedSkill}
-                            disabled={busyAction !== null}
-                            onUpdated={refresh}
-                            onMessage={setMessage}
-                            onError={setError}
-                          />
-                        ) : null}
                         <Button
                           variant="outline"
                           disabled={busyAction === "enable-skill" || busyAction === "disable-skill"}

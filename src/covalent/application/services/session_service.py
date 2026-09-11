@@ -81,6 +81,14 @@ def _upsert_assistant_transcript(messages: list[ChatTranscriptMessage], message_
         return
     messages.append(ChatTranscriptMessage(id=message_id, role="assistant", content=text))
 
+def _upsert_assistant_reasoning(messages: list[ChatTranscriptMessage], message_id: str, text: str) -> None:
+    """累积思考内容到当前 assistant 消息；reasoning 常先于可见 delta 到达，
+    需要懒创建 content 为空的 assistant 消息。"""
+    if messages and messages[-1].id == message_id and messages[-1].role == "assistant":
+        messages[-1].reasoning_content += text
+        return
+    messages.append(ChatTranscriptMessage(id=message_id, role="assistant", content="", reasoning_content=text))
+
 def _replace_assistant_transcript(messages: list[ChatTranscriptMessage], message_id: str, text: str) -> None:
     if messages and messages[-1].id == message_id and messages[-1].role == "assistant":
         messages[-1].content = text

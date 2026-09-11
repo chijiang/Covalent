@@ -85,3 +85,42 @@ def import_command(
         typer.echo("Dry run complete — no changes were written.")
     else:
         typer.echo("Import complete.")
+        typer.secho(
+            "Note: run `config reload` (or restart the service) so the running "
+            "service picks up the imported configuration.",
+            fg=typer.colors.CYAN,
+            err=True,
+        )
+
+
+@app.command("reload")
+def reload_command(
+    base_url: str = typer.Option(
+        None,
+        "--base-url",
+        help="Running service base URL (default: COVALENT_BASE_URL or http://127.0.0.1:$AGENT_FRAMEWORK_BACKEND_PORT)",
+    ),
+    timeout: float = typer.Option(30.0, "--timeout", help="HTTP timeout in seconds"),
+) -> None:
+    """Reload the running service's registry (agents/MCP/skills) from the database.
+
+    Makes out-of-band database writes (e.g. `config import`) visible without
+    restarting the service. Requires an admin-owned COVALENT_API_TOKEN.
+    """
+    from covalent.cli.runtime import ReloadError, reload_running_service
+
+    try:
+        data = reload_running_service(timeout=timeout, base_url=base_url)
+    except ConnectionError as exc:
+        typer.secho(f"Reload failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    except ReloadError as exc:
+        typer.secho(f"Reload failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        "Registry reloaded: agents=[{agents}] mcp_servers={mcp} manifest_skills={skills}".format(
+            agents=", ".join(data.get("agents", [])),
+            mcp=data.get("mcp_servers"),
+            skills=data.get("manifest_skills"),
+        )
+    )

@@ -69,6 +69,7 @@ type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  reasoning?: string;
   attachments?: ComposerAttachment[];
   askUserPrompt?: PendingQuestionRequest | null;
 };
@@ -656,6 +657,28 @@ function ChatThinkingIndicator() {
   );
 }
 
+function ChatReasoningBlock({ reasoning, active }: { reasoning: string; active: boolean }) {
+  // null = 跟随自动策略（思考流式且正文为空时展开，正文开始后折叠）。
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
+  const open = manualOpen ?? active;
+  return (
+    <div className={`chat-reasoning-block${open ? " is-open" : ""}`}>
+      <button
+        aria-expanded={open}
+        className="chat-reasoning-toggle"
+        onClick={() => setManualOpen((current) => !(current ?? active))}
+        type="button"
+      >
+        <span className="chat-reasoning-label">{active ? "Thinking…" : "Thought process"}</span>
+        <span aria-hidden="true" className="chat-reasoning-action">
+          {open ? "Collapse" : "Expand"}
+        </span>
+      </button>
+      {open ? <div className="chat-reasoning-content">{reasoning}</div> : null}
+    </div>
+  );
+}
+
 function ChatMessageBubble({
   message,
   sending,
@@ -682,7 +705,10 @@ function ChatMessageBubble({
   const canEdit = message.role === "user" && !sending && !isEditing && !message.askUserPrompt;
   const displayContent =
     message.askUserPrompt && isWaitingForAnswerContent(message.content) ? "" : message.content;
-  const isThinking = sending && message.role === "assistant" && !displayContent && !message.askUserPrompt;
+  const hasReasoning = message.role === "assistant" && Boolean(message.reasoning);
+  const isReasoningActive = sending && hasReasoning && !displayContent;
+  const isThinking =
+    sending && message.role === "assistant" && !displayContent && !message.askUserPrompt && !hasReasoning;
   const markdownContent = displayContent;
   const messageTimestamp = getTimestampFromId(message.id, messageTimestampFallback);
 
@@ -716,6 +742,7 @@ function ChatMessageBubble({
               : "chat-bubble inbound"
           }
         >
+          {hasReasoning ? <ChatReasoningBlock active={isReasoningActive} reasoning={message.reasoning || ""} /> : null}
           {message.askUserPrompt ? <AskUserPromptSummary prompt={message.askUserPrompt} /> : null}
           {message.attachments?.length ? (
             <div className="chat-attachment-list">
@@ -1337,6 +1364,7 @@ function threadFromSession(session: ChatSession): ChatThread {
     id: message.id,
     role: message.role,
     content: message.content,
+    reasoning: message.reasoning_content || undefined,
     attachments: message.attachments.map((attachment) => normalizeAttachment(attachment)),
   }));
 
@@ -2524,7 +2552,43 @@ export function ChatWorkspace() {
     let currentAssistantIteration: number | null = null;
     let deltasStreamedThisIteration = false;
     const state = { terminated: false };
+    // 思考片段按 token 到达（一次长思考可达上万条），逐条 setState 会击穿
+    // React 更新深度保护；这里累积后按帧合并刷新。
+    let reasoningBuffer = "";
+    let reasoningFlushScheduled = false;
+    const flushReasoning = () => {
+      reasoningFlushScheduled = false;
+      if (!reasoningBuffer) {
+        return;
+      }
+      const text = reasoningBuffer;
+      reasoningBuffer = "";
+      updateThread(threadId, (thread) => ({
+        ...thread,
+        updatedAt: Date.now(),
+        messages: thread.messages.map((message) =>
+          message.id === assistantId
+            ? { ...message, reasoning: `${message.reasoning || ""}${text}` }
+            : message,
+        ),
+      }));
+    };
+    const scheduleReasoningFlush = () => {
+      if (reasoningFlushScheduled) {
+        return;
+      }
+      reasoningFlushScheduled = true;
+      if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(flushReasoning);
+      } else {
+        setTimeout(flushReasoning, 16);
+      }
+    };
     const apply = (event: string, payload: unknown) => {
+      // 非思考事件先同步冲刷缓冲，保证顺序与终态不丢片段。
+      if (event !== "reasoning_delta" && event !== "delegate_reasoning_delta") {
+        flushReasoning();
+      }
       if (event === "assistant_delta") {
         const text = (payload as { text?: string })?.text || "";
         if (!text) {
@@ -2545,6 +2609,18 @@ export function ChatWorkspace() {
               : message,
           ),
         }));
+        return;
+      }
+
+      if (event === "reasoning_delta" || event === "delegate_reasoning_delta") {
+        // 思考片段（原生推理或 <think> 前奏剥离；delegate_ 前缀来自子代理）：
+        // 按到达顺序累积，按帧合并刷新（见 flushReasoning）。
+        const text = (payload as { text?: string })?.text || "";
+        if (!text) {
+          return;
+        }
+        reasoningBuffer += text;
+        scheduleReasoningFlush();
         return;
       }
 

@@ -497,6 +497,7 @@ class ChatMessageRow(Base):
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    reasoning_content: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     attachments: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
 

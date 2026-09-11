@@ -148,12 +148,15 @@ def _public_run_completed_payload(
     session_id: str | None,
     final_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    assistant_message = final_payload.get("assistant_message")
+    raw_reasoning = assistant_message.get("reasoning_content") if isinstance(assistant_message, dict) else None
     return {
         "run_id": run_id,
         "agent": agent_name,
         "memory_mode": memory_mode,
         "session_id": session_id,
         "output_text": str(final_payload.get("output_text") or ""),
+        "reasoning_content": raw_reasoning.strip() if isinstance(raw_reasoning, str) and raw_reasoning.strip() else None,
         "usage": _usage_payload(final_payload),
     }
 
@@ -166,6 +169,11 @@ def _public_stream_events(
     if event_name == "assistant":
         text = _payload_text(payload)
         return [_encode_public_sse("message.delta", {"text": text})] if text else []
+
+    # 思考内容不受 trace_level 门控：app 侧依赖它流式展示模型推理过程。
+    if event_name == "reasoning_delta":
+        text = _payload_text(payload)
+        return [_encode_public_sse("message.reasoning_delta", {"text": text})] if text else []
 
     if trace_level == "none":
         return []

@@ -341,11 +341,11 @@ class StatelessTeardownTests(unittest.IsolatedAsyncioTestCase):
 
 
 # ---------------------------------------------------------------------------
-# Agent-management conflict check (_enforce_agent_delegate_run_checks)
+# Agent-management conflict check (enforce_agent_delegate_run_checks)
 # ---------------------------------------------------------------------------
 class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
     async def test_removed_agent_with_active_runs_conflicts_listing_ids(self) -> None:
-        from covalent.api.routes.config import _enforce_agent_delegate_run_checks
+        from covalent.application.services.management_service import enforce_agent_delegate_run_checks
 
         _, store = _delegate_service()
         # Non-admin-owned agent: run rows carry the registry-internal name.
@@ -359,7 +359,7 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaises(ConflictError) as ctx:
-            await _enforce_agent_delegate_run_checks(
+            await enforce_agent_delegate_run_checks(
                 store,
                 payload_names=set(),
                 current_document=[{"name": "helper", "internal_name": "helper__user_abc"}],
@@ -372,7 +372,7 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("idle", str(ctx.exception))
 
     async def test_renamed_agent_with_active_runs_conflicts(self) -> None:
-        from covalent.api.routes.config import _enforce_agent_delegate_run_checks
+        from covalent.application.services.management_service import enforce_agent_delegate_run_checks
 
         _, store = _delegate_service()
         await _seed_run(
@@ -382,7 +382,7 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
         # At check time the current document still lists the agent under its
         # old public name; the rename metadata names the new one.
         with self.assertRaises(ConflictError):
-            await _enforce_agent_delegate_run_checks(
+            await enforce_agent_delegate_run_checks(
                 store,
                 payload_names={"helper-v2"},
                 current_document=[{"name": "helper", "internal_name": "helper__user_abc"}],
@@ -390,7 +390,7 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_kept_agents_and_terminal_runs_pass(self) -> None:
-        from covalent.api.routes.config import _enforce_agent_delegate_run_checks
+        from covalent.application.services.management_service import enforce_agent_delegate_run_checks
 
         _, store = _delegate_service()
         await _seed_run(
@@ -400,7 +400,7 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
         await _seed_run(store, "run-live", session_id="sess-1", execution_scope_id="sess-1", agent_name="keeper")
 
         # helper is removed but has no ACTIVE runs; keeper stays.
-        await _enforce_agent_delegate_run_checks(
+        await enforce_agent_delegate_run_checks(
             store,
             payload_names={"keeper"},
             current_document=[
@@ -413,7 +413,7 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
     async def test_scoped_fallback_maps_public_to_user_suffixed_internal(self) -> None:
         """Document without internal_name + member principal → the scoped-name
         fallback must derive public__user_<suffix> exactly like the save path."""
-        from covalent.api.routes.config import _enforce_agent_delegate_run_checks
+        from covalent.application.services.management_service import enforce_agent_delegate_run_checks
         from covalent.infra.config_store import ConfigPrincipal
 
         _, store = _delegate_service()
@@ -424,7 +424,7 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
         principal = ConfigPrincipal(user_id="abc-123", workspace_id="ws-1", role="member")
 
         with self.assertRaises(ConflictError):
-            await _enforce_agent_delegate_run_checks(
+            await enforce_agent_delegate_run_checks(
                 store,
                 payload_names=set(),
                 current_document=[{"name": "helper"}],
@@ -433,14 +433,14 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_admin_document_without_internal_name_queries_public_name(self) -> None:
-        from covalent.api.routes.config import _enforce_agent_delegate_run_checks
+        from covalent.application.services.management_service import enforce_agent_delegate_run_checks
 
         _, store = _delegate_service()
         await _seed_run(store, "run-1", session_id="sess-1", execution_scope_id="sess-1", agent_name="helper")
 
         # Admin (or no principal): internal == public, identity fallback.
         with self.assertRaises(ConflictError):
-            await _enforce_agent_delegate_run_checks(
+            await enforce_agent_delegate_run_checks(
                 store,
                 payload_names=set(),
                 current_document=[{"name": "helper"}],

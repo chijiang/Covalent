@@ -64,3 +64,35 @@ async def _apply_runtime_config(
             for agent in _build_agent_specs(payload, provider_config, _parse_mcp_servers(mcp_payload), settings, mcp_payload=mcp_payload, providers_payload=providers_payload)
         }
         return
+
+
+async def _reload_runtime_from_database(
+    registry: FrameworkRegistry,
+    config_store: ConfigStore,
+    settings: AppSettings,
+    loader: SkillLoader,
+    execution_backend: ExecutionBackend,
+) -> dict[str, object]:
+    """Re-apply every config document from the database to the live registry.
+
+    Equivalent to a process restart's registry build, for out-of-band writers
+    (e.g. the CLI ``config import``): agents/MCP/skills become visible without
+    restarting the service. Returns a summary of what was loaded.
+    """
+    for kind in ("mcp", "agents"):
+        payload = await config_store.get_document(kind)
+        await _apply_runtime_config(registry, config_store, settings, loader, execution_backend, kind, payload)
+
+    # Local manifest skills installed on disk (e.g. by a bundle import) are not
+    # covered by the config documents; re-discover and overwrite registrations.
+    for spec in loader.discover_local():
+        registry.register_manifest_skill(spec)
+
+    skill_payload = await config_store.get_document("skill_sources")
+    await _apply_runtime_config(registry, config_store, settings, loader, execution_backend, "skill_sources", skill_payload)
+
+    return {
+        "agents": sorted(registry.agents),
+        "mcp_servers": len(registry.mcp_servers),
+        "manifest_skills": len(registry.manifest_skills),
+    }
