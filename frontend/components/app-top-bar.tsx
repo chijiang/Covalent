@@ -19,6 +19,14 @@ const PAGE_META: Record<string, { title: string; subtitle?: string }> = {
     title: "Agent settings",
     subtitle: "Configure agent prompts, tools, delegates, and runtime wiring.",
   },
+  "/service-console/audit-logs": {
+    title: "Audit logs",
+    subtitle: "Review external API calls, denials, token changes, and publication workflow events.",
+  },
+  "/service-console/users": {
+    title: "Users",
+    subtitle: "Manage local accounts, roles, and workspace membership.",
+  },
   "/service-console/mcp-services": {
     title: "MCP services",
     subtitle: "Register, inspect, and maintain MCP server connections.",
@@ -26,6 +34,10 @@ const PAGE_META: Record<string, { title: string; subtitle?: string }> = {
   "/service-console/skill-settings": {
     title: "Skill settings",
     subtitle: "Install, preview, and enable skills for agent runtime.",
+  },
+  "/account": {
+    title: "Personal settings",
+    subtitle: "Manage your profile, security, API tokens, and preferences.",
   },
 };
 
