@@ -1,7 +1,15 @@
 import type {
   AgentDetail,
+  AgentRunLog,
   AgentRunRequest,
   AgentSummary,
+  AuditLog,
+  AuditQueryStats,
+  ApiTokenCreateRequest,
+  ApiTokenCreateResponse,
+  ApiTokenSummary,
+  ApiTokenUpdateRequest,
+  ApiTokenUsage,
   AttachmentDeliveryMode,
   AttachmentUploadResponse,
   ChatActivityDetail,
@@ -10,6 +18,13 @@ import type {
   ConfigDocument,
   ConfigDocumentUpdateMetadata,
   ConfigKind,
+  ConsoleAccountUpdateRequest,
+  ConsoleLoginRequest,
+  ConsolePasswordUpdateRequest,
+  ConsoleRegisterRequest,
+  ConsoleUser,
+  ConsoleUserSummary,
+  ConsoleUserUpdateRequest,
   HealthResponse,
   LocalToolSummary,
   McpInspectResponse,
@@ -23,6 +38,7 @@ import type {
   ManagementExportResponse,
   ManagementImportResponse,
   ManagementKind,
+  PublicationRequestResponse,
   SkillInstallRequest,
   SkillInstallResponse,
   SkillPreviewResponse,
@@ -81,6 +97,53 @@ export function sortAgentsForPicker(agents: AgentDetail[]): AgentDetail[] {
 
 export function getHealth(): Promise<HealthResponse> {
   return apiFetchJson<HealthResponse>("healthz", { method: "GET" });
+}
+
+export function getCurrentUser(): Promise<ConsoleUser> {
+  return apiFetchJson<ConsoleUser>("me", { method: "GET" });
+}
+
+export function loginConsoleUser(request: ConsoleLoginRequest): Promise<ConsoleUser> {
+  return apiFetchJson<ConsoleUser>("auth/login", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function registerConsoleUser(request: ConsoleRegisterRequest): Promise<ConsoleUser> {
+  return apiFetchJson<ConsoleUser>("auth/register", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function logoutConsoleUser(): Promise<{ status: string }> {
+  return apiFetchJson<{ status: string }>("auth/logout", { method: "POST" });
+}
+
+export function updateCurrentAccount(request: ConsoleAccountUpdateRequest): Promise<ConsoleUser> {
+  return apiFetchJson<ConsoleUser>("account", {
+    method: "PATCH",
+    body: JSON.stringify(request),
+  });
+}
+
+export function updateCurrentPassword(request: ConsolePasswordUpdateRequest): Promise<{ status: string }> {
+  return apiFetchJson<{ status: string }>("account/password", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function listConsoleUsers(): Promise<ConsoleUserSummary[]> {
+  return apiFetchJson<ConsoleUserSummary[]>("users", { method: "GET" });
+}
+
+export function updateConsoleUser(userId: string, request: ConsoleUserUpdateRequest): Promise<ConsoleUserSummary> {
+  return apiFetchJson<ConsoleUserSummary>(`users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(request),
+  });
 }
 
 export async function getAgents(): Promise<AgentDetail[]> {
@@ -214,6 +277,23 @@ export function saveConfig(kind: ConfigKind, raw: string, metadata?: ConfigDocum
   });
 }
 
+export function requestConfigPublication(kind: ConfigKind, resourceName: string): Promise<PublicationRequestResponse> {
+  return apiFetchJson<PublicationRequestResponse>(`config/${kind}/${encodeURIComponent(resourceName)}/publish-request`, {
+    method: "POST",
+  });
+}
+
+export function reviewConfigPublication(
+  kind: ConfigKind,
+  resourceName: string,
+  status: "approved" | "rejected",
+): Promise<PublicationRequestResponse> {
+  return apiFetchJson<PublicationRequestResponse>(`config/${kind}/${encodeURIComponent(resourceName)}/publication-review`, {
+    method: "POST",
+    body: JSON.stringify({ status }),
+  });
+}
+
 export function fetchProviderModels(providerName: string): Promise<string[]> {
   return apiFetchJson<string[]>(`providers/${encodeURIComponent(providerName)}/models`, { method: "GET" });
 }
@@ -230,6 +310,63 @@ export function importManagementConfig(kind: ManagementKind, file: File): Promis
   return apiFetchJson<ManagementImportResponse>(`management/${kind}/import`, {
     method: "POST",
     body: formData,
+  });
+}
+
+export function listApiTokens(): Promise<ApiTokenSummary[]> {
+  return apiFetchJson<ApiTokenSummary[]>("api-tokens", { method: "GET" });
+}
+
+export function createApiToken(request: ApiTokenCreateRequest): Promise<ApiTokenCreateResponse> {
+  return apiFetchJson<ApiTokenCreateResponse>("api-tokens", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function updateApiToken(tokenId: string, request: ApiTokenUpdateRequest): Promise<ApiTokenSummary> {
+  return apiFetchJson<ApiTokenSummary>(`api-tokens/${encodeURIComponent(tokenId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(request),
+  });
+}
+
+export function revokeApiToken(tokenId: string): Promise<ApiTokenSummary> {
+  return apiFetchJson<ApiTokenSummary>(`api-tokens/${encodeURIComponent(tokenId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function getApiTokenUsage(days = 30): Promise<ApiTokenUsage> {
+  return apiFetchJson<ApiTokenUsage>(`api-tokens/usage?days=${encodeURIComponent(String(days))}`, {
+    method: "GET",
+  });
+}
+
+export function listApiTokenRuns(tokenId: string, limit = 50): Promise<AgentRunLog[]> {
+  return apiFetchJson<AgentRunLog[]>(`api-tokens/${encodeURIComponent(tokenId)}/runs?limit=${encodeURIComponent(String(limit))}`, {
+    method: "GET",
+  });
+}
+
+export function listAuditLogs(params: { limit?: number; action?: string; outcome?: string; targetType?: string } = {}): Promise<AuditLog[]> {
+  const searchParams = new URLSearchParams();
+  searchParams.set("limit", String(params.limit ?? 100));
+  if (params.action) {
+    searchParams.set("action", params.action);
+  }
+  if (params.outcome) {
+    searchParams.set("outcome", params.outcome);
+  }
+  if (params.targetType) {
+    searchParams.set("target_type", params.targetType);
+  }
+  return apiFetchJson<AuditLog[]>(`audit-logs?${searchParams.toString()}`, { method: "GET" });
+}
+
+export function getAuditQueryStats(days = 30): Promise<AuditQueryStats> {
+  return apiFetchJson<AuditQueryStats>(`audit-logs/query-stats?days=${encodeURIComponent(String(days))}`, {
+    method: "GET",
   });
 }
 
