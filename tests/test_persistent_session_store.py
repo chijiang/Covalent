@@ -100,6 +100,52 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded.messages[1].attachments, [{"k": "v"}])
         self.assertEqual(loaded.message_count, 2)
 
+    async def test_activity_raw_payload_split_round_trip(self) -> None:
+        """Raw model blobs must live in raw_payload: list loads return a clean
+        payload plus has_raw_* flags; the detail endpoint merges them back."""
+        from datetime import UTC, datetime
+
+        from covalent.infra.memory import ChatActivityItem, ChatSessionRecord, ChatTranscriptMessage
+
+        store = self._store()
+        now = datetime.now(UTC)
+        await store.save_session(
+            ChatSessionRecord(
+                id="sess-1",
+                title="t",
+                created_at=now,
+                updated_at=now,
+                messages=[ChatTranscriptMessage(id="m1", role="user", content="hi")],
+                activity=[
+                    ChatActivityItem(
+                        id="act-1",
+                        title="model_call",
+                        payload={
+                            "iteration": 1,
+                            "model": "m",
+                            "raw_request": {"ctx": "x" * 2048},
+                            "raw_response": {"text": "y"},
+                        },
+                    ),
+                    ChatActivityItem(id="act-2", title="tool_calls", payload={"calls": [{"name": "s"}]}),
+                ],
+            )
+        )
+
+        loaded = await store.get_session("sess-1")
+        model_call = next(item for item in loaded.activity if item.id == "act-1")
+        self.assertEqual(model_call.payload.keys(), {"iteration", "model"})
+        self.assertTrue(model_call.has_raw_request)
+        self.assertTrue(model_call.has_raw_response)
+        tool_calls = next(item for item in loaded.activity if item.id == "act-2")
+        self.assertEqual(tool_calls.payload, {"calls": [{"name": "s"}]})
+        self.assertFalse(tool_calls.has_raw_request)
+
+        detail = await store.get_activity_item("sess-1", "act-1")
+        self.assertIn("raw_request", detail.payload)
+        self.assertIn("raw_response", detail.payload)
+        self.assertIn("iteration", detail.payload)
+
     async def test_resave_replaces_messages_without_duplicates(self) -> None:
         from datetime import UTC, datetime
 

@@ -31,6 +31,47 @@ class ChatActivityItem(BaseModel):
     id: str
     title: str
     payload: Any = None
+    # True when the stored payload carries a raw_request/raw_response blob
+    # that list loads stripped out (served on demand via the detail endpoint).
+    has_raw_request: bool = False
+    has_raw_response: bool = False
+
+
+_ACTIVITY_RAW_KEYS = ("raw_request", "raw_response")
+
+
+def split_activity_raw_payload(item: ChatActivityItem) -> tuple[Any, dict[str, Any] | None]:
+    """Split an activity item into (display payload, raw payload column value).
+
+    raw_request/raw_response blobs dominate row size (model_call payloads grow
+    with the conversation), so they are stored out-of-band: list loads never
+    transfer them and the detail endpoint merges them back on demand.
+    """
+    payload = item.payload
+    if not isinstance(payload, dict) or not (
+        "raw_request" in payload or "raw_response" in payload
+    ):
+        return payload, None
+    clean = {key: value for key, value in payload.items() if key not in _ACTIVITY_RAW_KEYS}
+    raw = {key: payload[key] for key in _ACTIVITY_RAW_KEYS if key in payload}
+    return clean, raw
+
+
+def strip_activity_item_raw(item: ChatActivityItem) -> ChatActivityItem:
+    """Python-side counterpart of the write-time split for in-memory records
+    (whose items still carry merged payloads): drop raw blobs and record their
+    presence in the has_raw_* flags."""
+    if not isinstance(item.payload, dict) or not (
+        "raw_request" in item.payload or "raw_response" in item.payload
+    ):
+        return item
+    return item.model_copy(
+        update={
+            "payload": {key: value for key, value in item.payload.items() if key not in _ACTIVITY_RAW_KEYS},
+            "has_raw_request": "raw_request" in item.payload,
+            "has_raw_response": "raw_response" in item.payload,
+        }
+    )
 
 
 class ChatSessionSummary(BaseModel):
@@ -173,6 +214,7 @@ class InMemorySessionStore(SessionStore):
                     message.model_copy(deep=True, update={"position": position})
                     for position, message in enumerate(full.messages)
                 ]
+            full.activity = [strip_activity_item_raw(item) for item in full.activity]
             return full
         messages = record.messages
         start = 0
@@ -188,6 +230,7 @@ class InMemorySessionStore(SessionStore):
             for offset, message in enumerate(messages)
         ]
         paged.message_count = len(record.messages)
+        paged.activity = [strip_activity_item_raw(item) for item in paged.activity]
         return paged
 
     async def get_session_summary(self, session_id: str) -> ChatSessionSummary | None:
@@ -306,7 +349,10 @@ class PersistentSessionStore(SessionStore):
             row = await session.scalar(stmt)
             if row is None:
                 return None
-            return ChatActivityItem(id=row.id, title=row.title, payload=row.payload)
+            payload = row.payload
+            if isinstance(payload, dict) and isinstance(row.raw_payload, dict):
+                payload = {**payload, **row.raw_payload}
+            return ChatActivityItem(id=row.id, title=row.title, payload=payload)
 
         return await run_session_operation(self._session_factory, _get)
 
@@ -349,20 +395,22 @@ class PersistentSessionStore(SessionStore):
                 # Append-only: callers must pass a superset (see SessionStore.save_session).
                 # Existing ids are no-ops via ON CONFLICT; only net-new rows insert.
                 if record.activity:
+                    values = []
+                    for position, item in enumerate(record.activity):
+                        clean_payload, raw_payload = split_activity_raw_payload(item)
+                        values.append(
+                            {
+                                "id": item.id,
+                                "session_id": record.id,
+                                "title": item.title,
+                                "payload": clean_payload,
+                                "raw_payload": raw_payload,
+                                "position": position,
+                            }
+                        )
                     await session.execute(
                         pg_insert(ChatActivityRow)
-                        .values(
-                            [
-                                {
-                                    "id": item.id,
-                                    "session_id": record.id,
-                                    "title": item.title,
-                                    "payload": item.payload,
-                                    "position": position,
-                                }
-                                for position, item in enumerate(record.activity)
-                            ]
-                        )
+                        .values(values)
                         .on_conflict_do_nothing(index_elements=["id"])
                     )
             await session.refresh(row)
@@ -458,14 +506,30 @@ class PersistentSessionStore(SessionStore):
 
     @staticmethod
     async def _load_activity(session: AsyncSession, session_id: str) -> list[ChatActivityItem]:
+        # payload holds display fields only (raw blobs are split into
+        # raw_payload at write time), so this stays cheap regardless of
+        # session length; the flags drive on-demand raw fetches through the
+        # activity detail endpoint.
         stmt = (
-            select(ChatActivityRow)
+            select(
+                ChatActivityRow.id,
+                ChatActivityRow.title,
+                ChatActivityRow.payload,
+                func.coalesce(ChatActivityRow.raw_payload.has_key("raw_request"), False).label("has_raw_request"),
+                func.coalesce(ChatActivityRow.raw_payload.has_key("raw_response"), False).label("has_raw_response"),
+            )
             .where(ChatActivityRow.session_id == session_id)
             .order_by(ChatActivityRow.position)
         )
-        rows = list(await session.scalars(stmt))
+        rows = (await session.execute(stmt)).all()
         return [
-            ChatActivityItem(id=row.id, title=row.title, payload=row.payload)
+            ChatActivityItem(
+                id=row.id,
+                title=row.title,
+                payload=row.payload,
+                has_raw_request=bool(row.has_raw_request),
+                has_raw_response=bool(row.has_raw_response),
+            )
             for row in rows
         ]
 

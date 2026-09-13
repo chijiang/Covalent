@@ -516,7 +516,10 @@ class ChatActivityRow(Base):
         nullable=False,
     )
     title: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Display payload kept small on every list read; raw model blobs live in
+    # raw_payload and are served on demand via the activity detail endpoint.
     payload: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    raw_payload: Mapped[Any] = mapped_column(JSONB, nullable=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
 
     __table_args__ = (

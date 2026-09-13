@@ -265,13 +265,15 @@ def to_chat_session_response(record: ChatSessionRecord) -> ChatSessionResponse:
     activity: list[ChatSessionActivityResponse] = []
     for item in record.activity:
         payload, has_raw_request, has_raw_response = strip_activity_payload(item.payload)
+        # Store-level loads already stripped and flagged; union so records
+        # carrying unstripped payloads (save paths) still report correctly.
         activity.append(
             ChatSessionActivityResponse(
                 id=item.id,
                 title=item.title,
                 payload=payload,
-                has_raw_request=has_raw_request,
-                has_raw_response=has_raw_response,
+                has_raw_request=has_raw_request or bool(getattr(item, "has_raw_request", False)),
+                has_raw_response=has_raw_response or bool(getattr(item, "has_raw_response", False)),
             )
         )
     messages = record.messages
