@@ -81,13 +81,52 @@ def _upsert_assistant_transcript(messages: list[ChatTranscriptMessage], message_
         return
     messages.append(ChatTranscriptMessage(id=message_id, role="assistant", content=text))
 
-def _upsert_assistant_reasoning(messages: list[ChatTranscriptMessage], message_id: str, text: str) -> None:
+# Reasoning segments are attributed to their producing agent via markers
+# embedded in reasoning_content: U+001E-wrapped "#agent:<name>" (empty name =
+# back to the main agent). Control characters cannot collide with model output;
+# content without any marker predates attribution and renders unattributed.
+REASONING_SOURCE_MARK = "\x1e"
+_REASONING_SOURCE_PREFIX = "#agent:"
+
+
+def _reasoning_source_marker(source: str | None) -> str:
+    return f"{REASONING_SOURCE_MARK}{_REASONING_SOURCE_PREFIX}{source or ''}{REASONING_SOURCE_MARK}"
+
+
+def _reasoning_active_source(reasoning_content: str) -> str | None:
+    """Source of the trailing reasoning segment (None = main agent)."""
+    needle = REASONING_SOURCE_MARK + _REASONING_SOURCE_PREFIX
+    last = reasoning_content.rfind(needle)
+    if last == -1:
+        return None
+    start = last + len(needle)
+    end = reasoning_content.find(REASONING_SOURCE_MARK, start)
+    name = reasoning_content[start:end] if end != -1 else reasoning_content[start:]
+    return name or None
+
+
+def _upsert_assistant_reasoning(
+    messages: list[ChatTranscriptMessage],
+    message_id: str,
+    text: str,
+    source: str | None = None,
+) -> None:
     """累积思考内容到当前 assistant 消息；reasoning 常先于可见 delta 到达，
-    需要懒创建 content 为空的 assistant 消息。"""
+    需要懒创建 content 为空的 assistant 消息。source 为子代理名，来源切换时
+    写入标记，前端据此分段显示署名。"""
     if messages and messages[-1].id == message_id and messages[-1].role == "assistant":
+        if _reasoning_active_source(messages[-1].reasoning_content) != source:
+            messages[-1].reasoning_content += _reasoning_source_marker(source)
         messages[-1].reasoning_content += text
         return
-    messages.append(ChatTranscriptMessage(id=message_id, role="assistant", content="", reasoning_content=text))
+    messages.append(
+        ChatTranscriptMessage(
+            id=message_id,
+            role="assistant",
+            content="",
+            reasoning_content=(_reasoning_source_marker(source) if source is not None else "") + text,
+        )
+    )
 
 def _replace_assistant_transcript(messages: list[ChatTranscriptMessage], message_id: str, text: str) -> None:
     if messages and messages[-1].id == message_id and messages[-1].role == "assistant":

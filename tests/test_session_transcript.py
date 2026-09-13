@@ -15,8 +15,12 @@ from covalent.application.services.session_service import (
     AgentRunInput,
     _build_resume_tool_result,
     _build_user_transcript_message,
+    _reasoning_active_source,
+    _reasoning_source_marker,
     _request_display_input,
+    _upsert_assistant_reasoning,
 )
+from covalent.application.services.session_service import ChatTranscriptMessage
 from covalent.core.types import UserInputRequest
 
 
@@ -79,6 +83,54 @@ class SessionTranscriptTestCase(unittest.TestCase):
     def test_build_resume_tool_result_no_resume_question(self) -> None:
         run = AgentRunInput(input="plain message")
         self.assertIsNone(_build_resume_tool_result(run, pending_input=None))
+
+
+class AssistantReasoningAttributionTestCase(unittest.TestCase):
+    def _message(self) -> ChatTranscriptMessage:
+        return ChatTranscriptMessage(id="am-1", role="assistant", content="")
+
+    def test_main_then_delegate_then_main_writes_switch_markers(self) -> None:
+        messages = [self._message()]
+        _upsert_assistant_reasoning(messages, "am-1", "thinking ")
+        _upsert_assistant_reasoning(messages, "am-1", "sub thinking", source="voc-agent")
+        _upsert_assistant_reasoning(messages, "am-1", "more main")
+        expected = (
+            "thinking "
+            + _reasoning_source_marker("voc-agent")
+            + "sub thinking"
+            + _reasoning_source_marker(None)
+            + "more main"
+        )
+        self.assertEqual(messages[0].reasoning_content, expected)
+
+    def test_same_source_consecutive_deltas_write_no_marker(self) -> None:
+        messages = [self._message()]
+        _upsert_assistant_reasoning(messages, "am-1", "a", source="voc-agent")
+        _upsert_assistant_reasoning(messages, "am-1", "b", source="voc-agent")
+        self.assertEqual(messages[0].reasoning_content, _reasoning_source_marker("voc-agent") + "ab")
+
+    def test_lazy_creates_message_with_leading_marker(self) -> None:
+        messages: list[ChatTranscriptMessage] = []
+        _upsert_assistant_reasoning(messages, "am-1", "sub", source="voc-agent")
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].content, "")
+        self.assertEqual(messages[0].reasoning_content, _reasoning_source_marker("voc-agent") + "sub")
+
+    def test_active_source_none_for_legacy_content(self) -> None:
+        self.assertIsNone(_reasoning_active_source("plain reasoning from an old session"))
+
+    def test_active_source_round_trip(self) -> None:
+        self.assertIsNone(_reasoning_active_source("plain legacy"))
+        self.assertEqual(_reasoning_active_source("main" + _reasoning_source_marker("voc") + "sub"), "voc")
+        self.assertIsNone(
+            _reasoning_active_source("main" + _reasoning_source_marker("voc") + "sub" + _reasoning_source_marker(None))
+        )
+
+    def test_marker_is_control_char_wrapped(self) -> None:
+        marker = _reasoning_source_marker("voc")
+        self.assertTrue(marker.startswith("\x1e"))
+        self.assertTrue(marker.endswith("\x1e"))
+        self.assertIn("#agent:voc", marker)
 
 
 if __name__ == "__main__":

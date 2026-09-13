@@ -236,11 +236,58 @@ def to_chat_session_summary_response(record: ChatSessionSummary) -> ChatSessionS
 
 
 
+_ACTIVITY_RAW_PAYLOAD_KEYS = ("raw_request", "raw_response")
+
+
+def strip_activity_payload(payload: Any) -> tuple[Any, bool, bool]:
+    """Drop raw_request/raw_response blobs from an activity payload.
+
+    Returns the stripped payload plus flags recording whether each raw blob
+    was present, so list responses stay small while the frontend can still
+    offer on-demand raw views via the activity detail endpoint.
+    """
+    if not isinstance(payload, dict):
+        return payload, False, False
+    has_request = "raw_request" in payload
+    has_response = "raw_response" in payload
+    if not (has_request or has_response):
+        return payload, False, False
+    stripped = {
+        key: value
+        for key, value in payload.items()
+        if key not in _ACTIVITY_RAW_PAYLOAD_KEYS
+    }
+    return stripped, has_request, has_response
+
+
+
 def to_chat_session_response(record: ChatSessionRecord) -> ChatSessionResponse:
+    activity: list[ChatSessionActivityResponse] = []
+    for item in record.activity:
+        payload, has_raw_request, has_raw_response = strip_activity_payload(item.payload)
+        activity.append(
+            ChatSessionActivityResponse(
+                id=item.id,
+                title=item.title,
+                payload=payload,
+                has_raw_request=has_raw_request,
+                has_raw_response=has_raw_response,
+            )
+        )
+    messages = record.messages
+    # Paged loads set message_count to the transcript total; fall back to
+    # the in-memory list length when a record never carried a count.
+    messages_total = getattr(record, "message_count", 0) or len(messages)
+    # Positions are dense from 0 (both stores renumber on save), so a page
+    # whose first message sits above 0 has older messages behind it.
+    first_position = getattr(messages[0], "position", None) if messages else None
+    messages_has_more = first_position is not None and first_position > 0
     return ChatSessionResponse(
         **to_chat_session_summary_response(record).model_dump(),
-        messages=[ChatSessionMessageResponse(**message.model_dump()) for message in record.messages],
-        activity=[ChatSessionActivityResponse(**item.model_dump()) for item in record.activity],
+        messages=[ChatSessionMessageResponse(**message.model_dump()) for message in messages],
+        messages_total=messages_total,
+        messages_has_more=messages_has_more,
+        activity=activity,
     )
 
 

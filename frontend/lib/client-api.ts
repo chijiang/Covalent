@@ -4,6 +4,7 @@ import type {
   AgentSummary,
   AttachmentDeliveryMode,
   AttachmentUploadResponse,
+  ChatActivityDetail,
   ChatSession,
   ChatSessionSummary,
   ConfigDocument,
@@ -150,8 +151,31 @@ export function listChatSessions(): Promise<ChatSessionSummary[]> {
   return apiFetchJson<ChatSessionSummary[]>("sessions", { method: "GET" });
 }
 
-export function getChatSession(sessionId: string): Promise<ChatSession> {
-  return apiFetchJson<ChatSession>(`sessions/${encodeURIComponent(sessionId)}`, { method: "GET" });
+export type ChatSessionMessagesPage = {
+  messagesLimit?: number;
+  messagesBefore?: number;
+};
+
+export function getChatSession(sessionId: string, page: ChatSessionMessagesPage = {}): Promise<ChatSession> {
+  const params = new URLSearchParams();
+  if (page.messagesLimit !== undefined) {
+    params.set("messages_limit", String(page.messagesLimit));
+  }
+  if (page.messagesBefore !== undefined) {
+    params.set("messages_before", String(page.messagesBefore));
+  }
+  const query = params.toString();
+  return apiFetchJson<ChatSession>(
+    `sessions/${encodeURIComponent(sessionId)}${query ? `?${query}` : ""}`,
+    { method: "GET" },
+  );
+}
+
+export function getChatSessionActivity(sessionId: string, activityId: string): Promise<ChatActivityDetail> {
+  return apiFetchJson<ChatActivityDetail>(
+    `sessions/${encodeURIComponent(sessionId)}/activity/${encodeURIComponent(activityId)}`,
+    { method: "GET" },
+  );
 }
 
 export function renameChatSession(sessionId: string, title: string): Promise<ChatSession> {

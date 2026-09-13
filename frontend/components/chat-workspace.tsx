@@ -40,6 +40,7 @@ import {
   cancelAgentRun,
   getAgents,
   getChatSession,
+  getChatSessionActivity,
   getHealth,
   listAgentRuns,
   renameChatSession,
@@ -51,12 +52,15 @@ import {
   uploadChatAttachments,
 } from "@/lib/client-api";
 import { uid, type ChatThread, type ChatThreadMessage } from "@/lib/chat-thread-model";
+import { serializeReasoningMarker, parseReasoningSegments } from "@/lib/reasoning-segments";
+import { stripActivityItem } from "@/lib/trace-payload";
 import type {
   AgentDetail,
   AgentInputPart,
   AttachmentDeliveryMode,
   AttachmentUploadItem,
   ChatSession,
+  ChatSessionMessage,
   ChatSessionSummary,
   DelegateRunStatus,
   HealthResponse,
@@ -95,6 +99,8 @@ type ActivityItem = {
   id: string;
   title: string;
   payload: unknown;
+  hasRawRequest?: boolean;
+  hasRawResponse?: boolean;
 };
 
 type PendingQuestionDraft = {
@@ -105,6 +111,12 @@ type PendingQuestionDraft = {
 const TRACE_PANEL_STORAGE_KEY = "agent-framework.chat-trace-width";
 const TRACE_PANEL_VISIBLE_STORAGE_KEY = "agent-framework.chat-trace-visible";
 const DEFAULT_TRACE_PANEL_WIDTH = 360;
+// Transcript pagination: entering a session hydrates only the newest messages;
+// scrolling to the top pages in older ones.
+const MESSAGES_INITIAL_LIMIT = 3;
+const MESSAGES_OLDER_PAGE_SIZE = 20;
+const MESSAGES_FULL_LOAD_LIMIT = 1_000_000;
+const MESSAGE_STAGE_TOP_TRIGGER_PX = 80;
 const MIN_TRACE_PANEL_WIDTH = 280;
 const MAX_TRACE_PANEL_WIDTH = 640;
 const MIN_CONVERSATION_PANEL_WIDTH = 560;
@@ -661,6 +673,8 @@ function ChatReasoningBlock({ reasoning, active }: { reasoning: string; active: 
   // null = 跟随自动策略（思考流式且正文为空时展开，正文开始后折叠）。
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const open = manualOpen ?? active;
+  // 思考内容按来源分段：子代理段带名字 header，无标记的旧数据优雅降级。
+  const segments = parseReasoningSegments(reasoning);
   return (
     <div className={`chat-reasoning-block${open ? " is-open" : ""}`}>
       <button
@@ -674,7 +688,22 @@ function ChatReasoningBlock({ reasoning, active }: { reasoning: string; active: 
           {open ? "Collapse" : "Expand"}
         </span>
       </button>
-      {open ? <div className="chat-reasoning-content">{reasoning}</div> : null}
+      {open ? (
+        <div className="chat-reasoning-content">
+          {segments.map((segment, index) =>
+            segment.agentName ? (
+              <div className="chat-reasoning-segment" key={index}>
+                <div className="chat-reasoning-agent">{segment.agentName}</div>
+                {segment.text}
+              </div>
+            ) : (
+              <div className="chat-reasoning-segment" key={index}>
+                {segment.text}
+              </div>
+            ),
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1354,19 +1383,26 @@ function normalizeAttachment(raw: Record<string, unknown>): ComposerAttachment {
   };
 }
 
-function threadFromSession(session: ChatSession): ChatThread {
-  const activity = session.activity.map((item) => ({
-    id: item.id,
-    title: item.title,
-    payload: item.payload,
-  }));
-  const baseMessages: ChatThreadMessage[] = session.messages.map((message) => ({
+function chatThreadMessageFromSession(message: ChatSessionMessage): ChatThreadMessage {
+  return {
     id: message.id,
     role: message.role,
     content: message.content,
     reasoning: message.reasoning_content || undefined,
     attachments: message.attachments.map((attachment) => normalizeAttachment(attachment)),
+    position: message.position ?? null,
+  };
+}
+
+function threadFromSession(session: ChatSession): ChatThread {
+  const activity = session.activity.map((item) => ({
+    id: item.id,
+    title: item.title,
+    payload: item.payload,
+    hasRawRequest: item.has_raw_request ?? false,
+    hasRawResponse: item.has_raw_response ?? false,
   }));
+  const baseMessages: ChatThreadMessage[] = session.messages.map(chatThreadMessageFromSession);
 
   return {
     id: session.id,
@@ -1384,6 +1420,8 @@ function threadFromSession(session: ChatSession): ChatThread {
     pendingQuestion: getPendingQuestionFromActivity(session.activity.map((item) => ({ id: item.id, title: item.title, payload: item.payload }))),
     contextTruncated: false,
     compactionMethod: null,
+    messagesTotal: session.messages_total,
+    messagesHasMore: session.messages_has_more ?? false,
   };
 }
 
@@ -1702,18 +1740,79 @@ function buildTraceTurnGroups(
     }));
 }
 
+const traceRawDetailCache = new Map<string, Promise<{ payload: unknown }>>();
+
+function fetchTraceRawDetail(sessionId: string, activityId: string): Promise<{ payload: unknown }> {
+  const cacheKey = `${sessionId}:${activityId}`;
+  let promise = traceRawDetailCache.get(cacheKey);
+  if (!promise) {
+    promise = getChatSessionActivity(sessionId, activityId);
+    traceRawDetailCache.set(cacheKey, promise);
+    promise.catch(() => traceRawDetailCache.delete(cacheKey));
+  }
+  return promise;
+}
+
 function TraceStepEntry({
   entry: item,
   summary,
+  sessionId,
 }: {
   entry: EnrichedTraceEntry;
   summary: string | null;
+  sessionId: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [rawPanel, setRawPanel] = useState<ModelRawPanel | null>(null);
+  const [fetchedRaw, setFetchedRaw] = useState<Partial<Record<ModelRawPanel, unknown>>>({});
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawFetchFailed, setRawFetchFailed] = useState(false);
+  const rawFetchStartedRef = useRef(false);
   const isModelCall = getBaseEventTitle(item.title) === "model_call";
-  const rawRequest = isModelCall ? getModelCallRawPayload(item.payload, "request") : null;
-  const rawResponse = isModelCall ? getModelCallRawPayload(item.payload, "response") : null;
+  const payloadRequest = getModelCallRawPayload(item.payload, "request");
+  const payloadResponse = getModelCallRawPayload(item.payload, "response");
+  const hasServerRaw = Boolean(item.hasRawRequest || item.hasRawResponse);
+  // Raw blobs live server-side only; fetch them once when the step is expanded.
+  useEffect(() => {
+    if (!expanded || !isModelCall || !hasServerRaw || !sessionId || rawFetchFailed || rawFetchStartedRef.current) {
+      return;
+    }
+    if (payloadRequest !== null && payloadResponse !== null) {
+      return;
+    }
+    rawFetchStartedRef.current = true;
+    let active = true;
+    setRawLoading(true);
+    fetchTraceRawDetail(sessionId, item.id)
+      .then((detail) => {
+        if (!active) {
+          return;
+        }
+        const record = asTracePayloadRecord(detail.payload);
+        setFetchedRaw((current) => ({
+          ...current,
+          request: record && record.raw_request !== undefined ? record.raw_request : current.request,
+          response: record && record.raw_response !== undefined ? record.raw_response : current.response,
+        }));
+      })
+      .catch(() => {
+        if (active) {
+          setRawFetchFailed(true);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setRawLoading(false);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [expanded, hasServerRaw, isModelCall, item.id, payloadRequest, payloadResponse, rawFetchFailed, sessionId]);
+  const rawRequest =
+    item.hasRawRequest === false ? null : (payloadRequest ?? fetchedRaw.request ?? null);
+  const rawResponse =
+    item.hasRawResponse === false ? null : (payloadResponse ?? fetchedRaw.response ?? null);
   const visiblePayload = getTraceDisplayPayload(item.title, item.payload);
   const payloadText = formatTracePayload(visiblePayload);
   const rawPayload = rawPanel === "request" ? rawRequest : rawPanel === "response" ? rawResponse : null;
@@ -1746,6 +1845,12 @@ function TraceStepEntry({
       {expanded ? (
         <div className="trace-step-details">
           <pre className="trace-step-payload">{displayPayload}</pre>
+          {isModelCall && rawLoading ? (
+            <p className="trace-step-raw-loading">Loading raw payload…</p>
+          ) : null}
+          {isModelCall && rawFetchFailed && hasServerRaw ? (
+            <p className="trace-step-raw-loading">Raw payload unavailable.</p>
+          ) : null}
           {isModelCall && (rawRequest !== null || rawResponse !== null) ? (
             <div className="trace-step-raw">
               <div className="trace-step-raw-controls" aria-label="Model call raw payload controls">
@@ -1785,7 +1890,7 @@ function truncateTraceSummaryText(value: string, maxChars = 240): string {
   return `${normalized.slice(0, Math.max(maxChars - 3, 1)).trimEnd()}...`;
 }
 
-function TraceNodeList({ nodes }: { nodes: TraceNode[] }) {
+function TraceNodeList({ nodes, sessionId }: { nodes: TraceNode[]; sessionId: string }) {
   return (
     <>
       {nodes.map((node) => {
@@ -1795,16 +1900,23 @@ function TraceNodeList({ nodes }: { nodes: TraceNode[] }) {
               entry={node.entry}
               key={node.entry.id}
               summary={getTraceSummary(node.entry)}
+              sessionId={sessionId}
             />
           );
         }
-        return <TraceDelegateGroup key={`delegate-${node.firstItemId}`} node={node} />;
+        return <TraceDelegateGroup key={`delegate-${node.firstItemId}`} node={node} sessionId={sessionId} />;
       })}
     </>
   );
 }
 
-function TraceDelegateGroup({ node }: { node: Extract<TraceNode, { kind: "delegate" }> }) {
+function TraceDelegateGroup({
+  node,
+  sessionId,
+}: {
+  node: Extract<TraceNode, { kind: "delegate" }>;
+  sessionId: string;
+}) {
   // Count children for the badge (event-kind children only; nested delegate
   // groups count as 1 each for display purposes).
   const eventCount = node.children.length;
@@ -1839,7 +1951,7 @@ function TraceDelegateGroup({ node }: { node: Extract<TraceNode, { kind: "delega
       </button>
       {expanded ? (
         <div className="trace-delegate-children">
-          <TraceNodeList nodes={node.children} />
+          <TraceNodeList nodes={node.children} sessionId={sessionId} />
         </div>
       ) : null}
     </div>
@@ -2087,6 +2199,12 @@ export function ChatWorkspace() {
   // it must be cancelled explicitly before a new turn starts.
   const activeBackendRunRef = useRef<{ runId: string; agentName: string } | null>(null);
   const undoInProgressRef = useRef(false);
+  // Transcript pagination: guards concurrent older-message fetches and lets the
+  // post-commit effect restore the viewport after prepending (scroll anchoring).
+  const loadOlderInFlightRef = useRef(false);
+  const pendingScrollAnchorRef = useRef<{ threadId: string; previousHeight: number; previousFirstId: string | null } | null>(null);
+  const pendingScrollToBottomRef = useRef<string | null>(null);
+  const messageStageRef = useRef<HTMLDivElement | null>(null);
 
   // Snapshot used by Task 8's undo toast: the original edited message and the
   // tail that was discarded when the user resent an edited message. Cleared on
@@ -2231,12 +2349,13 @@ export function ChatWorkspace() {
       }
 
       try {
-        const session = await getChatSession(activeThread.sessionId);
+        const session = await getChatSession(activeThread.sessionId, { messagesLimit: MESSAGES_INITIAL_LIMIT });
         if (cancelled) {
           return;
         }
         const hydratedThread = threadFromSession(session);
         upsertThread(hydratedThread);
+        pendingScrollToBottomRef.current = hydratedThread.id;
         setSelectedAgent((current) => pickAvailableAgentName(agents, hydratedThread.agentName, defaultAgentName, current));
         // If this session still has a background run executing (the user
         // navigated away and came back), reattach and replay its events.
@@ -2262,6 +2381,121 @@ export function ChatWorkspace() {
       cancelled = true;
     };
   }, [activeThread, agents, defaultAgentName, upsertThread]);
+
+  // Pages in the next batch of older messages when the stage is scrolled near
+  // the top; the post-commit effect below restores the viewport after prepend.
+  async function loadOlderMessages() {
+    const thread = activeThread;
+    if (!thread || thread.messagesHasMore !== true || loadOlderInFlightRef.current) {
+      return;
+    }
+    const firstPosition = thread.messages[0]?.position;
+    if (typeof firstPosition !== "number") {
+      return;
+    }
+    loadOlderInFlightRef.current = true;
+    const stage = messageStageRef.current;
+    pendingScrollAnchorRef.current = {
+      threadId: thread.id,
+      previousHeight: stage?.scrollHeight ?? 0,
+      previousFirstId: thread.messages[0]?.id ?? null,
+    };
+    updateThread(thread.id, (current) => ({ ...current, isLoadingOlderMessages: true }));
+    try {
+      const session = await getChatSession(thread.sessionId, {
+        messagesLimit: MESSAGES_OLDER_PAGE_SIZE,
+        messagesBefore: firstPosition,
+      });
+      // Set just before the prepend lands: an earlier render (the loading
+      // flag) would consume the flag before the new groups exist.
+      shouldRecollapseTraceRef.current = true;
+      updateThread(thread.id, (current) => {
+        const known = new Set(current.messages.map((message) => message.id));
+        const older = session.messages
+          .filter((message) => !known.has(message.id))
+          .map(chatThreadMessageFromSession);
+        return {
+          ...current,
+          messages: [...older, ...current.messages],
+          messagesHasMore: session.messages_has_more ?? false,
+          messagesTotal: session.messages_total,
+          isLoadingOlderMessages: false,
+        };
+      });
+    } catch (loadError) {
+      pendingScrollAnchorRef.current = null;
+      updateThread(thread.id, (current) => ({ ...current, isLoadingOlderMessages: false }));
+      setError(loadError instanceof Error ? loadError.message : "Failed to load earlier messages.");
+    } finally {
+      loadOlderInFlightRef.current = false;
+    }
+  }
+
+  function handleMessageStageScroll() {
+    const stage = messageStageRef.current;
+    if (!stage) {
+      return;
+    }
+    if (stage.scrollTop > MESSAGE_STAGE_TOP_TRIGGER_PX) {
+      return;
+    }
+    // Not actually scrollable (short transcript) — loading older on a
+    // top-pinned stage would fetch the whole history pointlessly.
+    if (stage.scrollHeight <= stage.clientHeight + MESSAGE_STAGE_TOP_TRIGGER_PX) {
+      return;
+    }
+    void loadOlderMessages();
+  }
+
+  // Edit/undo rewrite the whole transcript server-side, so a partially loaded
+  // thread must be fully fetched first or the replace would drop history.
+  async function ensureFullTranscriptLoaded(): Promise<ChatThreadMessage[] | null> {
+    const thread = activeThread;
+    if (!thread) {
+      return null;
+    }
+    if (thread.messagesHasMore !== true) {
+      return thread.messages;
+    }
+    try {
+      const session = await getChatSession(thread.sessionId, { messagesLimit: MESSAGES_FULL_LOAD_LIMIT });
+      const full = session.messages.map(chatThreadMessageFromSession);
+      updateThread(thread.id, (current) => ({
+        ...current,
+        messages: full,
+        messagesHasMore: false,
+        messagesTotal: session.messages_total,
+      }));
+      return full;
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load conversation history.");
+      return null;
+    }
+  }
+
+  // Post-commit viewport fixes: after hydration jump to the newest message;
+  // after prepending older ones, compensate the grown scrollHeight so the
+  // viewport stays anchored on the same content instead of jumping.
+  useEffect(() => {
+    const stage = messageStageRef.current;
+    if (!stage || !activeThread) {
+      return;
+    }
+    if (pendingScrollToBottomRef.current === activeThread.id) {
+      pendingScrollToBottomRef.current = null;
+      stage.scrollTop = stage.scrollHeight;
+      return;
+    }
+    const anchor = pendingScrollAnchorRef.current;
+    if (
+      anchor &&
+      anchor.threadId === activeThread.id &&
+      activeThread.messages[0]?.id !== anchor.previousFirstId
+    ) {
+      pendingScrollAnchorRef.current = null;
+      stage.scrollTop += stage.scrollHeight - anchor.previousHeight;
+    }
+  }, [activeThread]);
 
   useEffect(() => {
     setInput("");
@@ -2346,6 +2580,27 @@ export function ChatWorkspace() {
   const [collapsedTraceTurns, setCollapsedTraceTurns] = useState<Set<number>>(
     () => new Set(),
   );
+  // Entering a session starts with every turn collapsed except the newest —
+  // full DOM expansion of long histories is a major render cost. Manual
+  // toggles after init are preserved; switching threads re-initializes.
+  // Lazily prepended history re-applies the same rule (flag below) so the
+  // freshly revealed old turns render collapsed too.
+  const traceCollapseInitRef = useRef<{ threadId: string } | null>(null);
+  const shouldRecollapseTraceRef = useRef(false);
+  useEffect(() => {
+    if (!activeThread || traceTurnGroups.length === 0) {
+      return;
+    }
+    const init = traceCollapseInitRef.current;
+    if (init?.threadId === activeThread.id && !shouldRecollapseTraceRef.current) {
+      return;
+    }
+    traceCollapseInitRef.current = { threadId: activeThread.id };
+    shouldRecollapseTraceRef.current = false;
+    setCollapsedTraceTurns(
+      new Set(traceTurnGroups.slice(0, -1).map((turn) => turn.turnIndex)),
+    );
+  }, [activeThread, traceTurnGroups]);
   const displayedTraceEntries = traceEntries;
   const activePendingQuestion = activeThread?.pendingQuestion || null;
   const chatSplitStyle = {
@@ -2553,8 +2808,11 @@ export function ChatWorkspace() {
     let deltasStreamedThisIteration = false;
     const state = { terminated: false };
     // 思考片段按 token 到达（一次长思考可达上万条），逐条 setState 会击穿
-    // React 更新深度保护；这里累积后按帧合并刷新。
+    // React 更新深度保护；这里累积后按帧合并刷新。缓冲内嵌来源标记
+    // （见 reasoning-segments.ts）：子代理片段写入 agent 名，与后端
+    // reasoning_content 的持久化格式一致，刷新后归因不丢。
     let reasoningBuffer = "";
+    let reasoningActiveSource: string | null | undefined;
     let reasoningFlushScheduled = false;
     const flushReasoning = () => {
       reasoningFlushScheduled = false;
@@ -2614,10 +2872,18 @@ export function ChatWorkspace() {
 
       if (event === "reasoning_delta" || event === "delegate_reasoning_delta") {
         // 思考片段（原生推理或 <think> 前奏剥离；delegate_ 前缀来自子代理）：
-        // 按到达顺序累积，按帧合并刷新（见 flushReasoning）。
-        const text = (payload as { text?: string })?.text || "";
+        // 按到达顺序累积，按帧合并刷新（见 flushReasoning）。来源切换时
+        // 先写入分段标记，前端与持久化侧据此显示署名。
+        const record = payload as { text?: string; agent_name?: string };
+        const text = record?.text || "";
         if (!text) {
           return;
+        }
+        const source =
+          event === "delegate_reasoning_delta" && record?.agent_name ? String(record.agent_name) : null;
+        if (reasoningActiveSource !== source) {
+          reasoningBuffer += serializeReasoningMarker(source);
+          reasoningActiveSource = source;
         }
         reasoningBuffer += text;
         scheduleReasoningFlush();
@@ -2680,7 +2946,7 @@ export function ChatWorkspace() {
           ...thread,
           updatedAt: Date.now(),
           pendingQuestion,
-          activity: [...thread.activity, { id: uid(event), title: event, payload }],
+          activity: [...thread.activity, stripActivityItem({ id: uid(event), title: event, payload })],
           messages: thread.messages.map((message) =>
             message.id === assistantId
               ? {
@@ -2704,7 +2970,7 @@ export function ChatWorkspace() {
         updateThread(threadId, (thread) => ({
           ...thread,
           updatedAt: Date.now(),
-          activity: [...thread.activity, { id: uid(event), title: event, payload }],
+          activity: [...thread.activity, stripActivityItem({ id: uid(event), title: event, payload })],
           messages: thread.messages.map((message) =>
             message.id === assistantId
               ? { ...message, content: message.content || detail }
@@ -2724,7 +2990,7 @@ export function ChatWorkspace() {
           updatedAt: Date.now(),
           contextTruncated: (truncated > 0 || summarized > 0) ? true : thread.contextTruncated,
           compactionMethod: method || thread.compactionMethod,
-          activity: [...thread.activity, { id: uid(event), title: event, payload }],
+          activity: [...thread.activity, stripActivityItem({ id: uid(event), title: event, payload })],
         }));
         return;
       }
@@ -2734,7 +3000,7 @@ export function ChatWorkspace() {
         updateThread(threadId, (thread) => ({
           ...thread,
           updatedAt: Date.now(),
-          activity: [...thread.activity, { id: uid(event), title: event, payload }],
+          activity: [...thread.activity, stripActivityItem({ id: uid(event), title: event, payload })],
           messages: publishedDownloads.length
             ? thread.messages.map((message) =>
                 message.id === assistantId
@@ -3043,7 +3309,15 @@ export function ChatWorkspace() {
     }
 
     const thread = activeThread;
-    const messageIndex = thread.messages.findIndex((m) => m.id === message.id);
+    let snapshotMessages = (thread.messages) as Message[];
+    if (thread.messagesHasMore === true) {
+      const full = await ensureFullTranscriptLoaded();
+      if (!full) {
+        return;
+      }
+      snapshotMessages = full as Message[];
+    }
+    const messageIndex = snapshotMessages.findIndex((m) => m.id === message.id);
     if (messageIndex === -1) {
       return;
     }
@@ -3051,8 +3325,8 @@ export function ChatWorkspace() {
     // Snapshot for undo: original message + everything strictly after it.
     clearEditUndo();
     const originalMessage = message;
-    const removedTail = thread.messages.slice(messageIndex + 1) as Message[];
-    const prefix = thread.messages.slice(0, messageIndex) as Message[];
+    const removedTail = snapshotMessages.slice(messageIndex + 1);
+    const prefix = snapshotMessages.slice(0, messageIndex);
     editUndoRef.current = {
       threadId: thread.id,
       sessionId: thread.sessionId,
@@ -3304,7 +3578,21 @@ export function ChatWorkspace() {
             </div>
           </div>
 
-          <div className="message-stage is-console-stage">
+          <div
+            className="message-stage is-console-stage"
+            ref={messageStageRef}
+            onScroll={handleMessageStageScroll}
+          >
+            {activeThread?.messagesHasMore ? (
+              <button
+                className="messages-older-load"
+                disabled={activeThread.isLoadingOlderMessages}
+                onClick={() => void loadOlderMessages()}
+                type="button"
+              >
+                {activeThread.isLoadingOlderMessages ? "Loading earlier messages…" : "Load earlier messages"}
+              </button>
+            ) : null}
             {conversationMessages.length === 0 ? (
               <div className="chat-empty-state">
                 <p className="section-kicker">{activeThread?.isPersisted ? "Loading" : "Start"}</p>
@@ -3672,7 +3960,7 @@ export function ChatWorkspace() {
 
                         {!isCollapsed ? (
                           <div className="trace-turn-steps">
-                            <TraceNodeList nodes={turn.entries} />
+                            <TraceNodeList nodes={turn.entries} sessionId={activeThread?.sessionId || ""} />
                           </div>
                         ) : null}
                       </section>

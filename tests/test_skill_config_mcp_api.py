@@ -95,7 +95,7 @@ class _FakeConfigStore:
 
 
 class _DummySessionStore:
-    async def get_session(self, session_id):
+    async def get_session(self, session_id, *, messages_limit=None, messages_before_position=None):
         return None
 
 

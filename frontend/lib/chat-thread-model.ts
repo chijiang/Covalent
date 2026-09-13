@@ -7,12 +7,15 @@ export type ChatThreadMessage = {
   reasoning?: string;
   attachments?: unknown[];
   askUserPrompt?: PendingQuestionRequest | null;
+  position?: number | null;
 };
 
 export type ChatThreadActivity = {
   id: string;
   title: string;
   payload: unknown;
+  hasRawRequest?: boolean;
+  hasRawResponse?: boolean;
 };
 
 export type ChatThread = {
@@ -31,6 +34,11 @@ export type ChatThread = {
   pendingQuestion: PendingQuestionRequest | null;
   contextTruncated: boolean;
   compactionMethod: string | null;
+  // Transcript pagination: messagesHasMore is true while older messages
+  // exist server-side that haven't been loaded into the thread yet.
+  messagesTotal?: number;
+  messagesHasMore?: boolean;
+  isLoadingOlderMessages?: boolean;
 };
 
 export type ChatHistorySection = {

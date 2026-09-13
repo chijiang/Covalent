@@ -31,6 +31,7 @@ from covalent.api._shared import to_chat_session_response
 from covalent.api._shared import to_chat_session_summary_response
 from covalent.application.schemas import AttachmentUploadItemResponse
 from covalent.application.schemas import AttachmentUploadResponse
+from covalent.application.schemas import ChatActivityDetailResponse
 from covalent.application.schemas import ChatSessionResponse
 from covalent.application.schemas import ChatSessionSummaryResponse
 from covalent.application.schemas import ChatSessionUpdateRequest
@@ -56,15 +57,44 @@ async def list_sessions(request: Request) -> list[ChatSessionSummaryResponse]:
     return [to_chat_session_summary_response(record) for record in await session_store.list_sessions(**filters)]
 
 @router.get("/sessions/{session_id}")
-async def get_session(request: Request, session_id: str) -> ChatSessionResponse:
+async def get_session(
+    request: Request,
+    session_id: str,
+    messages_limit: int | None = None,
+    messages_before: int | None = None,
+) -> ChatSessionResponse:
+    if messages_limit is not None and messages_limit < 1:
+        raise HTTPException(status_code=400, detail="messages_limit must be >= 1")
+    if messages_before is not None and messages_before < 0:
+        raise HTTPException(status_code=400, detail="messages_before must be >= 0")
     db_manager: DatabaseManager = request.app.state.db_manager
     session_store: SessionStore = request.app.state.session_store
     principal = await _resolve_console_principal(request, db_manager)
-    record = await session_store.get_session(session_id)
+    record = await session_store.get_session(
+        session_id,
+        messages_limit=messages_limit,
+        messages_before_position=messages_before,
+    )
     if record is None:
         raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
     _ensure_console_principal_can_access_session(principal, record)
     return to_chat_session_response(record)
+
+@router.get("/sessions/{session_id}/activity/{activity_id}")
+async def get_session_activity(
+    request: Request, session_id: str, activity_id: str
+) -> ChatActivityDetailResponse:
+    db_manager: DatabaseManager = request.app.state.db_manager
+    session_store: SessionStore = request.app.state.session_store
+    principal = await _resolve_console_principal(request, db_manager)
+    summary = await session_store.get_session_summary(session_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session: {session_id}")
+    _ensure_console_principal_can_access_session(principal, summary)
+    item = await session_store.get_activity_item(session_id, activity_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Unknown activity: {activity_id}")
+    return ChatActivityDetailResponse(id=item.id, title=item.title, payload=item.payload)
 
 @router.patch("/sessions/{session_id}")
 async def rename_session(request: Request, session_id: str, update_request: ChatSessionUpdateRequest) -> ChatSessionResponse:

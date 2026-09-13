@@ -381,6 +381,8 @@ class ChatSessionMessageResponse(BaseModel):
     content: str
     reasoning_content: str = ""
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    # Stable transcript ordinal; the cursor for older-message pagination.
+    position: int | None = None
 
 
 class AttachmentUploadItemResponse(BaseModel):
@@ -406,6 +408,16 @@ class AttachmentUploadResponse(BaseModel):
 class ChatSessionActivityResponse(BaseModel):
     id: str
     title: str
+    # Summary payload: raw_request / raw_response are stripped from list
+    # responses and served individually via the activity detail endpoint.
+    payload: Any = None
+    has_raw_request: bool = False
+    has_raw_response: bool = False
+
+
+class ChatActivityDetailResponse(BaseModel):
+    id: str
+    title: str
     payload: Any = None
 
 
@@ -422,6 +434,10 @@ class ChatSessionSummaryResponse(BaseModel):
 
 class ChatSessionResponse(ChatSessionSummaryResponse):
     messages: list[ChatSessionMessageResponse] = Field(default_factory=list)
+    # Total transcript size and whether messages is a truncated page
+    # (non-default when the request used messages_limit / messages_before).
+    messages_total: int = 0
+    messages_has_more: bool = False
     activity: list[ChatSessionActivityResponse] = Field(default_factory=list)
 
 

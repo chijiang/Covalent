@@ -22,7 +22,7 @@ from covalent.registry.registry import FrameworkRegistry
 # helpers
 # ---------------------------------------------------------------------------
 class _DummySessionStore:
-    async def get_session(self, session_id):
+    async def get_session(self, session_id, *, messages_limit=None, messages_before_position=None):
         return None
 
 
@@ -189,7 +189,7 @@ class _FakeSessionStore:
             results = [r for r in results if getattr(r, "owner_user_id", None) == owner]
         return results
 
-    async def get_session(self, session_id):
+    async def get_session(self, session_id, *, messages_limit=None, messages_before_position=None):
         return self._sessions.get(session_id)
 
     async def update_title(self, session_id, title, title_source="manual"):

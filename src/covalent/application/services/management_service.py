@@ -46,6 +46,7 @@ from covalent.infra.config_store import ConfigKind, ConfigStore, ConfigPrincipal
 from covalent.infra.db import AgentRow, DatabaseManager, McpServerRow, ProviderRow, SkillSourceRow
 from covalent.infra.delegate_repository import DelegateRunRecord, DelegateRunStore
 from covalent.infra.memory import ChatSessionRecord
+from covalent.infra.memory import ChatSessionSummary
 from covalent.infra.settings import AppSettings
 from covalent.mcp.client import McpSdkClient
 from covalent.mcp.spec import McpServerConfig, McpToolReference
@@ -454,7 +455,7 @@ async def _resolve_api_agent_name(
 
 def _ensure_console_principal_can_access_session(
     principal: ConsolePrincipalContext,
-    record: ChatSessionRecord,
+    record: ChatSessionSummary,
 ) -> None:
     if principal.is_admin:
         return

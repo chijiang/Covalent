@@ -22,6 +22,9 @@ class ChatTranscriptMessage(BaseModel):
     content: str
     reasoning_content: str = ""
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    # Stable transcript ordinal (0-based). None when the message was built
+    # in-memory and not yet assigned a row position.
+    position: int | None = None
 
 
 class ChatActivityItem(BaseModel):
@@ -64,7 +67,30 @@ class SessionStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_session(self, session_id: str) -> ChatSessionRecord | None:
+    async def get_session(
+        self,
+        session_id: str,
+        *,
+        messages_limit: int | None = None,
+        messages_before_position: int | None = None,
+    ) -> ChatSessionRecord | None:
+        """Load a session record.
+
+        With ``messages_limit`` / ``messages_before_position`` the transcript
+        is a newest-first page (positions strictly below
+        ``messages_before_position`` when given); ``record.message_count``
+        still reflects the session's total message count so callers can
+        detect has-more. Default (both None) loads the full transcript.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_session_summary(self, session_id: str) -> ChatSessionSummary | None:
+        """Lightweight session lookup (no messages/activity) for auth checks."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_activity_item(self, session_id: str, activity_id: str) -> ChatActivityItem | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -130,9 +156,54 @@ class InMemorySessionStore(SessionStore):
         ]
         return sorted(summaries, key=lambda record: record.updated_at, reverse=True)
 
-    async def get_session(self, session_id: str) -> ChatSessionRecord | None:
+    async def get_session(
+        self,
+        session_id: str,
+        *,
+        messages_limit: int | None = None,
+        messages_before_position: int | None = None,
+    ) -> ChatSessionRecord | None:
         record = self._sessions.get(session_id)
-        return record.model_copy(deep=True) if record is not None else None
+        if record is None:
+            return None
+        if messages_limit is None and messages_before_position is None:
+            full = record.model_copy(deep=True)
+            if any(message.position is None for message in full.messages):
+                full.messages = [
+                    message.model_copy(deep=True, update={"position": position})
+                    for position, message in enumerate(full.messages)
+                ]
+            return full
+        messages = record.messages
+        start = 0
+        if messages_before_position is not None:
+            messages = messages[:messages_before_position]
+        if messages_limit is not None:
+            tail = messages[-messages_limit:] if messages_limit > 0 else []
+            start = len(messages) - len(tail)
+            messages = tail
+        paged = record.model_copy(deep=True)
+        paged.messages = [
+            message.model_copy(deep=True, update={"position": start + offset})
+            for offset, message in enumerate(messages)
+        ]
+        paged.message_count = len(record.messages)
+        return paged
+
+    async def get_session_summary(self, session_id: str) -> ChatSessionSummary | None:
+        record = self._sessions.get(session_id)
+        if record is None:
+            return None
+        return ChatSessionSummary.model_validate(record.model_dump())
+
+    async def get_activity_item(self, session_id: str, activity_id: str) -> ChatActivityItem | None:
+        record = self._sessions.get(session_id)
+        if record is None:
+            return None
+        for item in record.activity:
+            if item.id == activity_id:
+                return item.model_copy(deep=True)
+        return None
 
     async def save_session(self, record: ChatSessionRecord) -> ChatSessionRecord:
         next_record = record.model_copy(deep=True)
@@ -193,12 +264,49 @@ class PersistentSessionStore(SessionStore):
 
         return await run_session_operation(self._session_factory, _list)
 
-    async def get_session(self, session_id: str) -> ChatSessionRecord | None:
+    async def get_session(
+        self,
+        session_id: str,
+        *,
+        messages_limit: int | None = None,
+        messages_before_position: int | None = None,
+    ) -> ChatSessionRecord | None:
         async def _get(session: AsyncSession) -> ChatSessionRecord | None:
             row = await session.get(ChatSessionRow, session_id)
             if row is None:
                 return None
-            return await self._record_from_row(session, row)
+            if messages_limit is None and messages_before_position is None:
+                return await self._record_from_row(session, row)
+            messages, total = await self._load_message_page(
+                session,
+                session_id,
+                limit=messages_limit,
+                before_position=messages_before_position,
+            )
+            return await self._record_from_row(session, row, messages=messages, message_count=total)
+
+        return await run_session_operation(self._session_factory, _get)
+
+    async def get_session_summary(self, session_id: str) -> ChatSessionSummary | None:
+        async def _get(session: AsyncSession) -> ChatSessionSummary | None:
+            row = await session.get(ChatSessionRow, session_id)
+            if row is None:
+                return None
+            count = await self._count_messages(session, session_id)
+            return self._summary_from_row(row, message_count=count)
+
+        return await run_session_operation(self._session_factory, _get)
+
+    async def get_activity_item(self, session_id: str, activity_id: str) -> ChatActivityItem | None:
+        async def _get(session: AsyncSession) -> ChatActivityItem | None:
+            stmt = select(ChatActivityRow).where(
+                ChatActivityRow.session_id == session_id,
+                ChatActivityRow.id == activity_id,
+            )
+            row = await session.scalar(stmt)
+            if row is None:
+                return None
+            return ChatActivityItem(id=row.id, title=row.title, payload=row.payload)
 
         return await run_session_operation(self._session_factory, _get)
 
@@ -307,9 +415,46 @@ class PersistentSessionStore(SessionStore):
                 content=row.content,
                 reasoning_content=row.reasoning_content or "",
                 attachments=list(row.attachments or []),
+                position=row.position,
             )
             for row in rows
         ]
+
+    @staticmethod
+    async def _load_message_page(
+        session: AsyncSession,
+        session_id: str,
+        *,
+        limit: int | None,
+        before_position: int | None,
+    ) -> tuple[list[ChatTranscriptMessage], int]:
+        """Newest-first window over the transcript, returned oldest-first.
+
+        Selects the ``limit`` messages with the highest position strictly below
+        ``before_position`` (all messages when None), plus the session's total
+        message count so callers can detect has-more.
+        """
+        stmt = select(ChatMessageRow).where(ChatMessageRow.session_id == session_id)
+        if before_position is not None:
+            stmt = stmt.where(ChatMessageRow.position < before_position)
+        stmt = stmt.order_by(desc(ChatMessageRow.position))
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        rows = list(await session.scalars(stmt))
+        total = await PersistentSessionStore._count_messages(session, session_id)
+        rows.reverse()
+        messages = [
+            ChatTranscriptMessage(
+                id=row.id,
+                role=row.role,
+                content=row.content,
+                reasoning_content=row.reasoning_content or "",
+                attachments=list(row.attachments or []),
+                position=row.position,
+            )
+            for row in rows
+        ]
+        return messages, total
 
     @staticmethod
     async def _load_activity(session: AsyncSession, session_id: str) -> list[ChatActivityItem]:

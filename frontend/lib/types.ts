@@ -153,9 +153,19 @@ export type ChatSessionMessage = {
   content: string;
   reasoning_content?: string;
   attachments: Record<string, unknown>[];
+  // Stable transcript ordinal; the cursor for older-message pagination.
+  position?: number | null;
 };
 
 export type ChatSessionActivity = {
+  id: string;
+  title: string;
+  payload: unknown;
+  has_raw_request?: boolean;
+  has_raw_response?: boolean;
+};
+
+export type ChatActivityDetail = {
   id: string;
   title: string;
   payload: unknown;
@@ -211,6 +221,9 @@ export type ChatSessionSummary = {
 
 export type ChatSession = ChatSessionSummary & {
   messages: ChatSessionMessage[];
+  // Present when the request paginated the transcript.
+  messages_total?: number;
+  messages_has_more?: boolean;
   activity: ChatSessionActivity[];
 };
 

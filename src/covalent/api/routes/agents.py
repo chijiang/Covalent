@@ -268,9 +268,16 @@ def _build_chat_run_worker(
                     # 思考片段（原生推理或 <think> 前奏；delegate_ 前缀来自子代理）
                     # 累积进 transcript 的 assistant 消息，供会话回放展示；
                     # reasoning 常先于可见 delta 到达，helper 内部懒创建消息。
+                    # 子代理片段带 agent_name 来源，持久化时写入署名标记。
                     text = _payload_text(payload)
                     if text:
-                        _upsert_assistant_reasoning(transcript_messages, assistant_message_id, text)
+                        source = None
+                        if event_name == SSE_EVENT_DELEGATE_REASONING_DELTA:
+                            agent_name = payload.get("agent_name") if isinstance(payload, dict) else None
+                            source = str(agent_name) if agent_name else None
+                        _upsert_assistant_reasoning(
+                            transcript_messages, assistant_message_id, text, source=source
+                        )
                 elif event_name == SSE_EVENT_ASSISTANT:
                     text = _payload_text(payload)
                     # Deltas already carried this iteration's text fragment by

@@ -603,7 +603,7 @@ class _FakeDeleteSessionStore:
         self.record = record
         self.deleted: list[str] = []
 
-    async def get_session(self, session_id):
+    async def get_session(self, session_id, *, messages_limit=None, messages_before_position=None):
         return self.record if session_id == self.record.id else None
 
     async def delete_session(self, session_id) -> bool:
