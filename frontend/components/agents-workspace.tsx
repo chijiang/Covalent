@@ -15,7 +15,7 @@ import { useResizablePanel } from "@/components/use-resizable-panel";
 import { downloadTextFile } from "@/lib/download";
 import { normalizeLooseMcpServerConfig } from "@/lib/mcp-config";
 import { exportManagementConfig, fetchProviderModels, getAgentLocalTools, getAgents, getConfig, getHealth, getSkills, importManagementConfig, inspectMcpServer, listSandboxProfiles, saveConfig, sortAgentsForPicker } from "@/lib/client-api";
-import type { AgentConfig, AgentDetail, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, SandboxProfile, SkillSummary } from "@/lib/types";
+import type { AgentConfig, AgentDetail, LocalToolSummary, McpInspectResponse, McpServerConfig, McpToolReference, ProviderEntry, ResourceVisibility, SandboxProfile, SkillSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -32,6 +32,7 @@ type AgentFormState = {
   reasoningPrompt: string;
   reasoningLevel: string;
   explicitThinking: boolean;
+  visibility: ResourceVisibility;
   skills: string[];
   localTools: string[];
   allowedOutbound: string[];
@@ -232,6 +233,23 @@ function mcpServerHint(server: McpServerConfig): string {
   return server.url || server.transport;
 }
 
+function agentVisibilityIntent(agent: AgentConfig | null | undefined): ResourceVisibility {
+  if (!agent) {
+    return "private";
+  }
+  if (agent.publication_status === "pending") {
+    return "public";
+  }
+  return agent.visibility === "public" && agent.publication_status === "approved" ? "public" : "private";
+}
+
+function formVisibilityLabel(visibility: ResourceVisibility, agent: AgentConfig | null | undefined): string {
+  if (visibility === "private") {
+    return "Private";
+  }
+  return agent?.publication_status === "pending" ? "Public pending" : "Public";
+}
+
 function toAgentForm(
   agent: AgentConfig | null,
   providers: ProviderEntry[] = [],
@@ -251,6 +269,7 @@ function toAgentForm(
     reasoningPrompt: agent?.reasoning_prompt || "",
     reasoningLevel: agent?.reasoning_level || "none",
     explicitThinking: agent?.metadata?.explicit_thinking !== false,
+    visibility: agentVisibilityIntent(agent),
     skills: agent?.skills || [],
     localTools: agent?.local_tools || [],
     allowedOutbound: agent?.allowed_outbound || [],
@@ -847,6 +866,8 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
         ...(selectedAgent?.metadata ?? {}),
         explicit_thinking: form.explicitThinking,
       },
+      visibility: form.visibility,
+      publication_status: form.visibility === "public" ? "approved" : "draft",
       max_iterations: coerceLimitInt(
         form.maxIterations,
         DEFAULT_AGENT_MAX_ITERATIONS,
@@ -1103,6 +1124,9 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
                       >
                         <Badge variant="outline">{selectedAgent.provider.model}</Badge>
                       </div>
+                      <div className="skill-meta-chip" role="listitem" aria-label={`Visibility ${formVisibilityLabel(form.visibility, selectedAgent)}`} title={`Visibility ${formVisibilityLabel(form.visibility, selectedAgent)}`}>
+                        <Badge variant={form.visibility === "public" ? "default" : "outline"}>{formVisibilityLabel(form.visibility, selectedAgent)}</Badge>
+                      </div>
                       <div className="skill-meta-chip" role="listitem" aria-label={`Timeout ${selectedAgent.provider.timeout_seconds || 0} seconds`} title={`Timeout ${selectedAgent.provider.timeout_seconds || 0} seconds`}>
                         <Badge variant="outline">{selectedAgent.provider.timeout_seconds || 0}s timeout</Badge>
                       </div>
@@ -1233,6 +1257,30 @@ const selectedSandboxProfile = sandboxProfiles.find((profile) => profile.id === 
                                 {REASONING_LEVEL_OPTIONS.map((level) => (
                                   <SelectItem key={level} value={level}>{level}</SelectItem>
                                 ))}
+                              </SelectContent>
+                            </ShadcnSelect>
+                          </div>
+                          <div className="form-field">
+                            <FieldLabel
+                              htmlFor="agent-visibility"
+                              help={
+                                form.visibility === "public"
+                                  ? "Public access may require approval depending on your role."
+                                  : "Private agents are visible only to the owner and admins."
+                              }
+                            >
+                              Visibility
+                            </FieldLabel>
+                            <ShadcnSelect
+                              value={form.visibility}
+                              onValueChange={(value) => setForm((current) => ({ ...current, visibility: value as ResourceVisibility }))}
+                            >
+                              <SelectTrigger className="console-select-trigger w-full">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent align="start">
+                                <SelectItem value="private">Private</SelectItem>
+                                <SelectItem value="public">Public</SelectItem>
                               </SelectContent>
                             </ShadcnSelect>
                           </div>
