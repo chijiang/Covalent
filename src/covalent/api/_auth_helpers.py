@@ -292,6 +292,13 @@ def _console_settings_from_request(request: Request) -> AppSettings:
 async def _resolve_console_principal(request: Request, db_manager: DatabaseManager) -> ConsolePrincipalContext:
     settings = _console_settings_from_request(request)
     identity = _resolve_console_identity(request, settings)
+    # Session cookies carry a login-time snapshot of display_name, so in local
+    # auth modes the DB row is the source of truth: writing the claim back on
+    # every request would let a stale cookie revert an admin rename. External
+    # identity modes (dev headers, trusted_header, jwt) present the live IdP
+    # view, which stays authoritative.
+    auth_mode = (settings.console_auth_mode or "local").strip().lower()
+    identity_authoritative = auth_mode not in {"local", "session", "password"}
     header_user_id = identity["user_id"]
     header_email = identity["email"]
     header_display_name = identity["display_name"]
@@ -328,7 +335,7 @@ async def _resolve_console_principal(request: Request, db_manager: DatabaseManag
                 )
                 session.add(user)
             else:
-                if header_display_name:
+                if header_display_name and (identity_authoritative or not user.display_name):
                     user.display_name = header_display_name
                 if header_role == "admin" and not user.role:
                     user.role = "admin"
