@@ -95,7 +95,7 @@ class ToolResult(BaseModel):
     def to_message(self) -> "Message":
         return Message(
             role="tool",
-            content=self.content if isinstance(self.content, str) else str(self.content),
+            content=self.content if isinstance(self.content, (str, list)) else str(self.content),
             name=self.name,
             tool_call_id=self.tool_call_id,
         )

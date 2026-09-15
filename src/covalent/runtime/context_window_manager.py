@@ -86,10 +86,30 @@ class ContextWindowManager:
         self.enable_llm_summarization = enable_llm_summarization
 
     def _estimate_message_chars(self, message: Message) -> int:
-        total = len(self._runtime._serialize_content(message.content))
+        total = self._content_char_weight(message.content)
         total += len(message.name or "")
         if message.tool_calls:
             total += len(self._runtime._safe_json_dumps(message.tool_calls))
+        return total
+
+    def _content_char_weight(self, content: Any) -> int:
+        # Content-part lists (e.g. read_pdf image results) carry base64 data
+        # URLs that _serialize_content collapses to "[image]"; weight them by
+        # their real payload length so compaction actually sees them.
+        if not isinstance(content, list):
+            return len(self._runtime._serialize_content(content))
+        total = 0
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text" and isinstance(item.get("text"), str):
+                    total += len(item["text"])
+                elif item.get("type") == "image_url":
+                    url = (item.get("image_url") or {}).get("url")
+                    total += len(url) if isinstance(url, str) else 1000
+                else:
+                    total += len(self._runtime._safe_json_dumps(item))
+            else:
+                total += len(str(item))
         return total
 
     def _compact_prompt_content(self, content: list[dict[str, Any]], max_chars: int) -> tuple[list[dict[str, Any]], bool]:
@@ -215,6 +235,23 @@ class ContextWindowManager:
             if len(parsed) > 6:
                 parts.append("...")
             return self._runtime._truncate_text("; ".join(parts), max_chars)
+
+        if isinstance(parsed, list) and parsed and all(
+            isinstance(item, dict) and "type" in item for item in parsed
+        ):
+            parts: list[str] = []
+            image_count = 0
+            for item in parsed:
+                if item.get("type") == "image_url":
+                    image_count += 1
+                    continue
+                if item.get("type") == "text" and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+                else:
+                    parts.append(self._runtime._safe_json_dumps(item))
+            if image_count:
+                parts.append(f"[{image_count} image{'s' if image_count != 1 else ''}]")
+            return self._runtime._truncate_text("\n".join(parts), max_chars)
 
         if isinstance(parsed, list):
             preview = ", ".join(self._runtime._truncate_text(str(item), 72) for item in parsed[:3])

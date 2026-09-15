@@ -42,6 +42,7 @@ from covalent.core.agent import AgentSpec
 from covalent.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
 from covalent.core.types import Capability, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
 from covalent.core.workspace_tools import register_workspace_tools
+from covalent.core.pdf_tools import register_pdf_tools
 from covalent.infra.config_store import ConfigKind, ConfigStore, ConfigPrincipal, PersistedAgentConfig, PersistedSkillSourceConfig, _scoped_resource_name
 from covalent.infra.db import AgentRow, DatabaseManager, McpServerRow, ProviderRow, SkillSourceRow
 from covalent.infra.delegate_repository import DelegateRunRecord, DelegateRunStore
@@ -93,6 +94,7 @@ WORKSPACE_AGENT_TOOLS = (
     "zip_workspace_entries",
     "unzip_workspace_archive",
     "publish_downloadable_file",
+    "read_pdf",
 )
 
 BUILTIN_AGENT_TOOLS = ("get_current_time", "ask_user", *WORKSPACE_AGENT_TOOLS)
@@ -213,6 +215,7 @@ async def build_registry(
 
 def register_builtin_tools(registry: FrameworkRegistry, settings: AppSettings, backend: ExecutionBackend | None = None) -> None:
     register_workspace_tools(registry, settings)
+    register_pdf_tools(registry, settings)
     register_shell_tool(registry, settings, backend)
     registry.register_local_tool(
         "get_current_time",

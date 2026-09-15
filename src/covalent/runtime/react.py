@@ -541,7 +541,27 @@ class ReactAgentRuntime(AgentRuntime):
     def _event_tool_result_payload(self, tool_result: ToolResult) -> dict[str, Any]:
         payload = tool_result.model_dump(mode="json")
         payload["name"] = self._event_tool_name(tool_result.name)
+        content = payload.get("content")
+        if isinstance(content, list):
+            # Multimodal tool results (e.g. read_pdf image pages) must not flood
+            # SSE consumers or chat history with base64 payloads.
+            payload["content"] = self._event_tool_content_summary(content)
         return payload
+
+    @classmethod
+    def _event_tool_content_summary(cls, content: list[Any]) -> str:
+        parts: list[str] = []
+        image_count = 0
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "image_url":
+                image_count += 1
+                continue
+            text = cls._serialize_content(item)
+            if text:
+                parts.append(text)
+        if image_count:
+            parts.append(f"[{image_count} image{'s' if image_count != 1 else ''} omitted]")
+        return cls._truncate_text("\n".join(parts), 400)
 
     @classmethod
     def _response_output_text(cls, response: GenerationResponse, *, fallback_text: str = "") -> str:
@@ -1535,7 +1555,19 @@ class ReactAgentRuntime(AgentRuntime):
             "compacted": context_stats["compacted"],
         }
         if request is not None:
-            payload["raw_request"] = self._json_safe_value(request.model_dump(mode="json", exclude_none=True))
+            raw_request = request.model_dump(mode="json", exclude_none=True)
+            # Debug traces must not carry base64 payloads from multimodal
+            # messages (read_pdf images, inline image inputs); summarize them
+            # the same way as SSE tool-result events.
+            for raw_message in raw_request.get("messages") or []:
+                if not isinstance(raw_message, dict):
+                    continue
+                content = raw_message.get("content")
+                if isinstance(content, list) and any(
+                    isinstance(item, dict) and item.get("type") == "image_url" for item in content
+                ):
+                    raw_message["content"] = self._event_tool_content_summary(content)
+            payload["raw_request"] = self._json_safe_value(raw_request)
         if response is not None:
             payload["tool_call_count"] = len(response.tool_calls)
             payload["output_char_count"] = len(response.output_text or "")

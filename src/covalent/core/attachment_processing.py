@@ -4,7 +4,7 @@ import base64
 from pathlib import Path
 from typing import Any, Literal
 
-import fitz
+import pymupdf
 
 
 AttachmentKind = Literal["text", "image", "pdf", "binary"]
@@ -141,7 +141,7 @@ def _data_url(content_type: str, raw_bytes: bytes) -> str:
 
 
 def _extract_pdf_content(raw_bytes: bytes) -> tuple[int, list[str], list[str]]:
-    document = fitz.open(stream=raw_bytes, filetype="pdf")
+    document = pymupdf.open(stream=raw_bytes, filetype="pdf")
     try:
         page_count = document.page_count
         if page_count > MAX_PDF_PAGES:
@@ -155,7 +155,7 @@ def _extract_pdf_content(raw_bytes: bytes) -> tuple[int, list[str], list[str]]:
             extracted_text.append(page_text or "(No extractable text on this page)")
 
             scale = _page_render_scale(page)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
             page_images.append(_data_url("image/png", pixmap.tobytes("png")))
 
         return page_count, extracted_text, page_images
@@ -163,10 +163,16 @@ def _extract_pdf_content(raw_bytes: bytes) -> tuple[int, list[str], list[str]]:
         document.close()
 
 
-def _page_render_scale(page: fitz.Page) -> float:
+def _page_render_scale(page: pymupdf.Page) -> float:
     long_edge = max(float(page.rect.width), float(page.rect.height), 1.0)
     computed = PDF_RENDER_TARGET_LONG_EDGE / long_edge
     return max(PDF_RENDER_MIN_SCALE, min(PDF_RENDER_MAX_SCALE, computed))
+
+
+def render_pdf_page_data_url(page: pymupdf.Page) -> str:
+    scale = _page_render_scale(page)
+    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
+    return _data_url("image/png", pixmap.tobytes("png"))
 
 
 def _render_text_prompt(file_name: str, content_type: str, workspace_path: str, text: str) -> str:
