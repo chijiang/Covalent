@@ -302,13 +302,6 @@ async def upload_attachments(
 @router.get("/downloads/{session_id}/{file_name}")
 async def download_published_file(request: Request, session_id: str, file_name: str) -> FileResponse:
     settings: AppSettings = request.app.state.settings
-    db_manager: DatabaseManager = request.app.state.db_manager
-    session_store: SessionStore = request.app.state.session_store
-    principal = await _resolve_console_principal(request, db_manager)
-    existing_session = await session_store.get_session(session_id)
-    if existing_session is None:
-        raise HTTPException(status_code=404, detail="Unknown download")
-    _ensure_console_principal_can_access_session(principal, existing_session)
     normalized_name = Path(file_name).name
     if not normalized_name or normalized_name != file_name:
         raise HTTPException(status_code=404, detail="Unknown download")

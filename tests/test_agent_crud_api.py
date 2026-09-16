@@ -216,6 +216,23 @@ class AgentCrudTests(unittest.IsolatedAsyncioTestCase):
     # ------------------------------------------------------------------
     # PUT /config/agents — create, update, delete (round-trip)
     # ------------------------------------------------------------------
+    async def test_agent_crud_chart_capability_survives(self) -> None:
+        """The chart capability persists through PUT /config/agents and shows
+        up in GET /agents/{name} — same round-trip as the built-in ones."""
+        payload = list(_AGENT_PAYLOAD)
+        payload[0]["capabilities"] = ["chat", "react", "chart"]
+
+        resp = self.client.put(
+            "/config/agents",
+            json={"raw": json.dumps(payload, ensure_ascii=False)},
+            headers={"Cookie": _admin_cookie(self.settings)},
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        resp = self.client.get("/agents/default", headers={"Cookie": _admin_cookie(self.settings)})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("chart", resp.json()["capabilities"])
+
     async def test_agent_crud_allowed_outbound_survives(self) -> None:
         payload = list(_AGENT_PAYLOAD)
         payload[0]["allowed_outbound"] = ["api.example.com"]

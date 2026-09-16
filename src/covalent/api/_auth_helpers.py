@@ -77,6 +77,10 @@ class ConsoleAuthGuardMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if path.startswith("/v1/"):
             return await call_next(request)
+        # Download links open in new tabs / external viewers without a console
+        # session; the session_id in the path is the capability secret.
+        if normalized_path.startswith("/downloads/"):
+            return await call_next(request)
 
         if settings is None:
             return JSONResponse(status_code=503, content={"detail": "Service is not ready"})

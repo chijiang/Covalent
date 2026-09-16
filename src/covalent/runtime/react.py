@@ -113,6 +113,22 @@ EXPLICIT_THINKING_POLICY = (
     "answer to the user; the final answer must contain no <think> tags."
 )
 
+#: Chart output policy (agent.capabilities contains Capability.CHART). The
+#: frontend renders ```echarts blocks as interactive charts; the JSON-only
+#: constraint exists because the block is parsed with JSON.parse, not executed.
+CHART_CAPABILITY_POLICY = (
+    "When a chart makes the answer easier to understand, emit an `echarts` fenced code block "
+    "whose body is one valid ECharts `option` JSON object:\n"
+    "- JSON only: double-quoted keys, no comments, no JavaScript functions or formatters — "
+    "everything must be declarative.\n"
+    "- Inline all data values; never reference external files or URLs.\n"
+    "- Chart type guide: comparison → bar; trend over time → line; composition → pie; "
+    "distribution → histogram (bar); correlation → scatter. Cartesian charts need xAxis/yAxis; "
+    "keep each series under ~50 points.\n"
+    "- Introduce the chart with one sentence before it and state the takeaway after it.\n"
+    "- If no chart helps the answer, respond in plain text."
+)
+
 _THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 _THINK_OPEN_TAIL_RE = re.compile(r"<think>(.*)\Z", re.DOTALL)
 
@@ -196,7 +212,7 @@ class ReactAgentRuntime(AgentRuntime):
         context_compact_threshold: float = 0.75,
         context_recent_messages: int = 12,
         context_summary_char_budget: int = 12_000,
-        context_message_char_limit: int = 40_000,
+        context_message_char_limit: int = 100_000,
         context_min_recent_messages: int = 4,
         context_summary_model: str | None = None,
         enable_llm_summarization: bool = True,
@@ -303,6 +319,8 @@ class ReactAgentRuntime(AgentRuntime):
         # <think> 规划，runtime 会把它剥离出正文并作为 reasoning 流出。
         if bool(agent.metadata.get("explicit_thinking", True)):
             prompt_sections.append(EXPLICIT_THINKING_POLICY)
+        if Capability.CHART in agent.capabilities:
+            prompt_sections.append(CHART_CAPABILITY_POLICY)
         if skill_blocks:
             prompt_sections.append(
                 "Available skills (progressive disclosure): detailed instruction bodies are not preloaded. "

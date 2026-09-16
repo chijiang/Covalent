@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { EChartsBlock } from "@/components/chat/echarts-block";
 import {
   ArrowUp,
   Loader2,
@@ -601,15 +602,23 @@ function isWaitingForAnswerContent(content: string): boolean {
 function ChatMarkdownContent({
   content,
   tone,
+  enableCharts,
 }: {
   content: string;
   tone: ChatCodeBlockTone;
+  enableCharts: boolean;
 }) {
   return (
     <div className="chat-markdown">
       <ReactMarkdown
         components={{
           pre({ children, ...props }) {
+            const codeChild = isValidElement<ComponentPropsWithoutRef<"code">>(children) ? children : null;
+            const codeClassName = codeChild?.props.className ?? "";
+            if (enableCharts && codeClassName.includes("language-echarts")) {
+              const spec = extractMarkdownText(codeChild?.props.children ?? children).replace(/\n$/, "");
+              return <EChartsBlock spec={spec} />;
+            }
             return (
               <ChatCodeBlock {...props} tone={tone}>
                 {children}
@@ -714,6 +723,7 @@ function ChatMessageBubble({
   messageTimestampFallback,
   editingMessageId,
   editingDraft,
+  enableCharts,
   onEditStart,
   onEditChange,
   onEditCancel,
@@ -724,6 +734,7 @@ function ChatMessageBubble({
   messageTimestampFallback: number;
   editingMessageId: string | null;
   editingDraft: string;
+  enableCharts: boolean;
   onEditStart: (message: Message) => void;
   onEditChange: (value: string) => void;
   onEditCancel: () => void;
@@ -820,7 +831,7 @@ function ChatMessageBubble({
           ) : isThinking ? (
             <ChatThinkingIndicator />
           ) : (
-            <ChatMarkdownContent content={markdownContent} tone={tone} />
+            <ChatMarkdownContent content={markdownContent} tone={tone} enableCharts={enableCharts} />
           )}
         </div>
         <div aria-label="Message actions" className="chat-message-actions" role="group">
@@ -3612,6 +3623,7 @@ export function ChatWorkspace() {
                   messageTimestampFallback={activeThread?.updatedAt || 0}
                   editingMessageId={editingMessageId}
                   editingDraft={editingDraft}
+                  enableCharts={currentAgent?.capabilities?.includes("chart") ?? false}
                   onEditStart={(m) => {
                     setEditingMessageId(m.id);
                     setEditingDraft(m.content);

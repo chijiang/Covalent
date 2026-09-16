@@ -14,6 +14,7 @@ class Capability(str, Enum):
     STRUCTURED_OUTPUT = "structured_output"
     MCP = "mcp"
     REACT = "react"
+    CHART = "chart"
 
 
 class ToolCall(BaseModel):
