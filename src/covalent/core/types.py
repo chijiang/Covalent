@@ -126,6 +126,9 @@ class TokenUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    # 来自 prompt_tokens_details / completion_tokens_details；provider 未返回时为 None。
+    reasoning_tokens: int | None = None
+    cached_tokens: int | None = None
 
 
 class GenerationResponse(BaseModel):

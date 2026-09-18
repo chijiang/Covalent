@@ -33,10 +33,14 @@ ASK_PARENT_TOOL = "ask_parent"
 DELEGATE_SEND_TOOL = "delegate_send"
 DELEGATE_LIST_TOOL = "delegate_list"
 DELEGATE_RELEASE_TOOL = "delegate_release"
+#: Forward a delegate run's latest output as the calling run's own final
+#: answer with no content generation (the runtime short-circuits the loop).
+ANSWER_FROM_DELEGATE_TOOL = "answer_from_delegate"
 DELEGATE_LIFECYCLE_TOOLS = (
     DELEGATE_SEND_TOOL,
     DELEGATE_LIST_TOOL,
     DELEGATE_RELEASE_TOOL,
+    ANSWER_FROM_DELEGATE_TOOL,
 )
 
 

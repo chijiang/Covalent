@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 _DEFAULT_MAX_BYTES = 24_000
 _DEFAULT_SEARCH_MAX_MATCHES = 200
 _DEFAULT_ZIP_MAX_ENTRIES = 10_000
+# `full: true` 设硬顶：整份大文件进入会话上下文后，后续每次模型调用都要重新
+# prefill。更大的文件请用 offset/length 或行范围读取；截断提示里已给出替代参数。
+_FULL_READ_MAX_BYTES = 96_000
 
 
 def _get_session_workspace_root(settings: Any, context: Any) -> Path:
@@ -87,7 +90,10 @@ def register_workspace_tools(registry: Any, settings: Any, *, download_base_path
                         "full": {
                             "type": "boolean",
                             "default": False,
-                            "description": "Read the full file instead of truncating to max_bytes.",
+                            "description": (
+                                "Read the full file instead of truncating to max_bytes. "
+                                f"Capped at {_FULL_READ_MAX_BYTES} bytes; use offset/length or line ranges for larger files."
+                            ),
                         },
                         "max_bytes": {"type": "integer", "default": _DEFAULT_MAX_BYTES, "minimum": 1},
                         "offset": {
@@ -161,6 +167,23 @@ def register_workspace_tools(registry: Any, settings: Any, *, download_base_path
                         "mode": {"type": "string", "enum": ["replace_text", "replace_range"]},
                         "old_text": {"type": "string"},
                         "new_text": {"type": "string", "default": ""},
+                        "replacements": {
+                            "type": "array",
+                            "description": (
+                                "replace_text mode only: apply several exact text replacements in ONE atomic call "
+                                "(preferred for patching structured files — text-anchored, immune to line shifts). "
+                                "Each old_text must match exactly once when its turn comes; if any entry fails "
+                                "validation nothing is written. Mutually exclusive with old_text/new_text."
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "old_text": {"type": "string"},
+                                    "new_text": {"type": "string", "default": ""},
+                                },
+                                "required": ["old_text"],
+                            },
+                        },
                         "start_line": {"type": "integer", "minimum": 1},
                         "start_column": {"type": "integer", "minimum": 1},
                         "end_line": {"type": "integer", "minimum": 1},
@@ -468,7 +491,7 @@ def _read_workspace_file(settings: Any, context: Any, args: dict[str, Any]) -> s
         )
     else:
         if full:
-            max_bytes = size_bytes
+            max_bytes = min(size_bytes, _FULL_READ_MAX_BYTES)
         else:
             max_bytes = max(1, int(args.get("max_bytes", _DEFAULT_MAX_BYTES)))
         truncated = size_bytes > max_bytes
@@ -481,18 +504,21 @@ def _read_workspace_file(settings: Any, context: Any, args: dict[str, Any]) -> s
         content = base64.b64encode(content_bytes).decode("ascii")
         encoding = "base64"
 
-    return json.dumps(
-        {
-            "path": _relative_path(root, target),
-            "encoding": encoding,
-            "content": content,
-            "truncated": truncated,
-            "size_bytes": size_bytes,
-            **range_info,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
+    payload: dict[str, Any] = {
+        "path": _relative_path(root, target),
+        "encoding": encoding,
+        "content": content,
+        "truncated": truncated,
+        "size_bytes": size_bytes,
+        **range_info,
+    }
+    if full and truncated:
+        payload["full_read_capped"] = True
+        payload["hint"] = (
+            f"Full reads are capped at {_FULL_READ_MAX_BYTES} bytes. Continue with offset="
+            f"{len(content_bytes)}, or read a start_line/end_line range, or search_workspace_files."
+        )
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _search_workspace_files(settings: Any, context: Any, args: dict[str, Any]) -> str:
@@ -613,14 +639,40 @@ def _edit_workspace_file(settings: Any, context: Any, args: dict[str, Any]) -> s
 
         replacements = 0
         if mode == "replace_text":
-            old_text = args.get("old_text")
-            if not isinstance(old_text, str) or old_text == "":
-                raise ValueError("old_text is required for replace_text")
-            occurrences = original.count(old_text)
-            if occurrences != 1:
-                raise ValueError(f"old_text must match exactly once; found {occurrences} matches")
-            updated = original.replace(old_text, new_text, 1)
-            replacements = 1
+            batch = args.get("replacements")
+            if batch is not None:
+                # 批量文本替换：逐条"校验恰好命中一次→应用"，全部成功才在锁内落盘。
+                # 任一条失败即刻中止且不写入（updated 尚未落盘），天然免疫行号漂移——
+                # 锚点是文本而非行号，是并发/批量修补 plan 等结构化文件的首选方式。
+                if not isinstance(batch, list) or not batch:
+                    raise ValueError("replacements must be a non-empty array when provided")
+                if args.get("old_text") is not None or args.get("new_text"):
+                    raise ValueError("use either replacements or old_text/new_text, not both")
+                updated = original
+                for index, entry in enumerate(batch, 1):
+                    if not isinstance(entry, dict):
+                        raise ValueError(f"replacements[{index}] must be an object with old_text/new_text")
+                    old = entry.get("old_text")
+                    new = str(entry.get("new_text", ""))
+                    if not isinstance(old, str) or old == "":
+                        raise ValueError(f"replacements[{index}].old_text is required and must be non-empty")
+                    occurrences = updated.count(old)
+                    if occurrences != 1:
+                        raise ValueError(
+                            f"replacements[{index}].old_text must match exactly once; found {occurrences} matches. "
+                            "No changes were written."
+                        )
+                    updated = updated.replace(old, new, 1)
+                replacements = len(batch)
+            else:
+                old_text = args.get("old_text")
+                if not isinstance(old_text, str) or old_text == "":
+                    raise ValueError("old_text is required for replace_text")
+                occurrences = original.count(old_text)
+                if occurrences != 1:
+                    raise ValueError(f"old_text must match exactly once; found {occurrences} matches")
+                updated = original.replace(old_text, new_text, 1)
+                replacements = 1
         elif mode == "replace_range":
             updated = _replace_text_range(
                 original,

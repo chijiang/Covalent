@@ -142,7 +142,7 @@ def set_key(
     settings = load_settings()
 
     async def run() -> str:
-        db = DatabaseManager(settings.database_url)
+        db = DatabaseManager(settings.database_url, schema=settings.database_schema)
         try:
             async with db.session_factory() as session:
                 async with session.begin():

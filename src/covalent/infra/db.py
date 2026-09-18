@@ -586,8 +586,13 @@ async def run_session_operation(
 
 
 class DatabaseManager:
-    def __init__(self, database_url: str) -> None:
-        self.engine = create_async_engine(database_url, pool_pre_ping=True)
+    def __init__(self, database_url: str, schema: str | None = None) -> None:
+        connect_args: dict[str, Any] = {}
+        if schema and "+asyncpg" in database_url:
+            connect_args["server_settings"] = {"search_path": schema}
+        elif schema and "+psycopg" in database_url:
+            connect_args["options"] = f"-c search_path={schema}"
+        self.engine = create_async_engine(database_url, pool_pre_ping=True, connect_args=connect_args)
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
 
     async def dispose(self) -> None:

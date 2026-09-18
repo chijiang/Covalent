@@ -1,35 +1,43 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import Any
 
 from covalent.core.types import ToolResult
+from covalent.infra.settings import AppSettings
 from covalent.mcp.adapter import McpClient
 from covalent.mcp.spec import McpServerConfig, McpToolReference
 
 
 class McpSdkClient(McpClient):
     async def list_tools(self, server: McpServerConfig) -> list[McpToolReference]:
-        async with self._session(server) as session:
-            result = await session.list_tools()
-            return [
-                McpToolReference(
-                    server_name=server.name,
-                    tool_name=tool.name,
-                    description=getattr(tool, "description", None),
-                    input_schema=getattr(tool, "inputSchema", None) or {},
-                )
-                for tool in result.tools
-            ]
+        try:
+            async with self._session(server) as session:
+                result = await session.list_tools()
+        except ExceptionGroup as eg:
+            raise eg.exceptions[0] from None
+        return [
+            McpToolReference(
+                server_name=server.name,
+                tool_name=tool.name,
+                description=getattr(tool, "description", None),
+                input_schema=getattr(tool, "inputSchema", None) or {},
+            )
+            for tool in result.tools
+        ]
 
     async def call_tool(self, server: McpServerConfig, tool_name: str, arguments: dict[str, Any]) -> ToolResult:
-        async with self._session(server) as session:
-            result = await session.call_tool(tool_name, arguments=arguments)
-            return ToolResult(
-                name=f"mcp__{server.name}__{tool_name}",
-                content=self._extract_result_content(result),
-                is_error=bool(getattr(result, "isError", False)),
-            )
+        try:
+            async with self._session(server) as session:
+                result = await session.call_tool(tool_name, arguments=arguments)
+        except ExceptionGroup as eg:
+            raise eg.exceptions[0] from None
+        return ToolResult(
+            name=f"mcp__{server.name}__{tool_name}",
+            content=self._extract_result_content(result),
+            is_error=bool(getattr(result, "isError", False)),
+        )
 
     @asynccontextmanager
     async def _session(self, server: McpServerConfig):
@@ -43,12 +51,16 @@ class McpSdkClient(McpClient):
         except ImportError as exc:
             raise RuntimeError("MCP support requires the 'mcp' package to be installed") from exc
 
+        # The SDK ClientSession default (read_timeout_seconds=None) waits
+        # forever for a JSONRPC response; bound it to the configured timeout.
+        mcp_read_timeout = timedelta(seconds=AppSettings().mcp_timeout_seconds)
+
         if server.transport == "stdio":
             if not server.command:
                 raise ValueError(f"MCP stdio server '{server.name}' is missing a command")
             params = StdioServerParameters(command=server.command, args=server.args, env=server.env or None)
             async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
+                async with ClientSession(read, write, read_timeout_seconds=mcp_read_timeout) as session:
                     await session.initialize()
                     yield session
             return
@@ -66,25 +78,35 @@ class McpSdkClient(McpClient):
             # raises ValueError inside the SDK's TaskGroup, which the API layer
             # then reports as an opaque "unhandled errors in a TaskGroup".
             async with AsyncExitStack() as stack:
-                http_client = None
-                if headers:
-                    # streamable_http_client only accepts headers through a
-                    # pre-configured httpx client, which the SDK does NOT close.
-                    http_client = await stack.enter_async_context(
-                        httpx.AsyncClient(headers=headers)
+                http_client = await stack.enter_async_context(
+                    httpx.AsyncClient(
+                        headers=headers,
+                        # httpx's silent 5s default read timeout aborts slow MCP
+                        # data queries before they finish.
+                        timeout=httpx.Timeout(AppSettings().mcp_timeout_seconds, connect=10.0),
                     )
+                )
                 streams = await stack.enter_async_context(
                     streamable_http_client(server.url, http_client=http_client)
                 )
                 read, write = streams[0], streams[1]
-                async with ClientSession(read, write) as session:
+                async with ClientSession(read, write, read_timeout_seconds=mcp_read_timeout) as session:
                     await session.initialize()
                     yield session
             return
 
         if server.transport == "sse":
-            async with sse_client(server.url, headers=headers) as (read, write):
-                async with ClientSession(read, write) as session:
+            def client_factory(headers: dict[str, str] | None = None, timeout: Any = None, auth: Any = None) -> httpx.AsyncClient:
+                # sse_client passes Timeout(5, read=300); keep its connect side
+                # but raise the read side to the configured MCP timeout so slow
+                # data queries can return.
+                connect = getattr(timeout, "connect", 5.0) or 5.0
+                return httpx.AsyncClient(
+                    headers=headers, auth=auth,
+                    timeout=httpx.Timeout(connect, read=AppSettings().mcp_timeout_seconds),
+                )
+            async with sse_client(server.url, headers=headers, httpx_client_factory=client_factory) as (read, write):
+                async with ClientSession(read, write, read_timeout_seconds=mcp_read_timeout) as session:
                     await session.initialize()
                     yield session
             return

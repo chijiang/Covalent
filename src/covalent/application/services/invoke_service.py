@@ -137,7 +137,8 @@ def _usage_payload(final_payload: dict[str, Any] | None) -> dict[str, int]:
     return {
         key: int(value)
         for key, value in usage.items()
-        if key in {"prompt_tokens", "completion_tokens", "total_tokens"} and isinstance(value, int | float)
+        if key in {"prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens", "cached_tokens"}
+        and isinstance(value, int | float)
     }
 
 def _public_run_completed_payload(

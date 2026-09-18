@@ -26,7 +26,7 @@ def list_users() -> None:
     settings = load_settings()
 
     async def run() -> None:
-        db = DatabaseManager(settings.database_url)
+        db = DatabaseManager(settings.database_url, schema=settings.database_schema)
         try:
             async with db.session_factory() as session:
                 rows = list(await session.scalars(select(UserRow).order_by(UserRow.email)))
@@ -61,7 +61,7 @@ def create_user(
         password = typer.prompt("Initial password", hide_input=True, confirmation_prompt=True)
 
     async def run() -> str:
-        db = DatabaseManager(settings.database_url)
+        db = DatabaseManager(settings.database_url, schema=settings.database_schema)
         try:
             async with db.session_factory() as session:
                 async with session.begin():
@@ -101,7 +101,7 @@ def set_role(
     settings = load_settings()
 
     async def run() -> str:
-        db = DatabaseManager(settings.database_url)
+        db = DatabaseManager(settings.database_url, schema=settings.database_schema)
         try:
             async with db.session_factory() as session:
                 async with session.begin():
@@ -134,7 +134,7 @@ def reset_password(
         password = typer.prompt("New password", hide_input=True, confirmation_prompt=True)
 
     async def run() -> str:
-        db = DatabaseManager(settings.database_url)
+        db = DatabaseManager(settings.database_url, schema=settings.database_schema)
         try:
             async with db.session_factory() as session:
                 async with session.begin():

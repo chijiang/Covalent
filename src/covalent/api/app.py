@@ -15,6 +15,7 @@ from covalent.application.services.delegate_service import (
     DelegateService,
     register_ask_parent_tool,
     register_delegate_lifecycle_tools,
+    register_local_answer_from_delegate_tool,
     run_startup_sweeps,
 )
 from covalent.api._auth_helpers import ConsoleAuthGuardMiddleware
@@ -78,7 +79,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("AGENT_FRAMEWORK_DATABASE_URL must be set when using persistent config storage")
     # Schema migrations are run by the explicit `migrate` command (main.py) or a deploy job —
     # not in the web lifespan — to avoid multi-replica startup races.
-    db_manager = DatabaseManager(database_url)
+    db_manager = DatabaseManager(database_url, schema=settings.database_schema)
     await _seed_initial_admin_user(db_manager, settings)
     config_store = ConfigStore(db_manager.session_factory)
     # The execution backend must exist before build_registry so the skill
@@ -209,6 +210,10 @@ async def lifespan(app: FastAPI):
                 )
         except Exception:
             logger.warning("Delegate startup sweeps failed", exc_info=True)
+    else:
+        # Legacy coordinator-less delegates still get the forward tool: the
+        # runtime resolves the text from the transcript (see _run_stream).
+        register_local_answer_from_delegate_tool(registry)
     app.state.agent_invocation = AgentInvocationService(registry, app.state.runtime)
 
     # Durable chat runs: background execution decoupled from SSE connections.

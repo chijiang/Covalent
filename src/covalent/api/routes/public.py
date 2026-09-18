@@ -293,7 +293,7 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
                 await limiter.release(principal.token_id)
 
     latency_ms = int((perf_counter() - started) * 1000)
-    usage = result.usage.model_dump(mode="json") if result.usage is not None else {}
+    usage = result.usage.model_dump(mode="json", exclude_none=True) if result.usage is not None else {}
     await _record_public_agent_run(
         db_manager,
         principal=principal,

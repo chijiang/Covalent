@@ -31,7 +31,7 @@ def run_async(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
 
 @contextlib.asynccontextmanager
 async def database_session(settings: AppSettings):
-    db = DatabaseManager(settings.database_url)
+    db = DatabaseManager(settings.database_url, schema=settings.database_schema)
     try:
         yield db
     finally:

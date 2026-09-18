@@ -8,7 +8,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from covalent.core.types import Capability, GenerationRequest, GenerationResponse, Message, ToolCall
+from covalent.core.types import Capability, GenerationRequest, GenerationResponse, Message, TokenUsage, ToolCall
 from covalent.model.base import ModelAdapter, ModelProviderError, ProviderConfig
 from covalent.model.utils import derive_openai_base_url, reasoning_level_kwargs
 
@@ -68,14 +68,7 @@ class OpenAICompatibleProvider(ModelAdapter):
             reasoning_content=str(getattr(message, "reasoning_content", "") or ""),
         )
         usage_data = self._model_dump(getattr(response, "usage", None)) or {}
-        usage = None
-        if usage_data.get("total_tokens"):
-            from covalent.core.types import TokenUsage
-            usage = TokenUsage(
-                prompt_tokens=int(usage_data.get("prompt_tokens", 0)),
-                completion_tokens=int(usage_data.get("completion_tokens", 0)),
-                total_tokens=int(usage_data.get("total_tokens", 0)),
-            )
+        usage = self._usage_from_data(usage_data)
         return GenerationResponse(
             output_text=self._extract_text(normalized_content),
             tool_calls=tool_calls,
@@ -99,6 +92,9 @@ class OpenAICompatibleProvider(ModelAdapter):
     ) -> AsyncIterator[tuple[str, "GenerationResponse | str"]]:
         payload = self._build_payload(request)
         payload["stream"] = True
+        # OpenAI 兼容网关默认不在流里回 usage；必须显式请求最后一个 usage chunk,
+        # 否则 ReAct 的 model_call/final 事件拿到的 usage 永远是 None。
+        payload["stream_options"] = {"include_usage": True}
         role = "assistant"
         content_text_parts: list[str] = []
         structured_content_parts: list[Any] = []
@@ -107,7 +103,14 @@ class OpenAICompatibleProvider(ModelAdapter):
         usage_data: dict[str, Any] = {}
         saw_choices = False
         try:
-            stream = await self._client.chat.completions.create(**payload)
+            try:
+                stream = await self._client.chat.completions.create(**payload)
+            except Exception as exc:
+                # 个别兼容网关不认识 stream_options；去掉后重试一次，仅损失 usage。
+                if "stream_options" not in str(exc):
+                    raise
+                payload.pop("stream_options", None)
+                stream = await self._client.chat.completions.create(**payload)
             async for chunk in stream:
                 data = self._model_dump(chunk)
                 for choice in data.get("choices") or []:
@@ -183,14 +186,7 @@ class OpenAICompatibleProvider(ModelAdapter):
             for raw_call in raw_tool_calls
             if self._raw_tool_call_name(raw_call)
         ]
-        usage = None
-        if usage_data.get("total_tokens"):
-            from covalent.core.types import TokenUsage
-            usage = TokenUsage(
-                prompt_tokens=int(usage_data.get("prompt_tokens", 0)),
-                completion_tokens=int(usage_data.get("completion_tokens", 0)),
-                total_tokens=int(usage_data.get("total_tokens", 0)),
-            )
+        usage = self._usage_from_data(usage_data)
         response = GenerationResponse(
             output_text=self._extract_text(normalized_content),
             tool_calls=tool_calls,
@@ -275,6 +271,26 @@ class OpenAICompatibleProvider(ModelAdapter):
                 if not key.startswith("_")
             }
         return str(value)
+
+    @classmethod
+    def _usage_from_data(cls, usage_data: dict[str, Any]) -> TokenUsage | None:
+        if not isinstance(usage_data, dict) or not usage_data.get("total_tokens"):
+            return None
+
+        def _int(value: Any) -> int | None:
+            return int(value) if isinstance(value, (int, float)) else None
+
+        prompt_details = usage_data.get("prompt_tokens_details")
+        completion_details = usage_data.get("completion_tokens_details")
+        return TokenUsage(
+            prompt_tokens=int(usage_data.get("prompt_tokens", 0)),
+            completion_tokens=int(usage_data.get("completion_tokens", 0)),
+            total_tokens=int(usage_data.get("total_tokens", 0)),
+            cached_tokens=_int(prompt_details.get("cached_tokens")) if isinstance(prompt_details, dict) else None,
+            reasoning_tokens=_int(completion_details.get("reasoning_tokens"))
+            if isinstance(completion_details, dict)
+            else None,
+        )
 
     @staticmethod
     def _parse_arguments(raw_arguments: Any, *, provider: str, tool_name: str) -> dict[str, Any]:

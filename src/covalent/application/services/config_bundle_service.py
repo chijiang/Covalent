@@ -169,7 +169,7 @@ async def export_bundle(settings, output: Path, *, include_skills: bool = True) 
     output = Path(output)
     warnings: list[str] = []
 
-    db = DatabaseManager(settings.database_url)
+    db = DatabaseManager(settings.database_url, schema=settings.database_schema)
     try:
         async with db.session_factory() as session:
             workspace_rows = list(
@@ -344,7 +344,7 @@ def read_bundle(bundle: Path) -> tuple[ConfigBundle, list[str], list[str]]:
         if BUNDLE_CONFIG_NAME not in names:
             raise ValueError(f"Bundle is missing {BUNDLE_CONFIG_NAME}")
         raw = yaml.safe_load(archive.read(BUNDLE_CONFIG_NAME))
-        skill_arcnames = [name for name in names if name.startswith(BUNDLE_SKILLS_PREFIX)]
+        skill_arcnames = _skill_file_arcnames(archive)
     if not isinstance(raw, dict):
         raise ValueError("Bundle config must be a YAML mapping")
     metadata = raw.get("metadata") or {}
@@ -1067,7 +1067,7 @@ async def import_bundle(
     bundle, skill_arcnames, schema_warnings = read_bundle(bundle_path)
     report = ImportReport(dry_run=dry_run)
     report.warnings.extend(schema_warnings)
-    db = DatabaseManager(settings.database_url)
+    db = DatabaseManager(settings.database_url, schema=settings.database_schema)
     try:
         async with db.session_factory() as session:
             if dry_run:
@@ -1095,11 +1095,38 @@ def _constraint_hint(exc: IntegrityError) -> str:
 
 
 def _safe_relpath(arcname: str) -> Path | None:
-    pure = PurePosixPath(arcname)
+    pure = PurePosixPath(arcname.replace("\\", "/"))
     parts = pure.parts
     if not parts or pure.is_absolute() or ".." in parts:
         return None
     return Path(*parts)
+
+
+def _is_zip_directory_entry(info: zipfile.ZipInfo) -> bool:
+    """True for zip folder markers, including macOS entries that end with '/'."""
+    name = info.filename.replace("\\", "/")
+    return name.endswith("/") or info.is_dir()
+
+
+def _skill_file_arcnames(archive: zipfile.ZipFile) -> list[str]:
+    names: list[str] = []
+    for info in archive.infolist():
+        name = info.filename.replace("\\", "/")
+        if not name.startswith(BUNDLE_SKILLS_PREFIX) or _is_zip_directory_entry(info):
+            continue
+        names.append(info.filename)
+    return names
+
+
+def _ensure_staging_parents(destination: Path, *, staging: Path) -> None:
+    """Create parent dirs, replacing folder markers that were written as files."""
+    relative = destination.parent.relative_to(staging)
+    current = staging
+    for part in relative.parts:
+        current = current / part
+        if current.exists() and not current.is_dir():
+            current.unlink()
+        current.mkdir(exist_ok=True)
 
 
 def _install_bundle_skills(
@@ -1117,12 +1144,15 @@ def _install_bundle_skills(
         staging = Path(tmp)
         with zipfile.ZipFile(bundle_path) as archive:
             for arcname in skill_arcnames:
+                info = archive.getinfo(arcname)
+                if _is_zip_directory_entry(info):
+                    continue
                 relative = _safe_relpath(arcname)
                 if relative is None:
                     report.warnings.append(f"skills: skipped unsafe archive path '{arcname}'")
                     continue
                 destination = staging / relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
+                _ensure_staging_parents(destination, staging=staging)
                 destination.write_bytes(archive.read(arcname))
 
         skills_root = staging / BUNDLE_SKILLS_PREFIX.rstrip("/")

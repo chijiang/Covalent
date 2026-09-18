@@ -29,6 +29,9 @@ class AppSettings(BaseSettings):
 
     app_name: str = "Covalent"
     database_url: str | None = None
+    # PostgreSQL schema for covalent tables. Applied as search_path on every
+    # pooled connection; schema must already exist.
+    database_schema: str | None = None
     # Providers, agents, MCP servers, and skill sources are configured in the
     # Service Console (persisted in PostgreSQL) — there are no env-var seeds
     # or env-var provider fallbacks.

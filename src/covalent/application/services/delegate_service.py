@@ -44,6 +44,7 @@ from covalent.infra.delegate_repository import (
 from covalent.infra.settings import AppSettings
 from covalent.registry.registry import FrameworkRegistry
 from covalent.runtime.delegation import (
+    ANSWER_FROM_DELEGATE_TOOL,
     ASK_PARENT_TOOL,
     DELEGATE_LIST_TOOL,
     DELEGATE_RELEASE_TOOL,
@@ -226,6 +227,62 @@ _DELEGATE_RELEASE_SCHEMA: dict[str, Any] = {
 }
 
 
+_ANSWER_FROM_DELEGATE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": ANSWER_FROM_DELEGATE_TOOL,
+        "description": (
+            "Forward one of your own delegate runs' recorded output as your final "
+            "answer verbatim — the runtime returns it without another model call. "
+            "Use only when the delegate's output already is, unedited, the answer "
+            "you would return. Only an idle run (a completed turn) with a recorded "
+            "output can be forwarded. Operates only on delegate runs you created."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "delegate_run_id": {
+                    "type": "string",
+                    "description": "The delegate_run_id from a previous delegate envelope.",
+                },
+            },
+            "required": ["delegate_run_id"],
+        },
+    },
+}
+
+
+_ANSWER_FROM_DELEGATE_LOCAL_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": ANSWER_FROM_DELEGATE_TOOL,
+        "description": (
+            "Forward the most recent delegate answer as your final answer verbatim — "
+            "the runtime returns it without another model call. Use only when the "
+            "delegate's output already is, unedited, the answer you would return."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
+def register_local_answer_from_delegate_tool(registry: FrameworkRegistry) -> None:
+    """Register ``answer_from_delegate`` for the legacy coordinator-less
+    delegate path.
+
+    Without a coordinator there is no run store to peek: the runtime resolves
+    the forwarded text from the latest ``agent__*`` tool result in the
+    transcript, so the handler itself is a no-op marker.
+    """
+
+    async def _handler(args: dict[str, Any], ctx: RunContext | None) -> str:
+        return ""
+
+    registry.register_local_tool(
+        ANSWER_FROM_DELEGATE_TOOL, _ANSWER_FROM_DELEGATE_LOCAL_SCHEMA, handler=_handler
+    )
+
+
 def register_delegate_lifecycle_tools(
     registry: FrameworkRegistry, service: DelegateService
 ) -> None:
@@ -275,6 +332,9 @@ def register_delegate_lifecycle_tools(
         )
         return result.model_dump_json()
 
+    async def _answer_from_delegate_handler(args: dict[str, Any], ctx: RunContext | None) -> str:
+        return await service.peek_answer(actor=_actor(ctx), delegate_run_id=_run_id(args))
+
     registry.register_local_tool(
         DELEGATE_SEND_TOOL, _DELEGATE_SEND_SCHEMA, handler=_send_handler
     )
@@ -283,6 +343,11 @@ def register_delegate_lifecycle_tools(
     )
     registry.register_local_tool(
         DELEGATE_RELEASE_TOOL, _DELEGATE_RELEASE_SCHEMA, handler=_release_handler
+    )
+    registry.register_local_tool(
+        ANSWER_FROM_DELEGATE_TOOL,
+        _ANSWER_FROM_DELEGATE_SCHEMA,
+        handler=_answer_from_delegate_handler,
     )
 
 
@@ -726,6 +791,27 @@ class DelegateService:
             released_at=datetime.now(UTC),
         )
         return self._envelope(updated)
+
+    async def peek_answer(self, *, actor: DelegateActor, delegate_run_id: str) -> str:
+        """Read a completed run's latest output for answer forwarding.
+
+        Read-only by design (no maintenance sweep, no transition): the runtime
+        reuses the returned text verbatim as the caller's final answer.
+        """
+        run = await self._store.get_run(delegate_run_id)
+        if run is None:
+            raise DelegateRunNotFoundError(f"delegate run {delegate_run_id} not found")
+        self._check_ownership(run, actor)
+        if run.status is not DelegateRunStatus.IDLE:
+            raise DelegateTransitionError(
+                f"delegate run {delegate_run_id} is {run.status.value}; only an idle "
+                "run has a completed answer to forward"
+            )
+        if not run.latest_output.strip():
+            raise DelegateTransitionError(
+                f"delegate run {delegate_run_id} has no recorded output to forward"
+            )
+        return run.latest_output
 
     # --- DelegateCoordinator: bulk release / sweeps ------------------------------
 

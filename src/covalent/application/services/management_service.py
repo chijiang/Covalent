@@ -106,10 +106,22 @@ def _default_agent_local_tools(settings: AppSettings | None) -> list[str]:
         return []
     return list(DEFAULT_AGENT_LOCAL_TOOLS)
 
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, str)]
+
+
+def _object_list(value: object) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    return list(value)
+
+
 def _normalize_agent_payload_item(item: dict[str, object], settings: AppSettings | None) -> dict[str, object]:
     normalized = dict(item)
-    skills = _dedupe_strings([str(value) for value in normalized.get("skills", []) if isinstance(value, str)])
-    local_tools = [t for t in _dedupe_strings([str(value) for value in normalized.get("local_tools", []) if isinstance(value, str)]) if t != "echo"]
+    skills = _dedupe_strings(_string_list(normalized.get("skills")))
+    local_tools = [t for t in _dedupe_strings(_string_list(normalized.get("local_tools"))) if t != "echo"]
     reasoning_prompt_raw = normalized.get("reasoning_prompt")
     reasoning_prompt = reasoning_prompt_raw.strip() if isinstance(reasoning_prompt_raw, str) else ""
     reasoning_level_raw = normalized.get("reasoning_level")
@@ -121,7 +133,7 @@ def _normalize_agent_payload_item(item: dict[str, object], settings: AppSettings
     if "local_tools" not in item:
         local_tools = _dedupe_strings(local_tools + _default_agent_local_tools(settings))
     normalized["local_tools"] = local_tools
-    allowed_outbound = _dedupe_strings([str(value) for value in normalized.get("allowed_outbound", []) if isinstance(value, str)])
+    allowed_outbound = _dedupe_strings(_string_list(normalized.get("allowed_outbound")))
     normalized["allowed_outbound"] = allowed_outbound
     normalized["reasoning_prompt"] = reasoning_prompt
     normalized["reasoning_level"] = reasoning_level
@@ -1039,23 +1051,21 @@ def _runtime_agent_payload_item(
     if mcp_internal_by_public:
         runtime_item["mcp_servers"] = [
             mcp_internal_by_public.get(server_name, server_name)
-            for server_name in runtime_item.get("mcp_servers", [])
-            if isinstance(server_name, str)
+            for server_name in _string_list(runtime_item.get("mcp_servers"))
         ]
-        runtime_item["mcp_tools"] = [
-            {
-                **tool_ref,
-                "server_name": mcp_internal_by_public.get(tool_ref.get("server_name"), tool_ref.get("server_name")),
-            }
-            for tool_ref in runtime_item.get("mcp_tools", [])
-            if isinstance(tool_ref, dict)
-        ]
+        mapped_tools: list[dict[str, object]] = []
+        for tool_ref in _object_list(runtime_item.get("mcp_tools")):
+            if not isinstance(tool_ref, dict):
+                continue
+            key = tool_ref.get("server_name")
+            mapped = mcp_internal_by_public.get(key, key) if isinstance(key, str) else key
+            mapped_tools.append({**tool_ref, "server_name": mapped})
+        runtime_item["mcp_tools"] = mapped_tools
 
     if agent_internal_by_public:
         runtime_item["delegate_agents"] = [
             agent_internal_by_public.get(agent_name, agent_name)
-            for agent_name in runtime_item.get("delegate_agents", [])
-            if isinstance(agent_name, str)
+            for agent_name in _string_list(runtime_item.get("delegate_agents"))
         ]
     return runtime_item
 

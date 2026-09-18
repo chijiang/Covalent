@@ -10,7 +10,7 @@ from typing import Any
 
 from covalent.application.errors import ApplicationError
 from covalent.core.agent import AgentSpec
-from covalent.core.types import Capability, DelegateRunResult, GenerationRequest, GenerationResponse, Message, ParentInputRequest, PromptContent, ResumedToolResult, RunContext, ToolCall, ToolResult, UserInputRequest
+from covalent.core.types import Capability, DelegateRunResult, GenerationRequest, GenerationResponse, Message, ParentInputRequest, PromptContent, ResumedToolResult, RunContext, TokenUsage, ToolCall, ToolResult, UserInputRequest
 from covalent.infra.memory import SessionStore
 from covalent.model.base import ModelProviderError
 from covalent.registry.registry import FrameworkRegistry
@@ -18,6 +18,7 @@ from covalent.runtime.base import AgentRuntime
 from covalent.runtime.backend import ExecutionBindingResolver
 from covalent.runtime.context_window_manager import ContextWindowManager
 from covalent.runtime.delegation import (
+    ANSWER_FROM_DELEGATE_TOOL,
     ASK_PARENT_TOOL,
     DELEGATE_LIFECYCLE_TOOLS,
     DELEGATE_RELEASE_TOOL,
@@ -82,10 +83,20 @@ DELEGATE_HEARTBEAT_INTERVAL_SECONDS = 60.0
 DELEGATE_LIFECYCLE_POLICY = (
     "Delegates are stateful subagents. Calling agent__<name> starts a run and returns a JSON envelope: "
     "delegate_run_id, agent_name, status ('idle' or 'waiting_parent'), and either output or a request. "
-    "Do not quote the envelope verbatim — use the output. When a delegate is 'waiting_parent', its request is in the "
+    "Do not quote the envelope verbatim — use the output. When a delegate's output already is, unedited, "
+    "the answer you would return, call answer_from_delegate(delegate_run_id) once to forward it as your "
+    "final answer instead of rewriting it; it fails for runs that are not idle or have no output. When a "
+    "delegate is 'waiting_parent', its request is in the "
     "envelope; answer it with delegate_send(delegate_run_id, input=<your answer>). Send follow-up work to an 'idle' "
     "delegate the same way. Use delegate_list to recover your live delegate ids. Call delegate_release for every run "
     "you no longer need — idle runs stay alive (holding storage) until released, cancelled, or expired."
+)
+
+#: Legacy (coordinator-less) delegates: forward-tool guidance only.
+DELEGATE_FORWARD_POLICY = (
+    "Calling agent__<name> runs that delegate and returns its final answer as the tool result. "
+    "When that output already is, unedited, the answer you would return, call answer_from_delegate() "
+    "once to forward it as your final answer verbatim instead of rewriting it."
 )
 
 DOWNLOAD_PUBLICATION_POLICY = (
@@ -315,6 +326,8 @@ class ReactAgentRuntime(AgentRuntime):
         prompt_sections.append(WORKSPACE_CONFINEMENT_POLICY)
         if self.delegate_coordinator is not None and agent.delegate_agents:
             prompt_sections.append(DELEGATE_LIFECYCLE_POLICY)
+        elif agent.delegate_agents and ANSWER_FROM_DELEGATE_TOOL in self.registry.local_tools:
+            prompt_sections.append(DELEGATE_FORWARD_POLICY)
         # 缺省开启（metadata 未配置时视为 true）：要求模型在动作前写一段
         # <think> 规划，runtime 会把它剥离出正文并作为 reasoning 流出。
         if bool(agent.metadata.get("explicit_thinking", True)):
@@ -620,6 +633,36 @@ class ReactAgentRuntime(AgentRuntime):
         if len(observations) <= max_items:
             return observations
         return observations[-max_items:]
+
+    @staticmethod
+    def _find_last_delegate_output(messages: list[Message]) -> str:
+        """Latest ``agent__*`` tool result in the transcript (legacy forward:
+        without a coordinator there is no run store to peek the output from)."""
+        for message in reversed(messages):
+            if message.role != "tool":
+                continue
+            if not str(message.name or "").startswith(DELEGATE_TOOL_PREFIX):
+                continue
+            text = message.content if isinstance(message.content, str) else str(message.content)
+            if text.strip():
+                return text
+        return ""
+
+    @staticmethod
+    def _build_forwarded_answer_response(
+        text: str,
+        delegate_run_id: str | None,
+        usage: TokenUsage | None,
+    ) -> GenerationResponse:
+        """Synthesize the final response for answer_from_delegate: the child
+        run's output is returned verbatim with no content generation."""
+        return GenerationResponse(
+            output_text=text,
+            tool_calls=[],
+            assistant_message=Message(role="assistant", content=text),
+            raw_response={"answer_from_delegate": delegate_run_id or True},
+            usage=usage,
+        )
 
     def _build_local_forced_summary_response(self, messages: list[Message]) -> GenerationResponse:
         observations = self._collect_forced_summary_observations(messages, max_items=6, max_chars_per_item=220)
@@ -1548,6 +1591,43 @@ class ReactAgentRuntime(AgentRuntime):
     def _json_safe_value(value: Any) -> Any:
         return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
+    # 调试轨迹策略：model_call 事件每次迭代都持久化 raw_request，上下文增长会
+    # 让单 run 事件存储呈 O(n²) 膨胀。对超大消息体保留首尾采样而非整段丢弃；
+    # request_char_count 仍报告真实尺寸。
+    EVENT_MESSAGE_SAMPLE_HEAD = 2_000
+    EVENT_MESSAGE_SAMPLE_TAIL = 1_000
+
+    @classmethod
+    def _sample_oversize_text(cls, text: str) -> str:
+        """采样截断：保留首尾，中间以省略标记替代（小文本原样返回）。"""
+        if len(text) <= cls.EVENT_MESSAGE_SAMPLE_HEAD + cls.EVENT_MESSAGE_SAMPLE_TAIL:
+            return text
+        omitted = len(text) - cls.EVENT_MESSAGE_SAMPLE_HEAD - cls.EVENT_MESSAGE_SAMPLE_TAIL
+        return (
+            text[: cls.EVENT_MESSAGE_SAMPLE_HEAD]
+            + f"\n…[trace sampled: {omitted} chars omitted]…\n"
+            + text[-cls.EVENT_MESSAGE_SAMPLE_TAIL :]
+        )
+
+    @classmethod
+    def _bound_trace_request(cls, raw_request: dict[str, Any]) -> None:
+        for raw_message in raw_request.get("messages") or []:
+            if not isinstance(raw_message, dict):
+                continue
+            content = raw_message.get("content")
+            if isinstance(content, str):
+                raw_message["content"] = cls._sample_oversize_text(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and isinstance(item.get("text"), str):
+                        item["text"] = cls._sample_oversize_text(item["text"])
+            for raw_call in raw_message.get("tool_calls") or []:
+                if not isinstance(raw_call, dict):
+                    continue
+                function = raw_call.get("function")
+                if isinstance(function, dict) and isinstance(function.get("arguments"), str):
+                    function["arguments"] = cls._sample_oversize_text(function["arguments"])
+
     def _build_model_call_payload(
         self,
         *,
@@ -1585,6 +1665,7 @@ class ReactAgentRuntime(AgentRuntime):
                     isinstance(item, dict) and item.get("type") == "image_url" for item in content
                 ):
                     raw_message["content"] = self._event_tool_content_summary(content)
+            self._bound_trace_request(raw_request)
             payload["raw_request"] = self._json_safe_value(raw_request)
         if response is not None:
             payload["tool_call_count"] = len(response.tool_calls)
@@ -1596,6 +1677,10 @@ class ReactAgentRuntime(AgentRuntime):
                 payload["prompt_tokens"] = response.usage.prompt_tokens
                 payload["completion_tokens"] = response.usage.completion_tokens
                 payload["total_tokens"] = response.usage.total_tokens
+                if response.usage.reasoning_tokens is not None:
+                    payload["reasoning_tokens"] = response.usage.reasoning_tokens
+                if response.usage.cached_tokens is not None:
+                    payload["cached_tokens"] = response.usage.cached_tokens
         if error is not None:
             payload["status_code"] = error.status_code
             payload["detail"] = error.detail
@@ -1718,6 +1803,8 @@ class ReactAgentRuntime(AgentRuntime):
                     for name in DELEGATE_LIFECYCLE_TOOLS
                     if name in self.registry.local_tools
                 )
+            elif agent.delegate_agents and ANSWER_FROM_DELEGATE_TOOL in self.registry.local_tools:
+                tools.append(self.registry.local_tools[ANSWER_FROM_DELEGATE_TOOL].schema)
         else:
             tools = [
                 t for t in tools
@@ -1730,6 +1817,8 @@ class ReactAgentRuntime(AgentRuntime):
                     for name in DELEGATE_LIFECYCLE_TOOLS
                     if name in self.registry.local_tools
                 )
+            elif agent.delegate_agents and ANSWER_FROM_DELEGATE_TOOL in self.registry.local_tools:
+                tools.append(self.registry.local_tools[ANSWER_FROM_DELEGATE_TOOL].schema)
         tools.extend(self._build_delegate_tools(agent))
         tool_iterations_used = 0
         tool_limit_notified = False
@@ -2095,6 +2184,57 @@ class ReactAgentRuntime(AgentRuntime):
                 ),
                 result_count=len(persisted_results),
             )
+            # answer_from_delegate: forward a completed delegate run's output
+            # as this run's own final answer with no content generation. After
+            # the pause/ask_user checks (a pause always wins) and the paired
+            # tool_calls/tool_results trace events, so the transcript keeps
+            # assistant(tool_calls) -> tool(output) -> assistant(forwarded).
+            answer_result = next(
+                (
+                    result
+                    for result in tool_results
+                    if result.name == ANSWER_FROM_DELEGATE_TOOL and not result.is_error
+                ),
+                None,
+            )
+            forwarded = ""
+            forwarded_run_id = ""
+            if answer_result is not None:
+                # Stateful path: the handler already fetched the run's recorded
+                # output. Legacy path: the handler is a no-op marker, so the
+                # forwarded text is the latest agent__ tool result in this
+                # run's transcript (possibly this very batch).
+                forwarded = str(answer_result.content or "").strip()
+                if not forwarded:
+                    forwarded = self._find_last_delegate_output(messages)
+                if forwarded:
+                    forwarded_run_id = next(
+                        (
+                            str(call.arguments.get("delegate_run_id") or "")
+                            for call in response.tool_calls
+                            if call.name == ANSWER_FROM_DELEGATE_TOOL
+                            and call.id == answer_result.tool_call_id
+                        ),
+                        "",
+                    )
+            if forwarded:
+                final_response = self._build_forwarded_answer_response(
+                    forwarded, forwarded_run_id or None, response.usage
+                )
+                messages.append(
+                    final_response.assistant_message or self._coerce_assistant_message(final_response)
+                )
+                await self._persist_session_messages(agent, messages, context)
+                yield self._thought_event(
+                    iteration=iteration,
+                    stage="final",
+                    kind="delegate_answer_forwarded",
+                    summary="Forwarded a delegate run's output as the final answer without regenerating it.",
+                    delegate_run_id=forwarded_run_id or None,
+                )
+                yield {"event": "assistant", "payload": {"text": forwarded, "iteration": iteration}}
+                yield {"event": "final", "payload": final_response.model_dump()}
+                return
         final_response = self._build_local_forced_summary_response(messages)
         messages.append(final_response.assistant_message or self._coerce_assistant_message(final_response))
         await self._persist_session_messages(agent, messages, context)

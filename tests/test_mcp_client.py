@@ -32,9 +32,10 @@ class _FakeClientSession:
 
     instances: list["_FakeClientSession"] = []
 
-    def __init__(self, read, write) -> None:
+    def __init__(self, read, write, **kwargs) -> None:
         self.read = read
         self.write = write
+        self.kwargs = kwargs
         self.initialized = False
         type(self).instances.append(self)
 
@@ -137,11 +138,15 @@ class TransportHeaderForwardingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(http_client, "env-configured server must pass a pre-configured httpx client")
         self.assertEqual(http_client.headers.get("x-api-key"), "mnk_secret")
 
-    async def test_streamable_http_without_env_passes_no_http_client(self) -> None:
+    async def test_streamable_http_without_env_still_passes_timeout_client(self) -> None:
+        # The pre-configured httpx client is always passed now (not just when
+        # env headers exist) so the raised read timeout applies to every
+        # streamable-http connection.
         capture: dict = {}
         with _patch_transports(yield_shape=2, capture=capture):
             await McpSdkClient().list_tools(_streamable_server())
-        self.assertIsNone(capture.get("http_client"))
+        http_client = capture.get("http_client")
+        self.assertIsNotNone(http_client)
 
     async def test_sse_env_sent_as_headers(self) -> None:
         server = McpServerConfig(
