@@ -77,6 +77,7 @@ type Message = {
   reasoning?: string;
   attachments?: ComposerAttachment[];
   askUserPrompt?: PendingQuestionRequest | null;
+  suggestions?: string[];
 };
 
 type ComposerAttachment = {
@@ -728,6 +729,7 @@ function ChatMessageBubble({
   onEditChange,
   onEditCancel,
   onEditSubmit,
+  onSuggestionClick,
 }: {
   message: Message;
   sending: boolean;
@@ -739,6 +741,7 @@ function ChatMessageBubble({
   onEditChange: (value: string) => void;
   onEditCancel: () => void;
   onEditSubmit: () => void;
+  onSuggestionClick?: (text: string) => void;
 }) {
   const tone = message.role === "user" ? "outbound" : "inbound";
   const isEditing = editingMessageId === message.id;
@@ -834,6 +837,25 @@ function ChatMessageBubble({
             <ChatMarkdownContent content={markdownContent} tone={tone} enableCharts={enableCharts} />
           )}
         </div>
+        {message.role === "assistant" && message.suggestions?.length ? (
+          <div className="chat-suggestions">
+            <p className="chat-suggestions-label">Suggested questions</p>
+            <div className="chat-suggestions-list">
+              {message.suggestions.map((question) => (
+                <button
+                  key={question}
+                  type="button"
+                  className="soft-tag chat-suggestion-chip"
+                  disabled={sending}
+                  title={question}
+                  onClick={() => onSuggestionClick?.(question)}
+                >
+                  {question}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
         <div aria-label="Message actions" className="chat-message-actions" role="group">
           <time className="chat-message-time" dateTime={new Date(messageTimestamp).toISOString()}>
             {formatMessageTimestamp(messageTimestamp)}
@@ -2927,12 +2949,24 @@ export function ChatWorkspace() {
       if (event === "final") {
         state.terminated = true;
         const text = (payload as { output_text?: string })?.output_text || "";
+        const suggestions =
+          Array.isArray((payload as { suggestions?: unknown })?.suggestions)
+            ? ((payload as { suggestions?: unknown[] }).suggestions || []).filter(
+                (item): item is string => typeof item === "string",
+              )
+            : [];
         updateThread(threadId, (thread) => ({
           ...thread,
           updatedAt: Date.now(),
           pendingQuestion: null,
           messages: thread.messages.map((message) =>
-            message.id === assistantId ? { ...message, content: text || message.content } : message,
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content: text || message.content,
+                  suggestions: suggestions.length ? suggestions : message.suggestions,
+                }
+              : message,
           ),
         }));
         return;
@@ -3385,6 +3419,20 @@ export function ChatWorkspace() {
     showEditUndoToast();
   }
 
+  // Click "Suggested questions" to send as a new follow-up question.
+  async function handleSuggestionAsk(question: string) {
+    if (!currentAgent || sending || !activeThread) {
+      return;
+    }
+    const requestInput = buildRequestInput(question, []);
+    await runThreadRequest({
+      thread: activeThread,
+      requestInput,
+      userContent: question,
+      clearPendingQuestion: true,
+    });
+  }
+
   async function handleSend() {
     if (!currentAgent || sending || uploadingAttachments || !activeThread || (!input.trim() && attachmentDrafts.length === 0)) {
       return;
@@ -3641,6 +3689,7 @@ export function ChatWorkspace() {
                       }
                     }
                   }}
+                  onSuggestionClick={(question) => void handleSuggestionAsk(question)}
                 />
               ))
             )}

@@ -140,6 +140,53 @@ CHART_CAPABILITY_POLICY = (
     "- If no chart helps the answer, respond in plain text."
 )
 
+#: Suggested follow-up questions policy (agent.capabilities contains
+#: Capability.SUGGESTED_QUESTIONS). The runtime strips the trailing tag from
+#: the visible answer and re-emits it as ``suggestions`` on run.completed.
+SUGGESTED_QUESTIONS_POLICY = (
+    "End your response with exactly one `<suggested_questions>` tag"
+    "whose body is a JSON array of exactly 3 follow-up question strings "
+    "(each 10-60 characters):\n"
+    "- Only propose questions you could answer yourself with the tools, skills and knowledge you "
+    "already have in this conversation. Never propose questions that require the user to provide "
+    "new data, files, systems or permissions you do not have.\n"
+    "- Each question must deepen the current topic; do not repeat what the answer already said.\n"
+    "- The tag must be the very last thing in your response: no text after the closing tag, no code "
+    "fence around the tag.\n"
+    "- If no genuinely useful follow-up questions exist, omit the tag entirely."
+)
+
+_SUGGESTED_BLOCK_RE = re.compile(
+    r"<suggested_questions>(.*?)</suggested_questions>", re.DOTALL
+)
+_SUGGESTED_OPEN_TAIL_RE = re.compile(r"<suggested_questions>.*\Z", re.DOTALL)
+
+
+def strip_suggested_questions(text: str) -> tuple[str, list[str]]:
+    """Remove the trailing <suggested_questions> tag and parse the question list.
+
+    Returns (cleaned text, suggestions). The tag is contractually the last
+    content of the response, so everything from the open tag on (including any
+    residue after the close tag) is dropped; an unclosed tag or malformed JSON
+    drops the tag segment with empty suggestions. Missing tag returns the text
+    unchanged - callers need not check the capability flag.
+    """
+    match = _SUGGESTED_BLOCK_RE.search(text)
+    if match is None:
+        open_match = _SUGGESTED_OPEN_TAIL_RE.search(text)
+        if open_match is None:
+            return text, []
+        return text[: open_match.start()].rstrip(), []
+    cleaned = text[: match.start()].rstrip()
+    try:
+        parsed = json.loads(match.group(1))
+    except ValueError:
+        return cleaned, []
+    if not isinstance(parsed, list):
+        return cleaned, []
+    return cleaned, [item for item in parsed if isinstance(item, str)][:3]
+
+
 _THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 _THINK_OPEN_TAIL_RE = re.compile(r"<think>(.*)\Z", re.DOTALL)
 
@@ -202,6 +249,66 @@ class ThinkTagSplitter:
             return "", tail
         return tail, ""
 
+
+class SuggestedQuestionsSplitter:
+    """Streaming <suggested_questions> trailing-tag state machine: passthrough
+    by default, capture after the open tag, swallow everything after the close
+    tag (the tag is contractually the last content of the response).
+
+    Unlike ThinkTagSplitter ("appears at the start" semantics), this tag only
+    appears at the answer tail: feed() returns (visible, captured-increment);
+    flush() returns (remaining visible, full captured body). A stream ending
+    with an unclosed tag is malformed - the captured body is dropped whole,
+    never leaking a half JSON to the stream.
+    """
+
+    OPEN, CLOSE = "<suggested_questions>", "</suggested_questions>"
+
+    def __init__(self) -> None:
+        self._mode = "passthrough"  # passthrough | capture | swallow
+        self._buf = ""
+        self._captured: list[str] = []
+        self._closed = False
+
+    def feed(self, text: str) -> tuple[str, str]:
+        self._buf += text
+        visible: list[str] = []
+        captured: list[str] = []
+        while True:
+            if self._mode == "swallow":
+                self._buf = ""
+                break
+            tag = self.CLOSE if self._mode == "capture" else self.OPEN
+            idx = self._buf.find(tag)
+            if idx >= 0:
+                head, self._buf = self._buf[:idx], self._buf[idx + len(tag):]
+                if self._mode == "passthrough":
+                    visible.append(head)
+                    self._mode = "capture"
+                else:
+                    self._captured.append(head)
+                    captured.append(head)
+                    self._mode = "swallow"
+                    self._closed = True
+                continue
+            keep = ThinkTagSplitter._held_tail(self._buf, tag)
+            emit, self._buf = self._buf[: len(self._buf) - keep], self._buf[len(self._buf) - keep :]
+            if self._mode == "capture":
+                if emit:
+                    self._captured.append(emit)
+                    captured.append(emit)
+            elif emit:
+                visible.append(emit)
+            break
+        return "".join(visible), "".join(captured)
+
+    def flush(self) -> tuple[str, str]:
+        tail, self._buf = self._buf, ""
+        if self._mode == "passthrough":
+            return tail, ""
+        if not self._closed:
+            self._captured.clear()
+        return "", "".join(self._captured)
 
 TOOL_CALL_LIMIT_EXCEEDED_MESSAGE = (
     "Tool call limit exceeded. Do not call any more tools. "
@@ -334,6 +441,8 @@ class ReactAgentRuntime(AgentRuntime):
             prompt_sections.append(EXPLICIT_THINKING_POLICY)
         if Capability.CHART in agent.capabilities:
             prompt_sections.append(CHART_CAPABILITY_POLICY)
+        if Capability.SUGGESTED_QUESTIONS in agent.capabilities:
+            prompt_sections.append(SUGGESTED_QUESTIONS_POLICY)
         if skill_blocks:
             prompt_sections.append(
                 "Available skills (progressive disclosure): detailed instruction bodies are not preloaded. "
@@ -656,12 +765,16 @@ class ReactAgentRuntime(AgentRuntime):
     ) -> GenerationResponse:
         """Synthesize the final response for answer_from_delegate: the child
         run's output is returned verbatim with no content generation."""
+        # 兜底剥离：child 开启了 suggested_questions 能力时，其尾标签可能
+        # 随转发文本到达 parent，在此剥除并捕获为 parent final 的 suggestions。
+        text, suggestions = strip_suggested_questions(text)
         return GenerationResponse(
             output_text=text,
             tool_calls=[],
             assistant_message=Message(role="assistant", content=text),
             raw_response={"answer_from_delegate": delegate_run_id or True},
             usage=usage,
+            suggestions=suggestions,
         )
 
     def _build_local_forced_summary_response(self, messages: list[Message]) -> GenerationResponse:
@@ -1671,7 +1784,8 @@ class ReactAgentRuntime(AgentRuntime):
             payload["tool_call_count"] = len(response.tool_calls)
             payload["output_char_count"] = len(response.output_text or "")
             payload["raw_response"] = self._json_safe_value(
-                response.raw_response or response.model_dump(mode="json")
+                response.raw_response
+                or response.model_dump(mode="json", exclude={"suggestions"})
             )
             if response.usage:
                 payload["prompt_tokens"] = response.usage.prompt_tokens
@@ -1876,6 +1990,11 @@ class ReactAgentRuntime(AgentRuntime):
                 if explicit_thinking and adapter.supports(Capability.STREAMING)
                 else None
             )
+            suggest_splitter = (
+                SuggestedQuestionsSplitter()
+                if adapter.supports(Capability.STREAMING)
+                else None
+            )
             try:
                 response: GenerationResponse | None = None
                 if adapter.supports(Capability.STREAMING):
@@ -1897,14 +2016,19 @@ class ReactAgentRuntime(AgentRuntime):
                             if not isinstance(value, str) or not value:
                                 continue
                             if splitter is None:
-                                yield {"event": "assistant_delta", "payload": {"text": value, "iteration": iteration}}
+                                visible, reasoning = value, ""
                             else:
                                 visible, reasoning = splitter.feed(value)
-                                if reasoning:
-                                    think_parts.append(reasoning)
-                                    yield {"event": "reasoning_delta", "payload": {"text": reasoning, "iteration": iteration}}
-                                if visible:
-                                    yield {"event": "assistant_delta", "payload": {"text": visible, "iteration": iteration}}
+                            if reasoning:
+                                think_parts.append(reasoning)
+                                yield {"event": "reasoning_delta", "payload": {"text": reasoning, "iteration": iteration}}
+                            # 先过 think 再过 suggest：think 输出的可见文本里
+                            # 可能才出现尾标签。捕获体不在此解析——聚合响应是
+                            # 权威解析源，splitter 只负责增量流不外泄标签。
+                            if suggest_splitter is not None and visible:
+                                visible, _ = suggest_splitter.feed(visible)
+                            if visible:
+                                yield {"event": "assistant_delta", "payload": {"text": visible, "iteration": iteration}}
                         else:
                             response = value
                     if splitter is not None:
@@ -1912,8 +2036,15 @@ class ReactAgentRuntime(AgentRuntime):
                         if reasoning:
                             think_parts.append(reasoning)
                             yield {"event": "reasoning_delta", "payload": {"text": reasoning, "iteration": iteration}}
+                    else:
+                        visible = ""
+                    if suggest_splitter is not None:
                         if visible:
-                            yield {"event": "assistant_delta", "payload": {"text": visible, "iteration": iteration}}
+                            visible, _ = suggest_splitter.feed(visible)
+                        tail, _ = suggest_splitter.flush()
+                        visible += tail
+                    if visible:
+                        yield {"event": "assistant_delta", "payload": {"text": visible, "iteration": iteration}}
                     if response is None:
                         raise ModelProviderError(
                             agent.provider.provider,
@@ -1945,6 +2076,18 @@ class ReactAgentRuntime(AgentRuntime):
                     ),
                 }
                 raise
+            # 权威清理：聚合响应仍含尾标签原文，这里剥离并回填 suggestions。
+            # 流式路径的 splitter 只保证增量流不外泄标签；未开启能力的 agent
+            # 无标签，此处为 no-op（含 delegate 转发文本的兜底）。
+            clean_text, follow_ups = strip_suggested_questions(response.output_text or "")
+            if clean_text != response.output_text or follow_ups:
+                response.output_text = clean_text
+                if response.assistant_message is not None and isinstance(
+                    response.assistant_message.content, str
+                ):
+                    response.assistant_message.content = clean_text
+                if follow_ups:
+                    response.suggestions = follow_ups
             elapsed_ms = round((perf_counter() - started_at) * 1000)
             yield {
                 "event": "model_call",
@@ -2232,7 +2375,7 @@ class ReactAgentRuntime(AgentRuntime):
                     summary="Forwarded a delegate run's output as the final answer without regenerating it.",
                     delegate_run_id=forwarded_run_id or None,
                 )
-                yield {"event": "assistant", "payload": {"text": forwarded, "iteration": iteration}}
+                yield {"event": "assistant", "payload": {"text": final_response.output_text, "iteration": iteration}}
                 yield {"event": "final", "payload": final_response.model_dump()}
                 return
         final_response = self._build_local_forced_summary_response(messages)

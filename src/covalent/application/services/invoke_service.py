@@ -151,6 +151,12 @@ def _public_run_completed_payload(
 ) -> dict[str, Any]:
     assistant_message = final_payload.get("assistant_message")
     raw_reasoning = assistant_message.get("reasoning_content") if isinstance(assistant_message, dict) else None
+    raw_suggestions = final_payload.get("suggestions")
+    suggestions = (
+        [item.strip() for item in raw_suggestions if isinstance(item, str) and item.strip()][:3]
+        if isinstance(raw_suggestions, list)
+        else []
+    )
     return {
         "run_id": run_id,
         "agent": agent_name,
@@ -159,6 +165,7 @@ def _public_run_completed_payload(
         "output_text": str(final_payload.get("output_text") or ""),
         "reasoning_content": raw_reasoning.strip() if isinstance(raw_reasoning, str) and raw_reasoning.strip() else None,
         "usage": _usage_payload(final_payload),
+        "suggestions": suggestions,
     }
 
 def _public_stream_events(

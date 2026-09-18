@@ -318,5 +318,6 @@ async def public_invoke_agent(request: Request, invoke_request: PublicAgentInvok
         tool_calls=[tool_call.model_dump(mode="json") for tool_call in result.tool_calls],
         metadata={"provider": agent.provider.provider, "model": agent.provider.model},
         usage=usage,
+        suggestions=result.suggestions,
         created_at=created_at,
     )

@@ -7,6 +7,8 @@ export type ChatThreadMessage = {
   reasoning?: string;
   attachments?: unknown[];
   askUserPrompt?: PendingQuestionRequest | null;
+  // Suggested questions: follow-up questions carried in the final event (when agent has SUGGESTED_QUESTIONS capability).
+  suggestions?: string[];
   position?: number | null;
 };
 

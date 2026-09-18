@@ -15,6 +15,7 @@ class Capability(str, Enum):
     MCP = "mcp"
     REACT = "react"
     CHART = "chart"
+    SUGGESTED_QUESTIONS = "suggested_questions"
 
 
 class ToolCall(BaseModel):
@@ -137,6 +138,7 @@ class GenerationResponse(BaseModel):
     assistant_message: Message | None = None
     raw_response: dict[str, Any] = Field(default_factory=dict)
     usage: TokenUsage | None = None
+    suggestions: list[str] = Field(default_factory=list)
 
 
 class RunContext(BaseModel):

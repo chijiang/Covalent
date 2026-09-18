@@ -75,7 +75,7 @@ const FALLBACK_LOCAL_TOOL_SUMMARIES: LocalToolSummary[] = FALLBACK_LOCAL_TOOLS.m
   description: null,
   enabled_by_default: true,
 }));
-const DEFAULT_CAPABILITY_OPTIONS = ["chat", "streaming", "tool_calling", "structured_output", "mcp", "react", "chart"];
+const DEFAULT_CAPABILITY_OPTIONS = ["chat", "streaming", "tool_calling", "structured_output", "mcp", "react", "chart", "suggested_questions"];
 
 function buildSampleAgents(defaultLocalTools: string[]): AgentConfig[] {
   return [

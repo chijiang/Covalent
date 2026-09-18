@@ -82,6 +82,7 @@ class PublicAgentInvokeResponse(BaseModel):
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     usage: dict[str, int] = Field(default_factory=dict)
+    suggestions: list[str] = Field(default_factory=list)
     created_at: datetime
 
 
