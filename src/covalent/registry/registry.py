@@ -525,6 +525,10 @@ class FrameworkRegistry:
             return None
         return decoded if FrameworkRegistry._encode_name_part(decoded) == value.rstrip("=") else None
 
+    def fuzzy_match_tool_name(self, requested: str) -> str | None:
+        """Public wrapper: resolve a double-encoded MCP tool name to its canonical form."""
+        return self._fuzzy_match_tool_name(requested)
+
     def _fuzzy_match_tool_name(self, requested: str) -> str | None:
         """Try to resolve a misspelled or double-encoded tool name to a known tool.
 

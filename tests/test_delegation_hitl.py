@@ -153,7 +153,10 @@ class DelegateHitlEscalationTests(unittest.IsolatedAsyncioTestCase):
     ) -> SimpleNamespace:
         session_store = session_store or InMemorySessionStore()
         run_store = run_store or InMemoryDelegateRunStore()
-        parent = make_test_agent(name="parent", model="m-parent").model_copy(
+        # ask_user is a per-agent granted builtin in production (console
+        # local_tools config); the parent must declare it for the execution-side
+        # allowlist to expose/permit it.
+        parent = make_test_agent(name="parent", model="m-parent", local_tools=["ask_user"]).model_copy(
             update={"delegate_agents": ["child"]}
         )
         child = make_test_agent(name="child", model="m-child")

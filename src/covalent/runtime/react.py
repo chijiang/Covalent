@@ -490,8 +490,54 @@ class ReactAgentRuntime(AgentRuntime):
         iteration: int,
         context: RunContext | None = None,
         event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        allowed_tool_names: set[str] | None = None,
     ) -> list[ToolResult]:
         async def _run_single(tc: ToolCall) -> ToolResult:
+            # Deny-by-default: a tool call must name something this request
+            # actually exposed to the model. Session history can carry tool
+            # calls from a previous agent configuration (session switched
+            # agents); imitating those must never execute.
+            requested = tc.name
+            if allowed_tool_names is not None and requested not in allowed_tool_names:
+                candidates = {requested}
+                if requested.startswith(DELEGATE_TOOL_PREFIX):
+                    # _normalize_tool_calls resolves sanitized delegate echoes
+                    # to the ORIGINAL name upstream, while the exposed list
+                    # carries the SANITIZED form — map back before judging.
+                    _, original_to_sanitized = self._delegate_name_maps(agent.delegate_agents)
+                    sanitized = original_to_sanitized.get(requested.removeprefix(DELEGATE_TOOL_PREFIX))
+                    if sanitized:
+                        candidates.add(f"{DELEGATE_TOOL_PREFIX}{sanitized}")
+                if not candidates & allowed_tool_names:
+                    fuzzy = getattr(self.registry, "fuzzy_match_tool_name", None)
+                    canonical = fuzzy(requested) if callable(fuzzy) else None
+                    if not (canonical and canonical in allowed_tool_names):
+                        delegated_call = context is not None and bool(
+                            context.delegate_run_id or context.metadata.get("delegated_by")
+                        )
+                        if delegated_call and requested == "ask_user":
+                            # Model-helpful denial: delegated runs must reach the
+                            # parent via ask_parent, so point the model there
+                            # (same guidance as the input-request conversion below).
+                            return ToolResult(
+                                name=requested,
+                                content=(
+                                    "ask_user is not available inside a delegated run; "
+                                    "ask your parent with ask_parent instead"
+                                ),
+                                tool_call_id=tc.id,
+                                is_error=True,
+                            )
+                        return ToolResult(
+                            name=requested,
+                            content=(
+                                f"Tool '{requested}' is not available to agent '{agent.name}'. "
+                                "It may appear in this session's history from a different agent "
+                                "configuration. Use only the tools provided in this conversation."
+                            ),
+                            tool_call_id=tc.id,
+                            is_error=True,
+                        )
             if self._is_delegate_tool_name(agent, tc.name):
                 return await self._execute_delegate_tool_call(
                     agent,
@@ -1934,6 +1980,9 @@ class ReactAgentRuntime(AgentRuntime):
             elif agent.delegate_agents and ANSWER_FROM_DELEGATE_TOOL in self.registry.local_tools:
                 tools.append(self.registry.local_tools[ANSWER_FROM_DELEGATE_TOOL].schema)
         tools.extend(self._build_delegate_tools(agent))
+        # Request-level truth for execution-side authorization: a model call
+        # may only name tools this run actually exposed (see _execute_tool_calls).
+        allowed_tool_names = {t["function"]["name"] for t in tools}
         tool_iterations_used = 0
         tool_limit_notified = False
         max_model_iterations = agent.max_iterations + 2
@@ -2210,6 +2259,7 @@ class ReactAgentRuntime(AgentRuntime):
                             iteration,
                             context,
                             event_sink=_enqueue_tool_event,
+                            allowed_tool_names=allowed_tool_names,
                         )
                     finally:
                         await tool_event_queue.put(None)
@@ -2228,6 +2278,7 @@ class ReactAgentRuntime(AgentRuntime):
                     response.tool_calls,
                     iteration,
                     context,
+                    allowed_tool_names=allowed_tool_names,
                 )
                 tool_iterations_used += 1
             blocking_input = next((result.input_request for result in tool_results if result.input_request is not None), None)

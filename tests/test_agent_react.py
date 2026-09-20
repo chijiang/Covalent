@@ -973,7 +973,9 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ask_user", child_tool_names)
         self.assertIn("ask_parent", child_tool_names)
 
-        # Calling ask_user by name yields an error tool result pointing at ask_parent.
+        # Calling ask_user by name yields the execution-side allowlist error:
+        # ask_user is not exposed in delegated runs, so the call is rejected
+        # before any handler runs.
         converted = None
         for event in events:
             if event["event"] != "delegate_tool_results":
@@ -983,7 +985,7 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     converted = result
         self.assertIsNotNone(converted, "expected the converted ask_user result in delegate traces")
         self.assertTrue(converted["is_error"])
-        self.assertIn("ask_parent", str(converted["content"]))
+        self.assertIn("not available", str(converted["content"]))
 
         # No input_required of any kind reached the stream; the run completed.
         self.assertFalse(
@@ -1481,11 +1483,12 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(touched.count(envelope.delegate_run_id), 1)
 
     async def test_lifecycle_handle_never_stringifies_into_tool_result(self) -> None:
-        """Defense in depth: if a lifecycle tool result carrying a raw
-        DelegateRunHandle ever reaches the generic registry path (a mis-wired
-        runtime with the tools registered but no coordinator), it becomes an
-        explicit error tool result — never a stringified handle in the
-        transcript."""
+        """Defense in depth: in a mis-wired runtime (lifecycle tools registered
+        but no coordinator), the parent never had the lifecycle tools exposed,
+        so a delegate_send call is denied by the request-level allowlist before
+        any handler runs — and the raw DelegateRunHandle can never reach the
+        transcript. (The generic-path stringify guard itself is unit-covered in
+        tests/test_tool_allowlist.py.)"""
         session_store = InMemorySessionStore()
         run_store = InMemoryDelegateRunStore()
         parent = make_test_agent(name="parent", model="m-parent").model_copy(
@@ -1552,10 +1555,7 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         result = self._tool_result(events, "ps-1")
         self.assertTrue(result["is_error"])
-        self.assertEqual(
-            str(result["content"]),
-            "delegate lifecycle tool executed outside the stateful runtime",
-        )
+        self.assertIn("not available", str(result["content"]))
         self.assertTrue([e for e in events if e["event"] == "final"])
 
     async def test_delegate_send_followup_to_idle_appends_parent_user_message(self) -> None:
@@ -1738,7 +1738,10 @@ class StatefulDelegateRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         rejected = self._tool_result(events, "sp-1")
         self.assertTrue(rejected["is_error"])
-        self.assertIn("not owned", str(rejected["content"]))
+        # The stranger never had delegate_agents, so delegate_send was never
+        # exposed to it — the request-level allowlist denies before the
+        # ownership check inside the handler is even reached.
+        self.assertIn("not available", str(rejected["content"]))
 
     async def test_delegate_send_child_context_propagates_execution_backend(self) -> None:
         """Both context-building legs (start and send) share one builder that
