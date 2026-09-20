@@ -12,6 +12,53 @@ class SkillBundleError(ValueError):
     pass
 
 
+def slice_text_lines(
+    text: str,
+    *,
+    start_line: int | None,
+    end_line: int | None,
+    max_bytes: int | None = None,
+    max_chars: int | None = None,
+) -> dict[str, object]:
+    """按 1-indexed 行窗口切片，返回 content 与分页元数据。
+
+    无行参数时窗口为整篇（1..total_lines）。max_bytes 按 utf-8 字节截断
+    窗口、max_chars 按字符截断；截断后 end_line 只数完整行，next_offset
+    指向未读完的下一行，模型按它续读即可不丢不重。
+    """
+    lines = text.splitlines()
+    total_lines = len(lines)
+    start = start_line if start_line is not None else 1
+    end = end_line if end_line is not None else total_lines
+    if start < 1 or end < start:
+        raise SkillBundleError(f"invalid line range: start_line={start}, end_line={end}")
+    if start > total_lines:
+        raise SkillBundleError(f"start_line {start} exceeds total line count {total_lines}")
+    content = "\n".join(lines[start - 1 : end])
+    truncated = False
+    if max_bytes is not None:
+        encoded = content.encode("utf-8")
+        if len(encoded) > max_bytes:
+            content = encoded[:max_bytes].decode("utf-8", errors="ignore")
+            truncated = True
+    if max_chars is not None and len(content) > max_chars:
+        content = content[:max_chars]
+        truncated = True
+    if truncated:
+        end_line_effective = start - 1 + content.count("\n")
+    else:
+        end_line_effective = start - 1 + len(lines[start - 1 : end])
+    next_offset = end_line_effective + 1 if end_line_effective < total_lines else None
+    return {
+        "content": content,
+        "truncated": truncated,
+        "total_lines": total_lines,
+        "start_line": start,
+        "end_line": end_line_effective,
+        "next_offset": next_offset,
+    }
+
+
 class SkillBundle:
     def __init__(self, spec: ManifestSkillSpec) -> None:
         if not spec.source_dir:
@@ -50,23 +97,35 @@ class SkillBundle:
             raise SkillBundleError(f"Path escapes skill directory: {relative_path}")
         return candidate
 
-    def read_resource(self, relative_path: str, max_bytes: int = _TEXT_READ_LIMIT) -> dict[str, object]:
+    def read_resource(
+        self,
+        relative_path: str,
+        max_bytes: int = _TEXT_READ_LIMIT,
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> dict[str, object]:
         path = self.resolve_resource(relative_path)
         data = path.read_bytes()
-        truncated = len(data) > max_bytes
-        if truncated:
-            data = data[:max_bytes]
         try:
-            content = data.decode("utf-8")
-            encoding = "utf-8"
+            text = data.decode("utf-8")
         except UnicodeDecodeError:
-            content = base64.b64encode(data).decode("ascii")
-            encoding = "base64"
+            if start_line is not None or end_line is not None:
+                raise SkillBundleError(
+                    f"Resource '{relative_path}' is binary; line ranges require UTF-8 text"
+                )
+            truncated = len(data) > max_bytes
+            if truncated:
+                data = data[:max_bytes]
+            return {
+                "path": relative_path,
+                "encoding": "base64",
+                "content": base64.b64encode(data).decode("ascii"),
+                "truncated": truncated,
+            }
         return {
             "path": relative_path,
-            "encoding": encoding,
-            "content": content,
-            "truncated": truncated,
+            "encoding": "utf-8",
+            **slice_text_lines(text, start_line=start_line, end_line=end_line, max_bytes=max_bytes),
         }
 
     def render_prompt_index(self) -> str:

@@ -14,7 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from covalent.runtime.filesystem_backend import FileSystemBackend
-from covalent.skills.meta_tools import _read_skill_instructions, _run_skill_script
+from covalent.skills.bundle import SkillBundle, slice_text_lines
+from covalent.skills.meta_tools import _read_skill_instructions, _read_skill_resource, _run_skill_script
 from covalent.skills.spec import ManifestSkillSpec, ScriptDeclaration, SkillSpec
 
 
@@ -172,6 +173,96 @@ class SkillInstructionReadTests(unittest.TestCase):
         self.assertEqual(result["name"], "test-skill")
         self.assertEqual(result["instructions"], "abc")
         self.assertTrue(result["truncated"])
+
+
+class SkillLineWindowTests(unittest.TestCase):
+    """read_skill_instructions / read_skill_resource 的行窗口分页（对齐 deepagents 语义）。"""
+
+    LINES = [f"line{i}" for i in range(1, 11)]
+    TEXT = "\n".join(LINES)
+
+    def test_slice_full_text_carries_pagination_metadata(self) -> None:
+        window = slice_text_lines(self.TEXT, start_line=None, end_line=None)
+        self.assertEqual(window["content"], self.TEXT)
+        self.assertEqual((window["total_lines"], window["start_line"], window["end_line"]), (10, 1, 10))
+        self.assertIsNone(window["next_offset"])
+        self.assertFalse(window["truncated"])
+
+    def test_slice_window_reports_next_offset(self) -> None:
+        window = slice_text_lines(self.TEXT, start_line=3, end_line=5)
+        self.assertEqual(window["content"], "line3\nline4\nline5")
+        self.assertEqual(window["next_offset"], 6)
+
+    def test_slice_byte_cap_mid_line_next_offset_repeats_cut_line(self) -> None:
+        window = slice_text_lines(self.TEXT, start_line=None, end_line=None, max_bytes=25)
+        self.assertTrue(window["truncated"])
+        # 25 bytes 截到 "line1\n...\nline4\nl"：end_line 只数完整行，line5 可整行续读。
+        self.assertEqual(window["end_line"], 4)
+        self.assertEqual(window["next_offset"], 5)
+
+    def test_slice_start_beyond_eof_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            slice_text_lines(self.TEXT, start_line=99, end_line=None)
+
+    def test_read_skill_instructions_line_window(self) -> None:
+        skill = SkillSpec(
+            name="test-skill",
+            description="Test skill",
+            instructions=self.TEXT,
+            tools=[],
+        )
+        registry = SimpleNamespace(
+            skills={"test-skill": skill},
+            resolve_skill_name=lambda name: "test-skill",
+            is_skill_enabled=lambda name: True,
+        )
+
+        result = json.loads(
+            _read_skill_instructions(registry, {"skill": "test-skill", "start_line": 2, "end_line": 3})
+        )
+
+        self.assertEqual(result["instructions"], "line2\nline3")
+        self.assertEqual(result["total_lines"], 10)
+        self.assertEqual((result["start_line"], result["end_line"]), (2, 3))
+        self.assertEqual(result["next_offset"], 4)
+
+    def test_read_skill_resource_line_window_pages_through(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="af-skill-read-") as tmp:
+            (Path(tmp) / "doc.md").write_text(self.TEXT + "\n", encoding="utf-8")
+            spec = ManifestSkillSpec(
+                name="test-skill",
+                description="Test skill",
+                source_dir=tmp,
+                resource_files=["doc.md"],
+            )
+            bundle = SkillBundle(spec)
+
+            page1 = bundle.read_resource("doc.md", max_bytes=10_000, start_line=1, end_line=4)
+            self.assertEqual(page1["content"], "line1\nline2\nline3\nline4")
+            self.assertEqual(page1["next_offset"], 5)
+
+            page2 = bundle.read_resource("doc.md", max_bytes=10_000, start_line=page1["next_offset"])
+            self.assertEqual(page2["content"], "line5\nline6\nline7\nline8\nline9\nline10")
+            self.assertIsNone(page2["next_offset"])
+
+    def test_read_skill_resource_rejects_line_range_on_binary(self) -> None:
+        from covalent.skills.bundle import SkillBundleError
+
+        with tempfile.TemporaryDirectory(prefix="af-skill-read-") as tmp:
+            (Path(tmp) / "blob.bin").write_bytes(bytes(range(256)))
+            spec = ManifestSkillSpec(
+                name="test-skill",
+                description="Test skill",
+                source_dir=tmp,
+                resource_files=["blob.bin"],
+            )
+            bundle = SkillBundle(spec)
+
+            with self.assertRaises(SkillBundleError):
+                bundle.read_resource("blob.bin", start_line=1)
+            # 不带行参数的二元资源保持 base64 行为。
+            result = bundle.read_resource("blob.bin")
+            self.assertEqual(result["encoding"], "base64")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from covalent.core.types import RunContext
 from covalent.core.workspace_tools import _get_session_workspace_root
 from covalent.runtime.backend import ExecutionBackend, BackendUnavailable
 from covalent.runtime.filesystem_backend import FileSystemBackend
-from covalent.skills.bundle import SkillBundle, SkillBundleError
+from covalent.skills.bundle import SkillBundle, SkillBundleError, slice_text_lines
 from covalent.skills.permissions import PermissionChecker
 from covalent.skills.spec import ManifestSkillSpec, ScriptDeclaration
 
@@ -54,8 +54,11 @@ def register_skill_meta_tools(registry: Any, settings: Any = None, backend: Exec
             "function": {
                 "name": READ_SKILL_INSTRUCTIONS_TOOL,
                 "description": (
-                    "Reads the full instructions for an enabled skill when its prompt index "
-                    "indicates the skill may be relevant."
+                    "Reads the instructions for an enabled skill when its prompt index "
+                    "indicates the skill may be relevant. Large instructions can be read "
+                    "in line windows: start_line/end_line select a 1-indexed range and the "
+                    "response carries total_lines/next_offset so you can page through; "
+                    "omit them to read from the start."
                 ),
                 "parameters": {
                     "type": "object",
@@ -65,6 +68,16 @@ def register_skill_meta_tools(registry: Any, settings: Any = None, backend: Exec
                             "description": "Registered skill name, case-insensitive variant, or title-style alias.",
                         },
                         "max_chars": {"type": "integer", "default": 60000, "minimum": 1},
+                        "start_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "First line of the window to read (1-indexed).",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Last line of the window to read (inclusive).",
+                        },
                     },
                     "required": ["skill"],
                 },
@@ -78,7 +91,12 @@ def register_skill_meta_tools(registry: Any, settings: Any = None, backend: Exec
             "type": "function",
             "function": {
                 "name": READ_SKILL_RESOURCE_TOOL,
-                "description": "Reads a bundled skill resource file exposed by a registered skill.",
+                "description": (
+                    "Reads a bundled skill resource file exposed by a registered skill. "
+                    "UTF-8 text resources support line windows: start_line/end_line select "
+                    "a 1-indexed range and the response carries total_lines/next_offset so "
+                    "you can page through large documents; omit them to read from the start."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -88,6 +106,16 @@ def register_skill_meta_tools(registry: Any, settings: Any = None, backend: Exec
                         },
                         "path": {"type": "string", "description": "Relative resource path."},
                         "max_bytes": {"type": "integer", "default": 24000, "minimum": 1},
+                        "start_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "First line of the window to read (1-indexed).",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Last line of the window to read (inclusive).",
+                        },
                     },
                     "required": ["skill", "path"],
                 },
@@ -168,26 +196,40 @@ def _read_skill_instructions(registry: Any, args: dict[str, Any]) -> str:
 
     max_chars = int(args.get("max_chars", 60_000))
     instructions = str(getattr(skill, "instructions", "") or "")
-    truncated = len(instructions) > max_chars
-    if truncated:
-        instructions = instructions[:max_chars]
-    return json.dumps(
-        {
-            "name": getattr(skill, "name", resolved_skill_name),
-            "description": getattr(skill, "description", ""),
-            "instructions": instructions,
-            "truncated": truncated,
-        },
-        ensure_ascii=False,
-        indent=2,
+    window = slice_text_lines(
+        instructions,
+        start_line=_optional_int(args.get("start_line")),
+        end_line=_optional_int(args.get("end_line")),
+        max_chars=max_chars,
     )
+    payload = {
+        "name": getattr(skill, "name", resolved_skill_name),
+        "description": getattr(skill, "description", ""),
+        **window,
+    }
+    # 保留既有响应键名：instructions 工具的历史契约是 "instructions" 而非 "content"。
+    payload["instructions"] = payload.pop("content")
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _optional_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
 
 
 def _read_skill_resource(registry: Any, args: dict[str, Any]) -> str:
     _spec, bundle = _bundle_for_skill(registry, str(args.get("skill", "")))
     path = str(args.get("path", "")).strip()
     max_bytes = int(args.get("max_bytes", 24_000))
-    return json.dumps(bundle.read_resource(path, max_bytes=max_bytes), ensure_ascii=False, indent=2)
+    return json.dumps(
+        bundle.read_resource(
+            path,
+            max_bytes=max_bytes,
+            start_line=_optional_int(args.get("start_line")),
+            end_line=_optional_int(args.get("end_line")),
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 async def _run_skill_script(
