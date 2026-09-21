@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from hashlib import sha256
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -15,6 +16,10 @@ class ProviderConfig(BaseModel):
     model: str
     api_key: str | None = Field(default=None, exclude=True, repr=False)
     base_url: str | None = None
+    # Wire protocol for openai_compatible providers: None/"chat_completions"
+    # calls POST {base_url}/chat/completions via the Chat Completions API;
+    # "responses" calls POST {base_url}/responses via the Responses API.
+    api_style: Literal["chat_completions", "responses"] | None = None
     timeout_seconds: float = 500.0
     extra: dict[str, str] = Field(default_factory=dict)
     # Runtime-only: credentials are resolved from the providers store, not agents.
@@ -28,6 +33,7 @@ class ProviderConfig(BaseModel):
                 self.model,
                 self.base_url or "",
                 self.api_key or "",
+                self.api_style or "",
                 f"{self.timeout_seconds}",
                 repr(extra_items),
                 sha256(self.apih.model_dump_json().encode()).hexdigest() if self.apih else "",

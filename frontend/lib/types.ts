@@ -19,6 +19,7 @@ export type ProviderEntry = {
   name: string;
   provider_type: string;
   base_url: string;
+  api_style?: string | null;
   api_key?: string | null;
   has_api_key?: boolean;
   api_key_masked?: string | null;

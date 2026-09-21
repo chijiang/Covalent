@@ -905,6 +905,12 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
     if kind == "providers":
         from covalent.infra.config_store import PersistedProviderConfig
         normalized_providers = [PersistedProviderConfig.model_validate(item).model_dump(mode="json") for item in payload]
+        for item in normalized_providers:
+            if item.get("provider_type") == "apih" and item.get("api_style") == "responses":
+                raise InvalidInputError(
+                    f"Provider '{item.get('name')}' is an APIH connection; the Responses API style is "
+                    "only supported for openai_compatible providers."
+                )
         default_model_names = [
             str(item.get("name") or "")
             for item in normalized_providers
@@ -1119,6 +1125,7 @@ def _build_agent_specs(
                         provider=str(candidate["provider_type"]),
                         model=str(candidate.get("default_model") or ""),
                         base_url=str(candidate["base_url"]),
+                        api_style=candidate.get("api_style"),
                         api_key=candidate.get("api_key"),
                         apih=candidate.get("apih"),
                         timeout_seconds=settings.request_timeout_seconds,
@@ -1176,6 +1183,7 @@ async def _resolve_default_provider(
                 provider=cfg.provider_type,
                 model=default_model,
                 apih=cfg.apih,
+                api_style=cfg.api_style,
                 api_key=cfg.api_key,
                 base_url=cfg.base_url,
                 timeout_seconds=settings.request_timeout_seconds,
@@ -1188,6 +1196,7 @@ async def _resolve_default_provider(
                 provider=cfg.provider_type,
                 model="",
                 apih=cfg.apih,
+                api_style=cfg.api_style,
                 api_key=cfg.api_key,
                 base_url=cfg.base_url,
                 timeout_seconds=settings.request_timeout_seconds,
@@ -1201,6 +1210,7 @@ async def _resolve_default_provider(
         model="",
         api_key=None,
         base_url=None,
+        api_style=None,
         timeout_seconds=settings.request_timeout_seconds,
     )
 
@@ -1234,6 +1244,13 @@ def _merge_provider_config(
         provider.provider == default_provider.provider
         and (provider.base_url or "").rstrip("/") == (default_provider.base_url or "").rstrip("/")
     )
+    # api_style is a property of the endpoint/connection: follow it when the
+    # agent inherits the connection, otherwise keep the agent-level value
+    # (selected_provider carries the row's api_style). Never mix: an explicit
+    # endpoint with no declared style stays on chat completions.
+    api_style = provider.api_style
+    if inherits or same_connection:
+        api_style = provider.api_style or default_provider.api_style
     return ProviderConfig(
         provider=default_provider.provider if inherits else provider.provider or default_provider.provider,
         model=provider.model or default_provider.model,
@@ -1243,6 +1260,7 @@ def _merge_provider_config(
             ) else None
         ),
         base_url=provider.base_url or default_provider.base_url,
+        api_style=api_style,
         timeout_seconds=provider.timeout_seconds or default_provider.timeout_seconds,
         extra={**default_provider.extra, **provider.extra},
         apih=default_provider.apih if inherits or same_connection else None,

@@ -265,6 +265,7 @@ class PersistedProviderConfig(BaseModel):
     internal_name: str | None = None
     provider_type: Literal["openai_compatible", "apih"] = "openai_compatible"
     base_url: str = ""
+    api_style: Literal["chat_completions", "responses"] | None = None
     api_key: str | None = None
     apih: APIHConfig | None = None
     default_model: str = ""
@@ -310,6 +311,7 @@ def _resolve_provider_config(existing_row: ProviderRow | None, config: Persisted
         name=config.name or existing_row.name,
         provider_type=config.provider_type,
         base_url=config.base_url,
+        api_style=config.api_style,
         api_key=config.api_key if config.api_key is not None else existing_row.api_key,
         apih=config.apih,
         default_model=config.default_model,
@@ -445,6 +447,7 @@ class ConfigStore:
                     internal_name=row.name,
                     provider_type=row.provider_type,
                     base_url=row.base_url,
+                    api_style=row.api_style,
                     api_key=row.api_key,
                     apih=row.apih_config,
                     default_model=row.default_model,
@@ -477,6 +480,7 @@ class ConfigStore:
                     config = _resolve_provider_config(row, config)
                     row.provider_type = config.provider_type
                     row.base_url = config.base_url
+                    row.api_style = config.api_style
                     row.api_key = config.api_key
                     row.apih_config = config.apih.model_dump(mode="json") if config.apih else None
                     row.default_model = config.default_model

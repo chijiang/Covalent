@@ -15,6 +15,9 @@ from covalent.model.utils import derive_openai_base_url, reasoning_level_kwargs
 
 
 class OpenAICompatibleProvider(ModelAdapter):
+    # Used in error messages; responses-style subclasses override.
+    _api_path = "/chat/completions"
+
     def __init__(self, config: ProviderConfig) -> None:
         if not config.base_url:
             raise ValueError("OpenAI-compatible providers require base_url")
@@ -382,7 +385,7 @@ class OpenAICompatibleProvider(ModelAdapter):
             return ModelProviderError(
                 self.config.provider,
                 detail=(
-                    f"Request to {self._normalized_base_url(self.config.base_url)}/chat/completions "
+                    f"Request to {self._normalized_base_url(self.config.base_url)}{self._api_path} "
                     f"timed out after {self.config.timeout_seconds:.0f}s"
                 ),
                 status_code=504,

@@ -30,6 +30,7 @@ type ProviderFormState = {
   name: string;
   provider_type: string;
   base_url: string;
+  api_style: string;
   api_key: string;
   default_model: string;
   token_url: string;
@@ -52,6 +53,7 @@ function toFormState(entry: Partial<ProviderEntry> | null): ProviderFormState {
     name: entry?.name ?? "",
     provider_type: entry?.provider_type ?? "openai_compatible",
     base_url: entry?.base_url ?? "",
+    api_style: entry?.api_style ?? "chat_completions",
     api_key: "",
     default_model: entry?.default_model ?? "",
     token_url: entry?.apih?.token_url ?? "",
@@ -292,6 +294,7 @@ export function ProviderWorkspace() {
           provider_type: form.provider_type,
           apih,
           base_url: nextBaseUrl,
+          api_style: form.provider_type === "openai_compatible" ? form.api_style : null,
           api_key: form.api_key.trim() || null,
           default_model: nextDefaultModel,
           has_api_key: Boolean(form.api_key.trim()),
@@ -310,6 +313,7 @@ export function ProviderWorkspace() {
             provider_type: form.provider_type,
             apih,
             base_url: nextBaseUrl,
+            api_style: form.provider_type === "openai_compatible" ? form.api_style : null,
             api_key: form.api_key.trim() || provider.api_key || null,
             default_model: nextDefaultModel,
             is_default: Boolean(nextDefaultModel),
@@ -566,6 +570,23 @@ export function ProviderWorkspace() {
                               </SelectContent>
                             </Select>
                           </Label>
+                          {form.provider_type === "openai_compatible" ? (
+                            <Label className="form-field">
+                              <span>API Style</span>
+                              <Select
+                                value={form.api_style}
+                                onValueChange={(value) => handleFormChange("api_style", value ?? "chat_completions")}
+                              >
+                                <SelectTrigger className="console-select-trigger w-full">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent align="start" alignItemWithTrigger>
+                                  <SelectItem value="chat_completions">Chat Completions</SelectItem>
+                                  <SelectItem value="responses">Responses</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </Label>
+                          ) : null}
                         </FormSection>
 
                         <FormSection title="Connection">

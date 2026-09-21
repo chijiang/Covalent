@@ -690,6 +690,7 @@ async def _upsert_providers(
         row.display_name = config.name if config.name != row.name else None
         row.provider_type = config.provider_type
         row.base_url = config.base_url
+        row.api_style = config.api_style
         row.api_key = config.api_key
         row.apih_config = config.apih.model_dump(mode="json") if config.apih else None
         row.default_model = config.default_model
