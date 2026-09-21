@@ -39,6 +39,7 @@ tmp
 
 # build
 .next
+frontend/next-env.d.ts
 
 # Local generated artifacts
 .pnpm-store/
