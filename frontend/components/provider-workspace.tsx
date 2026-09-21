@@ -294,7 +294,7 @@ export function ProviderWorkspace() {
           provider_type: form.provider_type,
           apih,
           base_url: nextBaseUrl,
-          api_style: form.provider_type === "openai_compatible" ? form.api_style : null,
+          api_style: form.api_style,
           api_key: form.api_key.trim() || null,
           default_model: nextDefaultModel,
           has_api_key: Boolean(form.api_key.trim()),
@@ -313,7 +313,7 @@ export function ProviderWorkspace() {
             provider_type: form.provider_type,
             apih,
             base_url: nextBaseUrl,
-            api_style: form.provider_type === "openai_compatible" ? form.api_style : null,
+            api_style: form.api_style,
             api_key: form.api_key.trim() || provider.api_key || null,
             default_model: nextDefaultModel,
             is_default: Boolean(nextDefaultModel),
@@ -570,7 +570,7 @@ export function ProviderWorkspace() {
                               </SelectContent>
                             </Select>
                           </Label>
-                          {form.provider_type === "openai_compatible" ? (
+                          {form.provider_type === "openai_compatible" || form.provider_type === "apih" ? (
                             <Label className="form-field">
                               <span>API Style</span>
                               <Select

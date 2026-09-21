@@ -39,6 +39,9 @@ class FrameworkRegistry:
         self.local_tools: dict[str, ToolDefinition] = {}
         self.mcp_client: McpClient | None = None
         self.skill_process_manager: SkillProcessManager | None = None
+        # Playwright browser manager (BrowserManager) when browser tools are
+        # enabled; closed in aclose alongside the skill process manager.
+        self.browser_manager: Any = None
         # tool name -> normalized parameter schema, populated in resolve_tools_for_agent
         # so execute_tool_call can repair stringified object/array arguments.
         self._tool_schemas: dict[str, dict[str, Any]] = {}
@@ -496,6 +499,9 @@ class FrameworkRegistry:
         return f"mcp__{server_name}__{tool_name}"
 
     async def aclose(self) -> None:
+        if self.browser_manager is not None:
+            await self.browser_manager.aclose()
+            self.browser_manager = None
         if self.skill_process_manager:
             await self.skill_process_manager.stop()
         for adapter in self.model_providers.values():

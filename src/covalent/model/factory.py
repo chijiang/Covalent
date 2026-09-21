@@ -8,7 +8,9 @@ from covalent.model.apih import APIHProvider
 def build_provider(config: ProviderConfig) -> ModelAdapter:
     if config.provider == "apih":
         if config.api_style == "responses":
-            raise ValueError("apih providers do not support api_style='responses'")
+            from covalent.model.apih import APIHResponsesProvider
+
+            return APIHResponsesProvider(config)
         return APIHProvider(config)
     if config.provider == "openai_compatible":
         if config.api_style == "responses":

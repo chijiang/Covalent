@@ -252,10 +252,20 @@ class FactoryAndCacheKeyTests(unittest.TestCase):
         from covalent.model.openai_compatible import OpenAICompatibleProvider
         self.assertIsInstance(build_provider(completions_config), OpenAICompatibleProvider)
 
-    def test_factory_rejects_apih_with_responses(self) -> None:
-        config = ProviderConfig(provider="apih", model="m", api_key="k", base_url="http://x", api_style="responses")
-        with self.assertRaises(ValueError):
-            build_provider(config)
+    def test_factory_dispatches_apih_with_responses(self) -> None:
+        from covalent.model.apih import APIHProvider, APIHResponsesProvider
+        from covalent.model.apih_config import APIHConfig
+        config = ProviderConfig(
+            provider="apih",
+            model="m",
+            api_key="k",
+            base_url="http://x",
+            api_style="responses",
+            apih=APIHConfig(token_url="https://auth.example/token", username="u", password="p"),
+        )
+        self.assertIsInstance(build_provider(config), APIHResponsesProvider)
+        completions_config = config.model_copy(update={"api_style": None})
+        self.assertIsInstance(build_provider(completions_config), APIHProvider)
 
     def test_api_style_changes_cache_key(self) -> None:
         base = ProviderConfig(provider="openai_compatible", model="m", base_url="http://x/v1")

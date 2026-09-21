@@ -13,6 +13,7 @@ from openai import AsyncOpenAI
 from covalent.model.apih_config import APIHConfig, apih_base_url
 from covalent.model.base import ModelProviderError
 from covalent.model.openai_compatible import OpenAICompatibleProvider
+from covalent.model.openai_responses import ResponsesProvider
 
 
 class APIHTokenManager:
@@ -160,3 +161,7 @@ class APIHProvider(OpenAICompatibleProvider):
             await super().aclose()
         finally:
             await self._token_client.aclose()
+
+
+class APIHResponsesProvider(ResponsesProvider, APIHProvider):
+    """Responses wire protocol over the APIH token-authenticated client."""

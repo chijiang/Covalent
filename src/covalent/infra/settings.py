@@ -101,6 +101,17 @@ class AppSettings(BaseSettings):
     execution_backend_shell_tool_binary: str = "sh"
     execution_backend_shell_tool_timeout_seconds: float = 120.0
     execution_backend_shell_tool_max_bytes: int = 51200
+    # Browser tools: opt-in Playwright (headless Chromium) running in the API
+    # server process — same trust boundary as the other in-process builtin
+    # tools. Requires a one-time `playwright install chromium` on the host.
+    # Per-agent exposure follows BUILTIN_AGENT_TOOLS grants, not the defaults.
+    browser_tools_enabled: bool = False
+    browser_headless: bool = True
+    browser_channel: str | None = None
+    browser_executable_path: str | None = None
+    browser_navigation_timeout_seconds: float = 30.0
+    browser_idle_timeout_seconds: float = 900.0  # 0 = contexts live until aclose
+    browser_max_screenshot_bytes: int = 8 * 1024 * 1024
     # Operator hard maximums for sandbox profile resources. None/empty = only
     # basic positive/range validation applies. Registry allowlist (empty = any
     # registry) is matched against the parsed image reference registry, not by

@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from covalent.core.types import GenerationRequest
-from covalent.model.apih import APIHProvider, APIHTokenManager
+from covalent.model.apih import APIHProvider, APIHResponsesProvider, APIHTokenManager
 from covalent.model.apih_config import APIHConfig, apih_base_url
 from covalent.model.base import ModelProviderError, ProviderConfig
 from covalent.model.factory import build_provider
@@ -109,14 +109,14 @@ async def test_malformed_token_is_sanitized(body):
             await APIHTokenManager(settings(), "x", client).get()
 
 
-def make_provider(monkeypatch, handler):
+def make_provider(monkeypatch, handler, api_style=None):
     clients = []
     def factory(self, **kwargs):
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs)
         clients.append(client)
         return client
     monkeypatch.setattr(APIHProvider, "_http_client", factory)
-    provider = build_provider(ProviderConfig(provider="apih", model="customer-model", base_url="https://gateway.example/path/chat/completions", api_key="x-secret", apih=settings()))
+    provider = build_provider(ProviderConfig(provider="apih", model="customer-model", base_url="https://gateway.example/path/chat/completions", api_key="x-secret", apih=settings(), api_style=api_style))
     return provider, clients
 
 
@@ -190,3 +190,35 @@ async def test_second_401_not_replayed_and_error_sanitized(monkeypatch):
         assert len(calls) == 4
     finally:
         await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_responses_style_generate_over_token_auth(monkeypatch):
+    def handler(request):
+        if request.url.host == "auth.example":
+            return httpx.Response(200, json=token())
+        assert request.headers["X-API-KEY"] == "x-secret"
+        assert request.headers["Authorization"] == "Bearer access-secret"
+        assert request.url.path == "/path/responses"
+        return httpx.Response(200, json={
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 0,
+            "model": "customer-model",
+            "output": [
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "think"}]},
+                {"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+                 "content": [{"type": "output_text", "text": "answer", "annotations": []}]},
+            ],
+            "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+        })
+    provider, clients = make_provider(monkeypatch, handler, api_style="responses")
+    assert isinstance(provider, APIHResponsesProvider)
+    try:
+        response = await provider.generate(GenerationRequest(model="customer-model", messages=[{"role": "user", "content": "question"}]))
+        assert response.output_text == "answer"
+        assert response.assistant_message.reasoning_content == "think"
+        assert response.usage.total_tokens == 5
+    finally:
+        await provider.aclose()
+    assert all(client.is_closed for client in clients)

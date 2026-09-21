@@ -40,6 +40,7 @@ from covalent.application.schemas import (
 )
 from covalent.core.agent import AgentSpec
 from covalent.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
+from covalent.core.browser_tools import BROWSER_TOOL_NAMES, register_browser_tools
 from covalent.core.types import Capability, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
 from covalent.core.workspace_tools import register_workspace_tools
 from covalent.core.pdf_tools import register_pdf_tools
@@ -289,6 +290,27 @@ def register_builtin_tools(registry: FrameworkRegistry, settings: AppSettings, b
         },
         handler=_ask_user_handler,
     )
+    _register_browser_tools_if_enabled(registry, settings)
+
+
+def _register_browser_tools_if_enabled(registry: FrameworkRegistry, settings: AppSettings) -> None:
+    """Opt-in Playwright browser tools, running in-process on the host.
+
+    Registered only when ``browser_tools_enabled`` is set; the manager is
+    attached to the registry so ``aclose`` can tear the browser down. Playwright
+    itself is imported lazily on first use — a missing package or browser
+    binary surfaces as an actionable tool error, not a startup failure.
+    """
+    if not getattr(settings, "browser_tools_enabled", False):
+        return
+    try:
+        from covalent.runtime.browser_manager import BrowserManager
+    except ImportError:
+        logger.warning("browser_tools_enabled is set but the browser manager is unavailable; skipping browser tools")
+        return
+    manager = BrowserManager(settings)
+    registry.browser_manager = manager
+    register_browser_tools(registry, settings, manager)
 
 def _ask_user_handler(args: dict[str, Any], _ctx: RunContext | None) -> UserInputRequest:
     raw_questions = args.get("questions")
@@ -328,12 +350,14 @@ def _available_local_tool_summaries(
 ) -> list[LocalToolSummaryResponse]:
     default_tools = set(_default_agent_local_tools(settings))
     summaries: list[LocalToolSummaryResponse] = []
-    # The curated built-in tools, plus the sandbox shell tool when it's registered
-    # (sandbox backend + flag on) — so operators can grant it per-agent in the
-    # console without it ever showing up under filesystem / flag-off.
+    # The curated built-in tools, plus the sandbox shell tool (sandbox backend
+    # + flag on) and the browser tools (flag on) when they are registered — so
+    # operators can grant them per-agent in the console; they never show up
+    # under flag-off.
     candidate_names = list(BUILTIN_AGENT_TOOLS)
-    if RUN_SHELL_TOOL in registry.local_tools and RUN_SHELL_TOOL not in candidate_names:
-        candidate_names.append(RUN_SHELL_TOOL)
+    for conditional in (RUN_SHELL_TOOL, *BROWSER_TOOL_NAMES):
+        if conditional in registry.local_tools and conditional not in candidate_names:
+            candidate_names.append(conditional)
     for name in candidate_names:
         tool = registry.local_tools.get(name)
         if tool is None:
@@ -905,12 +929,6 @@ def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: 
     if kind == "providers":
         from covalent.infra.config_store import PersistedProviderConfig
         normalized_providers = [PersistedProviderConfig.model_validate(item).model_dump(mode="json") for item in payload]
-        for item in normalized_providers:
-            if item.get("provider_type") == "apih" and item.get("api_style") == "responses":
-                raise InvalidInputError(
-                    f"Provider '{item.get('name')}' is an APIH connection; the Responses API style is "
-                    "only supported for openai_compatible providers."
-                )
         default_model_names = [
             str(item.get("name") or "")
             for item in normalized_providers
