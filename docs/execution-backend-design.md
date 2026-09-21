@@ -574,8 +574,7 @@ daemon/runtime-class settings — the `covalent-sandbox` image and `DockerBacken
 work unchanged; only the daemon/`--runtime` flag differs.
 
 ### Image hygiene
-The GHCR CI workflow (`.github/workflows/sandbox-image.yml`) publishes all sandbox
-images on `sandbox/**`/runners changes (matrix: `sandbox/README.md`). Pin **digests** in production
+Sandbox images are built locally from `sandbox/` (matrix: `sandbox/README.md`). Pin **digests** in production
 (`covalent-sandbox@sha256:…`, not `:latest`); rebuild on runner/dependency changes.
 Runtime `pip install` inside a container lands in an ephemeral layer, never the base.
 

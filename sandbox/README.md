@@ -25,6 +25,4 @@ docker build -t covalent-sandbox-toolbox:dev    -f sandbox/Dockerfile.toolbox .
 docker build -t covalent-sandbox-datascience:dev -f sandbox/Dockerfile.datascience .
 ```
 
-CI (`.github/workflows/sandbox-image.yml`) builds and publishes all images
-to GHCR on changes to this folder or the runners. Production profiles
-should reference images by digest, not a floating tag.
+Production profiles should reference images by digest, not a floating tag.
