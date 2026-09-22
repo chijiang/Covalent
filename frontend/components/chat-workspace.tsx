@@ -790,7 +790,40 @@ function ChatMessageBubble({
           {message.attachments?.length ? (
             <div className="chat-attachment-list">
               {message.attachments.map((file) =>
-                file.downloadUrl ? (
+                file.kind === "image" && file.downloadUrl ? (
+                  <span className="chat-attachment-image-item" key={file.id}>
+                    <a
+                      className="chat-attachment-image-link"
+                      href={file.downloadUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={file.name}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={file.downloadUrl}
+                        alt={file.name}
+                        className="chat-attachment-image"
+                        loading="lazy"
+                      />
+                    </a>
+                    <span className="chat-attachment-topline">
+                      <strong>{file.name}</strong>
+                      <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
+                    </span>
+                    <span className="chat-attachment-meta">
+                      {formatAttachmentMeta(file)}
+                      {file.downloadUrl ? (
+                        <>
+                          {" · "}
+                          <a href={file.downloadUrl} download>
+                            Download
+                          </a>
+                        </>
+                      ) : null}
+                    </span>
+                  </span>
+                ) : file.downloadUrl ? (
                   <a className="chat-attachment-chip chat-attachment-chip-link" download href={file.downloadUrl} key={file.id}>
                     <span className="chat-attachment-topline">
                       <strong>{file.name}</strong>
@@ -1069,7 +1102,43 @@ function extractPublishedDownloadsFromPayload(payload: unknown): ComposerAttachm
       return [];
     }
     const result = rawResult as Record<string, unknown>;
-    if (result.name !== "publish_downloadable_file" || result.is_error === true) {
+    if (result.is_error === true) {
+      return [];
+    }
+    // Structured artifacts (e.g. browser_screenshot via SSE download_artifacts)
+    // take precedence over the legacy publish_downloadable_file content JSON.
+    const artifacts = Array.isArray(result.download_artifacts) ? result.download_artifacts : [];
+    if (artifacts.length > 0) {
+      return artifacts.flatMap((rawArtifact) => {
+        if (!rawArtifact || typeof rawArtifact !== "object") {
+          return [];
+        }
+        const artifact = rawArtifact as Record<string, unknown>;
+        const name = typeof artifact.name === "string" ? artifact.name : "";
+        const downloadUrl = typeof artifact.download_url === "string" ? artifact.download_url : "";
+        if (!name || !downloadUrl) {
+          return [];
+        }
+        const type = typeof artifact.content_type === "string" ? artifact.content_type : "application/octet-stream";
+        const size = typeof artifact.size === "number" ? artifact.size : Number(artifact.size) || 0;
+        return [
+          normalizeAttachment({
+            id: typeof artifact.id === "string" ? artifact.id : `download-${name}-${size}`,
+            name,
+            size,
+            type,
+            content_type: type,
+            last_modified: 0,
+            workspace_path: artifact.workspace_path,
+            download_url: downloadUrl,
+            uploaded_at: artifact.published_at,
+            summary: artifact.summary,
+            kind: inferAttachmentKind(type),
+          }),
+        ];
+      });
+    }
+    if (result.name !== "publish_downloadable_file") {
       return [];
     }
     const content = parseToolContentObject(result.content);

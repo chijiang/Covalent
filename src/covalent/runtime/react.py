@@ -731,8 +731,47 @@ class ReactAgentRuntime(AgentRuntime):
         if isinstance(content, list):
             # Multimodal tool results (e.g. read_pdf image pages) must not flood
             # SSE consumers or chat history with base64 payloads.
-            payload["content"] = self._event_tool_content_summary(content)
+            artifacts, remaining = self._extract_download_artifacts(content)
+            if artifacts:
+                # Structured download metadata (e.g. browser_screenshot) rides
+                # outside the text summary so the 400-char truncation can never
+                # cut a download_url; the chat worker turns it into attachments.
+                payload["download_artifacts"] = artifacts
+            payload["content"] = self._event_tool_content_summary(remaining)
         return payload
+
+    @classmethod
+    def _extract_download_artifacts(cls, content: list[Any]) -> tuple[list[dict[str, Any]], list[Any]]:
+        """Split list content into (download artifacts, remaining parts).
+
+        Text parts that are compact JSON objects carrying download_url + name
+        (saved-artifact metadata, e.g. from browser_screenshot) are pulled out
+        of the content; the summary replaces them with one short leading line.
+        """
+        artifacts: list[dict[str, Any]] = []
+        remaining: list[Any] = []
+        saved_urls: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parsed = cls._try_json_object(item.get("text"))
+                if isinstance(parsed, dict) and isinstance(parsed.get("download_url"), str) and isinstance(parsed.get("name"), str):
+                    artifacts.append(parsed)
+                    saved_urls.append(parsed["download_url"])
+                    continue
+            remaining.append(item)
+        if artifacts:
+            leading = [{"type": "text", "text": "\n".join(f"Saved file: {url}" for url in saved_urls)}]
+            return artifacts, leading + remaining
+        return [], content
+
+    @staticmethod
+    def _try_json_object(raw: Any) -> Any:
+        if not isinstance(raw, str):
+            return None
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
 
     @classmethod
     def _event_tool_content_summary(cls, content: list[Any]) -> str:

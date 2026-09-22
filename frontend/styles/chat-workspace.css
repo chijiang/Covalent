@@ -1289,6 +1289,31 @@
   margin-bottom: 8px;
 }
 
+.chat-attachment-image-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: min(100%, 420px);
+}
+
+.chat-attachment-image-link {
+  display: block;
+  line-height: 0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.chat-attachment-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  width: auto;
+  height: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border-muted);
+  cursor: zoom-in;
+}
+
 .chat-attachment-chip {
   display: grid;
   gap: 3px;

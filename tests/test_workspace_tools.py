@@ -8,13 +8,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from covalent.core.workspace_tools import (
+    _build_download_payload,
     _copy_workspace_entry,
     _edit_workspace_file,
     _move_workspace_entry,
     _publish_downloadable_file,
     _read_workspace_file,
+    _save_download_artifact,
     _search_workspace_files,
     _unzip_workspace_archive,
+    _write_download_bytes,
     _zip_workspace_entries,
     register_workspace_tools,
 )
@@ -291,6 +294,39 @@ class WorkspaceToolTests(unittest.TestCase):
         self.assertEqual(result["summary"], "Story HTML")
         self.assertEqual(result["download_url"], "/api/backend/downloads/sess-1/story.html")
         self.assertTrue((self.root / ".covalent" / "downloads" / "sess-1" / "story.html").is_file())
+
+    def test_write_download_bytes_generates_collision_free_names(self) -> None:
+        first = _write_download_bytes(self.root, "sess-9", b"one", "shot.png")
+        second = _write_download_bytes(self.root, "sess-9", b"two", "shot.png")
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.read_bytes(), b"one")
+        self.assertEqual(second.read_bytes(), b"two")
+
+    def test_build_download_payload_fields(self) -> None:
+        target = _write_download_bytes(self.root, "sess-9", b"payload-bytes", "shot.png")
+        payload = _build_download_payload(
+            self.root, "sess-9", target, content_type="image/png", summary="A shot"
+        )
+        self.assertEqual(payload["name"], "shot.png")
+        self.assertEqual(payload["size"], len(b"payload-bytes"))
+        self.assertEqual(payload["content_type"], "image/png")
+        self.assertEqual(payload["download_url"], "/api/backend/downloads/sess-9/shot.png")
+        self.assertIn("/api/backend/downloads/sess-9/shot.png", payload["download_markdown"])
+        self.assertEqual(payload["summary"], "A shot")
+        self.assertTrue(payload["published_at"])
+
+    def test_save_download_artifact_roundtrip(self) -> None:
+        payload = _save_download_artifact(
+            self.settings,
+            "sess-9",
+            b"\x89PNG-data",
+            download_name="screenshot-20260922-120000.png",
+            content_type="image/png",
+            summary="Screenshot of example.com",
+        )
+        self.assertEqual(payload["name"], "screenshot-20260922-120000.png")
+        saved = self.root / ".covalent" / "downloads" / "sess-9" / payload["name"]
+        self.assertEqual(saved.read_bytes(), b"\x89PNG-data")
 
     def test_publish_downloadable_file_rejects_old_path_parameter(self) -> None:
         session_context = SimpleNamespace(session_id="sess-1")

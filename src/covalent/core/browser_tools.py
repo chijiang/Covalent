@@ -198,7 +198,7 @@ async def _dispatch(name: str, manager: Any, settings: Any, context: Any, args: 
     if name == BROWSER_SNAPSHOT_TOOL:
         return await _snapshot(session, settings)
     if name == BROWSER_SCREENSHOT_TOOL:
-        return await _screenshot(session, settings, args)
+        return await _screenshot(session, settings, args, scope_key)
     if name == BROWSER_CLICK_TOOL:
         return await _click(session, settings, str(args.get("ref", "")))
     if name == BROWSER_TYPE_TOOL:
@@ -244,7 +244,7 @@ async def _snapshot(session: Any, settings: Any) -> str:
     return _render_snapshot(payload)
 
 
-async def _screenshot(session: Any, settings: Any, args: dict[str, Any]) -> list[dict[str, Any]]:
+async def _screenshot(session: Any, settings: Any, args: dict[str, Any], scope_key: str) -> list[dict[str, Any]]:
     budget = int(getattr(settings, "browser_max_screenshot_bytes", 8 * 1024 * 1024))
     full_page = bool(args.get("full_page", False))
     image_type = args.get("type", "png")
@@ -274,9 +274,48 @@ async def _screenshot(session: Any, settings: Any, args: dict[str, Any]) -> list
         )
     data_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
     return [
-        {"type": "text", "text": f"Screenshot of {session.page.url} ({'full page' if full_page else 'viewport'}, {len(raw)} bytes)"},
+        {
+            "type": "text",
+            "text": _screenshot_metadata_text(settings, scope_key, raw, mime, full_page, str(session.page.url)),
+        },
         {"type": "image_url", "image_url": {"url": data_url}},
     ]
+
+
+def _screenshot_metadata_text(
+    settings: Any,
+    scope_key: str,
+    raw: bytes,
+    mime: str,
+    full_page: bool,
+    page_url: str,
+) -> str:
+    """Persist the shot as a downloadable artifact and return a compact
+    single-line JSON text part (the chat pipeline turns it into an inline
+    image attachment). Single-line JSON is load-bearing: the SSE summary must
+    keep it parseable. If saving fails, the image still reaches the model via
+    the image_url part — chat display degrades, vision does not."""
+    from datetime import datetime
+
+    from covalent.core.workspace_tools import _save_download_artifact
+
+    extension = "png" if mime == "image/png" else "jpg"
+    file_name = f"screenshot-{datetime.now().strftime('%Y%m%d-%H%M%S')}.{extension}"
+    try:
+        payload = _save_download_artifact(
+            settings,
+            scope_key,
+            raw,
+            download_name=file_name,
+            content_type=mime,
+            summary=f"Screenshot of {page_url} ({'full page' if full_page else 'viewport'})",
+        )
+    except Exception as exc:
+        return f"Screenshot captured ({len(raw)} bytes), but saving it for chat display failed: {exc}"
+    return json.dumps(
+        {key: payload[key] for key in ("id", "name", "size", "content_type", "download_url", "download_markdown", "summary")},
+        ensure_ascii=False,
+    )
 
 
 async def _click(session: Any, settings: Any, ref: str) -> str:

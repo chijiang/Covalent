@@ -183,7 +183,11 @@ class ExposureTests(unittest.IsolatedAsyncioTestCase):
 
 class HandlerBehaviorTests(unittest.IsolatedAsyncioTestCase):
     def _make(self, **settings_kwargs):
-        settings = AppSettings(browser_tools_enabled=True, **settings_kwargs)
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        settings = AppSettings(browser_tools_enabled=True, workspace_root_dir=self._tmp.name, **settings_kwargs)
         page = _FakePage()
         session = _FakeSession(page)
         manager = _FakeManager(session)
@@ -253,22 +257,55 @@ class HandlerBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.released, ["s1"])
         self.assertIn("closed", result.lower())
 
-    async def test_screenshot_returns_image_part(self) -> None:
-        _, _, page, tools = self._make()
+    async def test_screenshot_returns_image_part_and_saved_artifact(self) -> None:
+        from pathlib import Path
+
+        settings, _, page, tools = self._make()
         page.png_bytes = b"\x89PNG" + b"0" * 128
         result = await tools[BROWSER_SCREENSHOT_TOOL]({}, _CTX)
         self.assertIsInstance(result, list)
-        self.assertEqual(result[0]["type"], "text")
+        metadata = json.loads(result[0]["text"])
+        self.assertEqual(metadata["content_type"], "image/png")
+        self.assertTrue(metadata["download_url"].startswith("/api/backend/downloads/s1/screenshot-"))
+        self.assertEqual(metadata["size"], len(page.png_bytes))
+        self.assertIn("viewport", metadata["summary"])
+        saved = settings.workspace_root() / ".covalent" / "downloads" / "s1" / metadata["name"]
+        self.assertTrue(saved.is_file())
+        self.assertEqual(saved.read_bytes(), page.png_bytes)
         self.assertEqual(result[1]["type"], "image_url")
         self.assertTrue(result[1]["image_url"]["url"].startswith("data:image/png;base64,"))
         decoded = base64.b64decode(result[1]["image_url"]["url"].split(",", 1)[1])
         self.assertEqual(decoded, page.png_bytes)
+
+    async def test_screenshot_second_capture_gets_unique_name(self) -> None:
+        settings, _, page, tools = self._make()
+        first = json.loads((await tools[BROWSER_SCREENSHOT_TOOL]({}, _CTX))[0]["text"])
+        second = json.loads((await tools[BROWSER_SCREENSHOT_TOOL]({}, _CTX))[0]["text"])
+        self.assertNotEqual(first["download_url"], second["download_url"])
+        downloads = settings.workspace_root() / ".covalent" / "downloads" / "s1"
+        self.assertEqual(len(list(downloads.iterdir())), 2)
+
+    async def test_screenshot_save_failure_keeps_image_part(self) -> None:
+        from unittest.mock import patch
+
+        import covalent.core.workspace_tools as workspace_tools_module
+
+        _, _, page, tools = self._make()
+        page.png_bytes = b"\x89PNG-fallback"
+        with patch.object(workspace_tools_module, "_save_download_artifact", side_effect=OSError("disk full")):
+            result = await tools[BROWSER_SCREENSHOT_TOOL]({}, _CTX)
+        self.assertIn("saving it for chat display failed", result[0]["text"])
+        self.assertEqual(result[1]["type"], "image_url")
+        self.assertTrue(result[1]["image_url"]["url"].startswith("data:image/png;base64,"))
 
     async def test_screenshot_falls_back_to_jpeg_over_budget(self) -> None:
         _, _, page, tools = self._make(browser_max_screenshot_bytes=1024)
         page.png_bytes = b"\x89PNG" + b"0" * 4096
         page.jpeg_bytes = b"\xff\xd8" + b"0" * 512
         result = await tools[BROWSER_SCREENSHOT_TOOL]({}, _CTX)
+        metadata = json.loads(result[0]["text"])
+        self.assertEqual(metadata["content_type"], "image/jpeg")
+        self.assertTrue(metadata["name"].endswith(".jpg"))
         self.assertTrue(result[1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
         screenshot_types = [c[1].get("type") for c in page.calls if c[0] == "screenshot"]
         self.assertEqual(screenshot_types, ["png", "jpeg"])
@@ -351,17 +388,22 @@ class RealBrowserIntegrationTests(unittest.IsolatedAsyncioTestCase):
             raise unittest.SkipTest("Playwright Chromium not installed; skipping real-browser tests")
 
     async def asyncSetUp(self) -> None:
+        import tempfile
+
         from covalent.runtime.browser_manager import BrowserManager
 
+        self._tmp = tempfile.TemporaryDirectory()
+        settings = AppSettings(browser_tools_enabled=True, workspace_root_dir=self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
         self.server = HTTPServer(("127.0.0.1", 0), _ITHandler)
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
         self.base = f"http://127.0.0.1:{self.server.server_port}/"
-        self.manager = BrowserManager(AppSettings(browser_tools_enabled=True))
+        self.manager = BrowserManager(settings)
         self.tools: dict = {}
         register_browser_tools(
             types.SimpleNamespace(register_local_tool=lambda name, schema, handler=None: self.tools.__setitem__(name, handler)),
-            AppSettings(browser_tools_enabled=True),
+            settings,
             self.manager,
         )
         self.ctx = types.SimpleNamespace(session_id="it-session")
@@ -389,6 +431,12 @@ class RealBrowserIntegrationTests(unittest.IsolatedAsyncioTestCase):
         result = await self.tools[BROWSER_SCREENSHOT_TOOL]({}, self.ctx)
         self.assertEqual(result[1]["type"], "image_url")
         self.assertTrue(result[1]["image_url"]["url"].startswith("data:image/"))
+        from pathlib import Path
+
+        metadata = json.loads(result[0]["text"])
+        saved = Path(self._tmp.name) / ".covalent" / "downloads" / "it-session" / metadata["name"]
+        self.assertTrue(saved.is_file())
+        self.assertGreater(saved.stat().st_size, 0)
 
         closed = await self.tools[BROWSER_CLOSE_TOOL]({}, self.ctx)
         self.assertIn("closed", closed.lower())
