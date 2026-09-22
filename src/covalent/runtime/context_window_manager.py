@@ -23,6 +23,14 @@ CHARS_PER_TOKEN_ESTIMATE = 3.5
 # Fallback token budget when the agent does not define ``context_window``.
 DEFAULT_CONTEXT_WINDOW = 128_000
 
+# Tier 0: tool results older than the last RECENT_TOOL_RESULTS_KEPT tool
+# messages are deterministically summarized to this char budget (head-biased)
+# before the global-budget gate runs. Old tool output carries little decision
+# value but dominates memory volume; the newest few stay verbatim so
+# compare-the-last-screenshots style workflows keep working.
+RECENT_TOOL_RESULTS_KEPT = 4
+OLD_TOOL_RESULT_CHAR_LIMIT = 2_400
+
 COMPACTION_SUMMARY_PROMPT = """\
 You are summarizing a conversation between a user and an AI agent that uses a ReAct (Reason+Act) loop \
 with tool calls. Your summary will replace the older messages in the conversation context.
@@ -211,6 +219,68 @@ class ContextWindowManager:
             start -= 1
         return messages[start:]
 
+    def _compact_old_tool_results(self, messages: list[Message]) -> tuple[list[Message], int]:
+        """Tier 0: head-biased summary for tool results beyond the most recent
+        RECENT_TOOL_RESULTS_KEPT tool messages. Returns (messages, count).
+        Copies lazily — when nothing qualifies the original list is returned."""
+        compacted = 0
+        prepared: list[Message] | None = None
+        tool_seen = 0
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if message.role != "tool":
+                continue
+            tool_seen += 1
+            if tool_seen <= RECENT_TOOL_RESULTS_KEPT:
+                continue
+            if self._estimate_message_chars(message) <= OLD_TOOL_RESULT_CHAR_LIMIT:
+                continue
+            if prepared is None:
+                prepared = list(messages)
+            prepared[index] = Message(
+                role="tool",
+                content=self._summarize_tool_content(message.content, OLD_TOOL_RESULT_CHAR_LIMIT),
+                name=message.name,
+                tool_call_id=message.tool_call_id,
+            )
+            compacted += 1
+        return (prepared if prepared is not None else messages), compacted
+
+    def _strip_tool_result_images(self, messages: list[Message]) -> list[Message]:
+        """Replace image parts in TOOL messages with a short text note before
+        persisting to session memory.
+
+        Tool images only matter to the model for the run that produced them —
+        in-run messages are untouched (this runs on the persist copy). Keeping
+        base64 in memory bloats every later request's token estimate and forces
+        destructive compaction; artifacts stay re-obtainable (re-run the tool)
+        and downloadable ones keep their URL in the text part.
+        """
+        changed = False
+        prepared: list[Message] = messages
+        for index, message in enumerate(messages):
+            if message.role != "tool" or not isinstance(message.content, list):
+                continue
+            image_count = sum(
+                1 for item in message.content if isinstance(item, dict) and item.get("type") == "image_url"
+            )
+            if not image_count:
+                continue
+            if not changed:
+                prepared = list(messages)
+                changed = True
+            content = [
+                item
+                for item in message.content
+                if not (isinstance(item, dict) and item.get("type") == "image_url")
+            ]
+            suffix = "s" if image_count != 1 else ""
+            content.append(
+                {"type": "text", "text": f"[{image_count} image{suffix} omitted from memory; re-run the tool to view]"}
+            )
+            prepared[index] = message.model_copy(update={"content": content})
+        return prepared
+
     def _summarize_tool_content(self, content: Any, max_chars: int) -> str:
         parsed: Any = None
         if isinstance(content, (dict, list)):
@@ -379,6 +449,12 @@ class ContextWindowManager:
         original_count = len(messages)
         original_chars = sum(self._estimate_message_chars(m) for m in messages)
 
+        # Tier 0: shrink old tool results before the budget gate so the gate
+        # measures a realistic size. Only messages beyond the most recent
+        # RECENT_TOOL_RESULTS_KEPT tool messages are touched, and only when
+        # they actually exceed the limit — small conversations pay zero copies.
+        messages, old_tool_results_compacted = self._compact_old_tool_results(messages)
+
         token_budget = self._effective_token_budget(agent)
         trigger_threshold = int(token_budget * self.context_compact_threshold)
 
@@ -394,17 +470,18 @@ class ContextWindowManager:
             return messages, {
                 "compacted": False,
                 "original_message_count": original_count,
-                "request_message_count": original_count,
+                "request_message_count": len(messages),
                 "original_char_count": original_chars,
-                "request_char_count": original_chars,
+                "request_char_count": sum(self._estimate_message_chars(m) for m in messages),
                 "estimated_prompt_tokens": estimated_tokens,
                 "token_budget": token_budget,
-                "compaction_method": "none",
+                "compaction_method": "none" if not old_tool_results_compacted else "old-tool-prune",
                 "summarized_message_count": 0,
                 "dropped_message_count": 0,
-                "truncated_message_count": 0,
-                "tool_message_compaction_count": 0,
-                "recent_messages_kept": original_count,
+                "truncated_message_count": old_tool_results_compacted,
+                "tool_message_compaction_count": old_tool_results_compacted,
+                "old_tool_results_compacted": old_tool_results_compacted,
+                "recent_messages_kept": len(messages),
             }
 
         prepared = [m.model_copy(deep=True) for m in messages]
@@ -452,6 +529,7 @@ class ContextWindowManager:
                 "dropped_message_count": 0,
                 "truncated_message_count": truncated_messages,
                 "tool_message_compaction_count": tool_messages_compacted,
+                "old_tool_results_compacted": old_tool_results_compacted,
                 "recent_messages_kept": len(prepared),
                 "invalid_tool_message_count": invalid_dropped,
             }
@@ -527,6 +605,7 @@ class ContextWindowManager:
             "dropped_message_count": dropped_messages,
             "truncated_message_count": truncated_messages,
             "tool_message_compaction_count": tool_messages_compacted,
+            "old_tool_results_compacted": old_tool_results_compacted,
             "recent_messages_kept": recent_kept,
             "invalid_tool_message_count": invalid_tool_messages_dropped,
         }

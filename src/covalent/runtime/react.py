@@ -1776,6 +1776,7 @@ class ReactAgentRuntime(AgentRuntime):
             return
         messages = self._context_window._recent_message_window(messages, self.session_history_limit)
         messages, _ = self._context_window._sanitize_tool_message_sequence(messages)
+        messages = self._context_window._strip_tool_result_images(messages)
         await self.memory_store.save(kind, scope_id, messages)
 
     @staticmethod
