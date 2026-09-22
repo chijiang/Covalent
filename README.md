@@ -175,6 +175,12 @@ Agents, MCP servers, skill sources, and LLM providers are stored in PostgreSQL a
 Use `GET/PUT /config/agents`, `GET/PUT /config/mcp`, `GET/PUT /config/skill_sources`, and `GET/PUT /config/providers` to inspect and update persisted config.
 Use `GET /providers/{provider_name}/models` to fetch the model catalog for a saved provider.
 
+### Browser tools (opt-in)
+
+Set `AGENT_FRAMEWORK_BROWSER_TOOLS_ENABLED=true` and run `playwright install chromium` on the host once to give agents Playwright browser tools: `browser_navigate`, `browser_snapshot`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_press_key`, `browser_evaluate`, `browser_close`. Agents interact via an accessibility-style snapshot (interactive elements get refs `e1`, `e2`, …) and address elements by ref; screenshots are returned inline to vision-capable models. Screenshots ride the same multimodal pipeline as `read_pdf` image pages.
+
+The browser is **not sandboxed** — headless Chromium runs in the API server process with the host's network reach, the same trust boundary as the other in-process builtin tools, and works under both the `filesystem` and `docker` backends. The env flag only controls whether the tools register; **exposure is per-agent** — grant them in agent settings → local tools (nothing is granted by default). Tune headless mode, channel/executable, timeouts, idle-context reaping, and the screenshot byte budget via the `AGENT_FRAMEWORK_BROWSER_*` vars (see [.env.example](.env.example)).
+
 ### Execution Backend
 
 The **execution backend** decides where a session's skill code and ad-hoc scripts run. It is selected by `AGENT_FRAMEWORK_EXECUTION_BACKEND_KIND` and is transparent to agents — the same skill works under any backend.
