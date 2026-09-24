@@ -4,7 +4,7 @@ Each Dockerfile in this folder builds one sandbox image satisfying the
 Covalent sandbox contract v1 (`/bin/sh`, `tail -f /dev/null` keepalive,
 declared runtime binaries on PATH, framework runners at `/runners/`).
 Build context is always the repository root, because the runners are copied
-from `src/covalent/skills/runners/`.
+from `packages/python/execution-native/src/covalent_execution_native/runners/`.
 
 | Dockerfile | Image | Capabilities | Base | Notes |
 |---|---|---|---|---|

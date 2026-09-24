@@ -21,8 +21,8 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 # Framework runners baked into the image. DockerBackend rewrites the host runner
-# path (src/covalent/skills/runners/<name>) to /runners/<name>.
-COPY src/covalent/skills/runners/ /runners/
+# path (packages/python/execution-native/src/covalent_execution_native/runners/<name>) to /runners/<name>.
+COPY packages/python/execution-native/src/covalent_execution_native/runners/ /runners/
 
 LABEL io.covalent.sandbox.contract=1 \
       io.covalent.sandbox.runtimes=python,nodejs

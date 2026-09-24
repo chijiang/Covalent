@@ -1,0 +1,7 @@
+packages:
+  - products/*/web
+  - packages/typescript/*
+allowBuilds:
+  msw: false
+  sharp: false
+  unrs-resolver: false

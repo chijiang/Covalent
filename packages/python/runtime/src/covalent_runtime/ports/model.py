@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
+
+
+from covalent_runtime.domain.types import Capability, GenerationRequest, GenerationResponse
+
+
+from covalent_contracts.model import ProviderConfig as ProviderConfig
+
+
+class ModelProviderError(RuntimeError):
+    def __init__(self, provider: str, detail: str, status_code: int | None = None) -> None:
+        self.provider = provider
+        self.status_code = status_code
+        self.detail = detail
+        suffix = f" ({status_code})" if status_code is not None else ""
+        super().__init__(f"Provider '{provider}' failed{suffix}: {detail}")
+
+
+class ModelAdapter(ABC):
+    def __init__(self, config: ProviderConfig) -> None:
+        self.config = config
+
+    @property
+    @abstractmethod
+    def capabilities(self) -> set[Capability]:
+        raise NotImplementedError
+
+    def supports(self, capability: Capability) -> bool:
+        return capability in self.capabilities
+
+    @abstractmethod
+    async def generate(self, request: GenerationRequest) -> GenerationResponse:
+        raise NotImplementedError
+
+    async def stream(self, request: GenerationRequest) -> AsyncIterator[str]:
+        raise NotImplementedError("Streaming not implemented for this provider")
+
+    async def stream_generation(
+        self, request: GenerationRequest
+    ) -> AsyncIterator[tuple[str, "GenerationResponse | str"]]:
+        """Streaming variant of ``generate``.
+
+        Yields ``("delta", text)`` fragments as they arrive and finishes with
+        exactly one ``("response", GenerationResponse)`` item aggregated to the
+        same shape ``generate`` produces. The base implementation falls back to
+        a single whole-text delta so callers need no capability branching.
+        """
+        response = await self.generate(request)
+        text = response.output_text or ""
+        if text:
+            yield ("delta", text)
+        yield ("response", response)
+
+    async def aclose(self) -> None:
+        return None
+
+    async def list_models(self) -> list[str]:
+        raise NotImplementedError("Model catalog not implemented for this provider")

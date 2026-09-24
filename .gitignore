@@ -31,15 +31,14 @@ __pycache__
 *.pyo
 *.pyd
 
-# python env
-uv.lock
+# Workspace lockfiles are versioned.
 
 # tmp
 tmp
 
 # build
 .next
-frontend/next-env.d.ts
+**/next-env.d.ts
 
 # Local generated artifacts
 .pnpm-store/

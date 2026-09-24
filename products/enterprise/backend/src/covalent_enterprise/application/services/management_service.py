@@ -1,0 +1,1285 @@
+"""Agent / provider / config-document / management helpers.
+
+Extracted from ``app.py``. Module-level imports reach into ``_shared``,
+``_skill_helpers`` and ``_runtime_apply`` — the one-way DAG is:
+``_shared <- _skill_helpers <- _runtime_apply <- _config_helpers``.
+``_skill_helpers`` never imports this module at module level (only lazily).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from datetime import UTC, datetime
+from typing import Any, Literal
+
+import yaml
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from covalent_enterprise.application.errors import (ConflictError, ForbiddenError, InvalidInputError, NotFoundError)
+from covalent_enterprise.application._utils import RESOURCE_METADATA_FIELDS, _dedupe_strings, _new_chat_item_id
+from covalent_enterprise.application.audit import RequestMetadata, record_audit
+from covalent_enterprise.application.principal import Principal as ConsolePrincipalContext
+from covalent_enterprise.application.services.skill_service import (
+    _build_skill_management_export_payload,
+    _import_skill_management_payload,
+)
+from covalent_enterprise.application.services.runtime_apply import _apply_runtime_config
+from covalent_enterprise.application.principal import ApiPrincipal
+from covalent_enterprise.application.schemas import (
+    ConfigDocumentResponse,
+    LocalToolSummaryResponse,
+    ManagementExportFormat,
+    ManagementImportResponse,
+    ManagementKind,
+    PublicationRequestResponse,
+    PublicAgentListResponse,
+    PublicAgentSummary,
+)
+from covalent_contracts.agent import AgentSpec
+from covalent_agent_kit.tools.shell_tools import RUN_SHELL_TOOL, register_shell_tool
+from covalent_agent_kit.tools.browser_tools import BROWSER_TOOL_NAMES, register_browser_tools
+from covalent_runtime.domain.types import Capability, RunContext, UserInputRequest, UserQuestion, UserQuestionOption
+from covalent_agent_kit.tools.workspace_tools import register_workspace_tools
+from covalent_agent_kit.tools.pdf_tools import register_pdf_tools
+from covalent_enterprise.infra.config_store import ConfigKind, ConfigStore, ConfigPrincipal, PersistedAgentConfig, PersistedSkillSourceConfig, _scoped_resource_name
+from covalent_enterprise.infra.db import AgentRow, DatabaseManager, McpServerRow, ProviderRow, SkillSourceRow
+from covalent_enterprise.infra.delegate_repository import DelegateRunRecord, DelegateRunStore
+from covalent_enterprise.infra.memory import ChatSessionSummary
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_agent_kit.mcp.client import McpSdkClient
+from covalent_contracts.mcp import McpServerConfig, McpToolReference
+from covalent_runtime.ports.model import ProviderConfig
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_runtime.ports.execution import ExecutionBackend
+from covalent_agent_kit.skills.loader import SkillLoader, normalize_git_source_payload
+from covalent_agent_kit.skills.meta_tools import register_skill_meta_tools
+
+logger = logging.getLogger(__name__)
+
+# Default reasoning prompt for the seeded default agent. Previously sourced from
+# the removed `reasoning_skill_instructions` legacy-skill setting; kept here so
+# the default agent's behavior is unchanged now that the migration shim is gone.
+DEFAULT_REASONING_PROMPT = (
+    "Use a ReAct loop when it helps: understand the task, decide whether the current context is sufficient, "
+    "use the most relevant tool or delegate only when it reduces uncertainty, incorporate observations, "
+    "repeat only as needed, and stop once you can answer confidently. Keep the final response clear, direct, "
+    "and grounded in the evidence you observed."
+)
+
+# First-boot seed for the default agent (only when the agents table is empty).
+# The seeded agent's provider is an empty shell — it backfills at runtime from
+# whichever provider is registered in the Service Console, so a fresh
+# deployment is not pinned to any model vendor.
+DEFAULT_AGENT_DESCRIPTION = "General-purpose ReAct agent"
+DEFAULT_AGENT_SYSTEM_PROMPT = (
+    "You are a general-purpose ReAct assistant. Help the user by understanding the goal, "
+    "using available tools or delegates only when they improve accuracy or reduce uncertainty, "
+    "and providing clear, grounded final answers."
+)
+DEFAULT_AGENT_MAX_ITERATIONS = 10
+
+WORKSPACE_AGENT_TOOLS = (
+    "list_workspace_files",
+    "read_workspace_file",
+    "search_workspace_files",
+    "edit_workspace_file",
+    "write_workspace_file",
+    "create_workspace_directory",
+    "copy_workspace_entry",
+    "move_workspace_entry",
+    "delete_workspace_entry",
+    "zip_workspace_entries",
+    "unzip_workspace_archive",
+    "publish_downloadable_file",
+    "read_pdf",
+)
+
+BUILTIN_AGENT_TOOLS = ("get_current_time", "ask_user", *WORKSPACE_AGENT_TOOLS)
+
+DEFAULT_AGENT_LOCAL_TOOLS = ("get_current_time",)
+
+def _default_agent_local_tools(settings: AppSettings | None) -> list[str]:
+    if settings is not None and not settings.enable_builtin_tools:
+        return []
+    return list(DEFAULT_AGENT_LOCAL_TOOLS)
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, str)]
+
+
+def _object_list(value: object) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    return list(value)
+
+
+def _normalize_agent_payload_item(item: dict[str, object], settings: AppSettings | None) -> dict[str, object]:
+    normalized = dict(item)
+    skills = _dedupe_strings(_string_list(normalized.get("skills")))
+    local_tools = [t for t in _dedupe_strings(_string_list(normalized.get("local_tools"))) if t != "echo"]
+    reasoning_prompt_raw = normalized.get("reasoning_prompt")
+    reasoning_prompt = reasoning_prompt_raw.strip() if isinstance(reasoning_prompt_raw, str) else ""
+    reasoning_level_raw = normalized.get("reasoning_level")
+    reasoning_level = reasoning_level_raw.strip().lower() if isinstance(reasoning_level_raw, str) else "none"
+    if not reasoning_level:
+        reasoning_level = "none"
+
+    normalized["skills"] = skills
+    if "local_tools" not in item:
+        local_tools = _dedupe_strings(local_tools + _default_agent_local_tools(settings))
+    normalized["local_tools"] = local_tools
+    allowed_outbound = _dedupe_strings(_string_list(normalized.get("allowed_outbound")))
+    normalized["allowed_outbound"] = allowed_outbound
+    normalized["reasoning_prompt"] = reasoning_prompt
+    normalized["reasoning_level"] = reasoning_level
+    return normalized
+
+async def enforce_agent_delegate_run_checks(
+    run_store: DelegateRunStore,
+    *,
+    payload_names: set[str],
+    current_document: list[dict[str, object]],
+    renamed_from: set[str],
+    principal: ConfigPrincipal | None = None,
+) -> None:
+    """Reject agent removals/renames that would strand active delegate runs.
+
+    Spec v1 choice: conflict, not migrate. A name being removed (present in
+    the current document but absent from the payload) or renamed away (an
+    ``agent_renames`` old_name) with any ACTIVE delegate run raises a
+    ConflictError listing each run id and status compactly; terminal runs are
+    audit rows only and never block the save.
+
+    Run rows store registry-INTERNAL agent names — the public name for
+    admin-owned agents, ``public__user_<suffix>`` for user-owned ones — so
+    each affected public name is mapped through the current document's
+    ``internal_name`` (falling back to the save path's scoped-name rule)
+    before querying the run store, and the raw public name is queried too
+    (identity for admins, belt-and-braces for renamed rows).
+    """
+    internal_by_public: dict[str, str] = {}
+    current_names: set[str] = set()
+    for item in current_document:
+        public = str(item.get("name") or "").strip()
+        if not public:
+            continue
+        current_names.add(public)
+        internal = str(item.get("internal_name") or "").strip()
+        internal_by_public[public] = internal or _scoped_resource_name(public, principal)
+    affected = (current_names - payload_names) | renamed_from
+    for name in sorted(affected):
+        candidates = {internal_by_public.get(name, name), name}
+        active: list[DelegateRunRecord] = []
+        seen: set[str] = set()
+        for candidate in sorted(candidates):
+            for record in await run_store.list_active_for_agent(candidate):
+                if record.id not in seen:
+                    seen.add(record.id)
+                    active.append(record)
+        if not active:
+            continue
+        listing = ", ".join(f"{record.id}({record.status.value})" for record in active)
+        raise ConflictError(
+            f"Agent '{name}' has active delegate runs: {listing}. "
+            "Release them before renaming or removing the agent."
+        )
+
+async def build_registry(
+    settings: AppSettings,
+    config_store: ConfigStore,
+    backend: ExecutionBackend | None = None,
+) -> tuple[FrameworkRegistry, SkillLoader, list[dict[str, object]]]:
+    settings.ensure_managed_skill_directories()
+    registry = FrameworkRegistry()
+    register_skill_meta_tools(registry, settings, backend)
+    mcp_payload = await config_store.ensure_document("mcp", [])
+    mcp_servers = _parse_mcp_servers(mcp_payload)
+    if settings.enable_builtin_tools:
+        register_builtin_tools(registry, settings, backend)
+
+    if settings.mcp_enabled:
+        registry.set_mcp_client(McpSdkClient(timeout_seconds=settings.mcp_timeout_seconds))
+        for server in mcp_servers:
+            registry.register_mcp_server(server)
+
+    providers_payload = await config_store.get_document("providers")
+    provider_config = await _resolve_default_provider(settings, config_store, providers_payload)
+    agent_payload = await config_store.ensure_document(
+        "agents",
+        _seed_agent_payload(settings, provider_config, mcp_servers),
+    )
+    for agent in _build_agent_specs(agent_payload, provider_config, mcp_servers, settings, mcp_payload=mcp_payload, providers_payload=providers_payload):
+        registry.register_agent(agent)
+
+    loader = SkillLoader(settings)
+    skill_source_payload = await config_store.ensure_document("skill_sources", [])
+    manifest_skills = loader.discover_local()
+    for spec in manifest_skills:
+        registry.register_manifest_skill(spec)
+        logger.info("Loaded manifest skill '%s' (v%s) from %s", spec.name, spec.version, spec.source_dir)
+
+    return registry, loader, skill_source_payload
+
+def register_builtin_tools(registry: FrameworkRegistry, settings: AppSettings, backend: ExecutionBackend | None = None) -> None:
+    register_workspace_tools(registry, settings)
+    register_pdf_tools(registry, settings)
+    register_shell_tool(registry, settings, backend)
+    registry.register_local_tool(
+        "get_current_time",
+        {
+            "type": "function",
+            "function": {
+                "name": "get_current_time",
+                "description": "Returns the current UTC timestamp.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        },
+        handler=lambda _args, _ctx: datetime.now(UTC).isoformat(),
+    )
+    registry.register_local_tool(
+        "ask_user",
+        {
+            "type": "function",
+            "function": {
+                "name": "ask_user",
+                "description": "Pause the current agent run and ask the user one or more structured questions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "questions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "header": {"type": "string"},
+                                    "question": {"type": "string"},
+                                    "message": {"type": "string"},
+                                    "multiSelect": {"type": "boolean"},
+                                    "allowFreeformInput": {"type": "boolean"},
+                                    "maxSelections": {"type": "integer", "minimum": 1},
+                                    "options": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": {"type": "string"},
+                                                "description": {"type": "string"},
+                                                "recommended": {"type": "boolean"},
+                                            },
+                                            "required": ["label"],
+                                        },
+                                    },
+                                },
+                                "required": ["header", "question"],
+                            },
+                        },
+                    },
+                    "required": ["questions"],
+                },
+            },
+        },
+        handler=_ask_user_handler,
+    )
+    _register_browser_tools_if_enabled(registry, settings)
+
+
+def _register_browser_tools_if_enabled(registry: FrameworkRegistry, settings: AppSettings) -> None:
+    """Opt-in Playwright browser tools, running in-process on the host.
+
+    Registered only when ``browser_tools_enabled`` is set; the manager is
+    attached to the registry so ``aclose`` can tear the browser down. Playwright
+    itself is imported lazily on first use — a missing package or browser
+    binary surfaces as an actionable tool error, not a startup failure.
+    """
+    if not getattr(settings, "browser_tools_enabled", False):
+        return
+    try:
+        from covalent_agent_kit.browser_manager import BrowserManager
+    except ImportError:
+        logger.warning("browser_tools_enabled is set but the browser manager is unavailable; skipping browser tools")
+        return
+    manager = BrowserManager(settings)
+    registry.browser_manager = manager
+    register_browser_tools(registry, settings, manager)
+
+def _ask_user_handler(args: dict[str, Any], _ctx: RunContext | None) -> UserInputRequest:
+    raw_questions = args.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raise ValueError("ask_user requires a non-empty 'questions' array")
+
+    questions: list[UserQuestion] = []
+    for item in raw_questions:
+        if not isinstance(item, dict):
+            raise ValueError("ask_user questions must be objects")
+        normalized_item = dict(item)
+        if "multiSelect" in normalized_item:
+            normalized_item["multi_select"] = normalized_item.pop("multiSelect")
+        if "allowFreeformInput" in normalized_item:
+            normalized_item["allow_freeform_input"] = normalized_item.pop("allowFreeformInput")
+        if "maxSelections" in normalized_item:
+            normalized_item["max_selections"] = normalized_item.pop("maxSelections")
+        if isinstance(normalized_item.get("options"), list):
+            normalized_item["options"] = [
+                UserQuestionOption.model_validate(option).model_dump(mode="python")
+                for option in normalized_item["options"]
+                if isinstance(option, dict)
+            ]
+        questions.append(UserQuestion.model_validate(normalized_item))
+
+    title = str(args.get("title") or "Additional input required").strip() or "Additional input required"
+    return UserInputRequest(
+        id=_new_chat_item_id("question"),
+        tool_name="ask_user",
+        title=title,
+        questions=questions,
+    )
+
+def _available_local_tool_summaries(
+    registry: FrameworkRegistry,
+    settings: AppSettings,
+) -> list[LocalToolSummaryResponse]:
+    default_tools = set(_default_agent_local_tools(settings))
+    summaries: list[LocalToolSummaryResponse] = []
+    # The curated built-in tools, plus the sandbox shell tool (sandbox backend
+    # + flag on) and the browser tools (flag on) when they are registered — so
+    # operators can grant them per-agent in the console; they never show up
+    # under flag-off.
+    candidate_names = list(BUILTIN_AGENT_TOOLS)
+    for conditional in (RUN_SHELL_TOOL, *BROWSER_TOOL_NAMES):
+        if conditional in registry.local_tools and conditional not in candidate_names:
+            candidate_names.append(conditional)
+    for name in candidate_names:
+        tool = registry.local_tools.get(name)
+        if tool is None:
+            continue
+        function_payload = tool.schema.get("function", {}) if isinstance(tool.schema, dict) else {}
+        description = function_payload.get("description") if isinstance(function_payload, dict) else None
+        summaries.append(
+            LocalToolSummaryResponse(
+                name=name,
+                description=description.strip() if isinstance(description, str) and description.strip() else None,
+                enabled_by_default=name in default_tools,
+            )
+        )
+    return summaries
+
+def _api_principal_can_access_agent_row(row: AgentRow, user_id: str) -> bool:
+    """Invoke permission ladder for an agent row: owned by (or ownerless for
+    seeded/legacy rows) the user, or public+approved. Shared by the per-agent
+    invoke guard and the public agent listing so both stay in lockstep."""
+    if row.owner_user_id in {None, "", user_id}:
+        return True
+    return row.visibility == "public" and row.publication_status == "approved"
+
+
+async def _ensure_api_principal_can_invoke_agent(
+    db_manager: DatabaseManager,
+    principal: ApiPrincipal,
+    agent_name: str,
+) -> None:
+    async with db_manager.session_factory() as session:
+        row = await session.get(AgentRow, agent_name)
+        if row is None:
+            return
+        if _api_principal_can_access_agent_row(row, principal.user_id):
+            return
+    raise ForbiddenError(f"Token is not allowed to invoke agent: {agent_name}")
+
+
+async def list_public_agents(
+    db_manager: DatabaseManager,
+    principal: ApiPrincipal,
+    registry: FrameworkRegistry,
+) -> PublicAgentListResponse:
+    """Agents the API principal can invoke on /v1/agent/invoke: the DB
+    permission ladder, intersected with registry membership (enabled agents
+    only) and the token policy's allowed_agents (matched by internal name or
+    display name, mirroring what invoke accepts). Provider/model come from the
+    registry spec — the config that actually runs — matching the invoke
+    response's metadata."""
+    async with db_manager.session_factory() as session:
+        rows = list(await session.scalars(select(AgentRow)))
+    allowed_agents = principal.policy.get("allowed_agents")
+    allowed_names = {str(item) for item in allowed_agents} if isinstance(allowed_agents, list) else None
+    summaries: list[PublicAgentSummary] = []
+    for row in rows:
+        spec = registry.agents.get(row.name)
+        if spec is None:
+            continue
+        if not _api_principal_can_access_agent_row(row, principal.user_id):
+            continue
+        if allowed_names is not None and row.name not in allowed_names and row.display_name not in allowed_names:
+            continue
+        summaries.append(
+            PublicAgentSummary(
+                name=row.name,
+                display_name=row.display_name,
+                description=row.description,
+                metadata={"provider": spec.provider.provider, "model": spec.provider.model},
+            )
+        )
+    summaries.sort(key=lambda summary: summary.name)
+    return PublicAgentListResponse(agents=summaries)
+
+def _resource_display_name(row: object) -> str:
+    return str(getattr(row, "display_name", None) or getattr(row, "name"))
+
+def _visible_resource_clause(model: Any, user_id: str) -> Any:
+    """SQL filter: a resource is visible to ``user_id`` if they own it OR it is
+    public+approved. Used in ``.where(...)`` for agents/mcp/skill-sources.
+    Admin scoping is handled by the caller (they pass a broad clause or none).
+    """
+    return (model.owner_user_id == user_id) | (
+        (model.visibility == "public") & (model.publication_status == "approved")
+    )
+
+def _principal_can_access_resource(principal: ConsolePrincipalContext, row: object) -> bool:
+    """In-memory access ladder for a resource row owned by a console principal.
+    Returns True if the principal owns the row (same user+workspace) or the row
+    is public+approved (including the legacy owner-less case).
+    """
+    if getattr(row, "owner_user_id", None) == principal.user_id and getattr(row, "workspace_id", None) == principal.workspace_id:
+        return True
+    if getattr(row, "owner_user_id", None) in {None, ""} and getattr(row, "visibility", None) == "public" and getattr(row, "publication_status", None) == "approved":
+        return True
+    if getattr(row, "visibility", None) == "public" and getattr(row, "publication_status", None) == "approved":
+        return True
+    return False
+
+def _pick_agent_row_for_principal(
+    rows: list[AgentRow],
+    *,
+    user_id: str,
+    workspace_id: str | None = None,
+) -> AgentRow | None:
+    for row in rows:
+        if row.owner_user_id == user_id and (workspace_id is None or row.workspace_id == workspace_id):
+            return row
+    for row in rows:
+        if row.owner_user_id in {None, ""} and row.visibility == "public" and row.publication_status == "approved":
+            return row
+    for row in rows:
+        if row.visibility == "public" and row.publication_status == "approved":
+            return row
+    return None
+
+async def _resolve_api_agent_name(
+    db_manager: DatabaseManager,
+    principal: ApiPrincipal,
+    agent_name: str,
+) -> str:
+    async with db_manager.session_factory() as session:
+        row = await session.get(AgentRow, agent_name)
+        if row is None:
+            rows = list(await session.scalars(
+                select(AgentRow).where(
+                    AgentRow.display_name == agent_name,
+                    _visible_resource_clause(AgentRow, principal.user_id),
+                )
+            ))
+            row = _pick_agent_row_for_principal(rows, user_id=principal.user_id, workspace_id=principal.workspace_id)
+        if row is None:
+            raise NotFoundError(f"Unknown agent: {agent_name}")
+        return row.name
+
+def _ensure_console_principal_can_access_session(
+    principal: ConsolePrincipalContext,
+    record: ChatSessionSummary,
+) -> None:
+    if principal.is_admin:
+        return
+    if record.owner_user_id == principal.user_id and record.workspace_id == principal.workspace_id:
+        return
+    raise NotFoundError(f"Unknown session: {record.id}")
+
+async def _resolve_console_agent_name(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    agent_name: str,
+) -> str:
+    async with db_manager.session_factory() as session:
+        row = await session.get(AgentRow, agent_name)
+        if row is None:
+            rows = list(await session.scalars(
+                select(AgentRow).where(
+                    AgentRow.display_name == agent_name,
+                    _visible_resource_clause(AgentRow, principal.user_id),
+                )
+            ))
+            row = _pick_agent_row_for_principal(rows, user_id=principal.user_id, workspace_id=principal.workspace_id)
+        if row is None:
+            raise NotFoundError(f"Unknown agent: {agent_name}")
+        return row.name
+
+async def _ensure_console_principal_can_access_agent(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    agent_name: str,
+) -> None:
+    if principal.is_admin:
+        return
+
+    async with db_manager.session_factory() as session:
+        row = await session.get(AgentRow, agent_name)
+        if row is None:
+            return
+        if _principal_can_access_resource(principal, row):
+            return
+    raise NotFoundError(f"Unknown agent: {agent_name}")
+
+async def _ensure_console_principal_can_access_mcp_server(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    server_name: str,
+) -> None:
+    if principal.is_admin:
+        return
+
+    async with db_manager.session_factory() as session:
+        row = await session.get(McpServerRow, server_name)
+        if row is None:
+            rows = list(
+                await session.scalars(
+                    select(McpServerRow).where(
+                        McpServerRow.display_name == server_name,
+                        _visible_resource_clause(McpServerRow, principal.user_id),
+                    )
+                )
+            )
+            row = _pick_resource_row_for_principal(rows, principal)
+        if row is None:
+            raise NotFoundError(f"Unknown MCP server: {server_name}")
+        if _principal_can_access_resource(principal, row):
+            return
+    raise NotFoundError(f"Unknown MCP server: {server_name}")
+
+def _publication_response(kind: ConfigKind, row: object, name: str) -> PublicationRequestResponse:
+    return PublicationRequestResponse(
+        kind=kind,
+        name=name,
+        visibility=str(getattr(row, "visibility", "private") or "private"),
+        publication_status=str(getattr(row, "publication_status", "draft") or "draft"),
+    )
+
+def _pick_resource_row_for_principal(
+    rows: list[object],
+    principal: ConsolePrincipalContext | None,
+) -> object | None:
+    if not rows:
+        return None
+    if principal is not None and not principal.is_admin:
+        for row in rows:
+            if getattr(row, "owner_user_id", None) == principal.user_id and getattr(row, "workspace_id", None) == principal.workspace_id:
+                return row
+    for row in rows:
+        if getattr(row, "publication_status", None) == "pending":
+            return row
+    for row in rows:
+        if getattr(row, "visibility", None) == "public" and getattr(row, "publication_status", None) == "approved":
+            return row
+    return rows[0]
+
+async def _find_resource_row(
+    session: AsyncSession,
+    kind: ConfigKind,
+    resource_name: str,
+    principal: ConsolePrincipalContext | None = None,
+) -> tuple[object, str]:
+    if kind == "agents":
+        row = await session.get(AgentRow, resource_name)
+        if row is None:
+            rows = list(await session.scalars(select(AgentRow).where(AgentRow.display_name == resource_name)))
+            row = _pick_resource_row_for_principal(rows, principal)
+        if row is None:
+            raise NotFoundError(f"Unknown agent: {resource_name}")
+        return row, _resource_display_name(row)
+
+    if kind == "mcp":
+        row = await session.get(McpServerRow, resource_name)
+        if row is None:
+            rows = list(await session.scalars(select(McpServerRow).where(McpServerRow.display_name == resource_name)))
+            row = _pick_resource_row_for_principal(rows, principal)
+        if row is None:
+            raise NotFoundError(f"Unknown MCP server: {resource_name}")
+        return row, _resource_display_name(row)
+
+    if kind == "providers":
+        row = await session.scalar(select(ProviderRow).where(ProviderRow.name == resource_name))
+        if row is None:
+            rows = list(await session.scalars(select(ProviderRow).where(ProviderRow.display_name == resource_name)))
+            row = _pick_resource_row_for_principal(rows, principal)
+        if row is None:
+            raise NotFoundError(f"Unknown provider: {resource_name}")
+        return row, _resource_display_name(row)
+
+    row = await session.scalar(select(SkillSourceRow).where(SkillSourceRow.name == resource_name))
+    if row is None and resource_name.isdigit():
+        row = await session.get(SkillSourceRow, int(resource_name))
+    if row is None:
+        raise NotFoundError(f"Unknown skill source: {resource_name}")
+    return row, row.name or str(row.id)
+
+def _ensure_console_principal_owns_resource(principal: ConsolePrincipalContext, row: object, resource_name: str) -> None:
+    if principal.is_admin:
+        return
+    owner_user_id = getattr(row, "owner_user_id", None)
+    workspace_id = getattr(row, "workspace_id", None)
+    if owner_user_id == principal.user_id and workspace_id == principal.workspace_id:
+        return
+    raise NotFoundError(f"Unknown resource: {resource_name}")
+
+async def _request_resource_publication(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    kind: ConfigKind,
+    resource_name: str,
+    request_metadata: RequestMetadata | None = None,
+) -> PublicationRequestResponse:
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            row, display_name = await _find_resource_row(session, kind, resource_name, principal)
+            _ensure_console_principal_owns_resource(principal, row, resource_name)
+            if getattr(row, "owner_user_id", None) in {None, ""}:
+                setattr(row, "owner_user_id", principal.user_id)
+            if getattr(row, "workspace_id", None) in {None, ""}:
+                setattr(row, "workspace_id", principal.workspace_id)
+            setattr(row, "visibility", "private")
+            setattr(row, "publication_status", "pending")
+            setattr(row, "publication_requested_at", datetime.now(UTC))
+            setattr(row, "publication_reviewed_at", None)
+            setattr(row, "publication_reviewed_by_user_id", None)
+            response = _publication_response(kind, row, display_name)
+    await record_audit(
+        db_manager,
+        action="publication.requested",
+        target_type=kind,
+        target_id=response.name,
+        principal=principal,
+        request_metadata=request_metadata,
+        metadata={"visibility": response.visibility, "publication_status": response.publication_status},
+    )
+    return response
+
+async def _review_resource_publication(
+    db_manager: DatabaseManager,
+    principal: ConsolePrincipalContext,
+    kind: ConfigKind,
+    resource_name: str,
+    status: Literal["approved", "rejected"],
+    request_metadata: RequestMetadata | None = None,
+) -> PublicationRequestResponse:
+    if not principal.is_admin:
+        raise ForbiddenError("Only admins can review publication requests")
+
+    async with db_manager.session_factory() as session:
+        async with session.begin():
+            row, display_name = await _find_resource_row(session, kind, resource_name, principal)
+            if status == "approved":
+                setattr(row, "visibility", "public")
+                setattr(row, "publication_status", "approved")
+            else:
+                setattr(row, "visibility", "private")
+                setattr(row, "publication_status", "rejected")
+            setattr(row, "publication_reviewed_at", datetime.now(UTC))
+            setattr(row, "publication_reviewed_by_user_id", principal.user_id)
+            response = _publication_response(kind, row, display_name)
+    await record_audit(
+        db_manager,
+        action=f"publication.{status}",
+        target_type=kind,
+        target_id=response.name,
+        principal=principal,
+        request_metadata=request_metadata,
+        metadata={"visibility": response.visibility, "publication_status": response.publication_status},
+    )
+    return response
+
+def _normalize_management_kind(kind: str) -> ManagementKind:
+    if kind not in {"agents", "mcp", "skills"}:
+        raise NotFoundError(f"Unknown management kind: {kind}")
+    return kind
+
+def _normalize_management_export_format(value: str) -> ManagementExportFormat:
+    normalized = value.strip().lower()
+    if normalized not in {"yaml", "json"}:
+        raise InvalidInputError(f"Unsupported export format: {value}")
+    return normalized  # type: ignore[return-value]
+
+async def _build_management_export_payload(
+    registry: FrameworkRegistry,
+    settings: AppSettings,
+    config_store: ConfigStore,
+    kind: ManagementKind,
+    principal: ConsolePrincipalContext,
+) -> tuple[dict[str, Any], int]:
+    exported_at = datetime.now(UTC).isoformat()
+
+    if kind in {"agents", "mcp"}:
+        raw_items = await config_store.get_document(kind, principal.config)
+        items = [
+            _normalize_agent_payload_item(item, settings) if kind == "agents" else item
+            for item in raw_items
+        ]
+        return {
+            "version": 1,
+            "kind": kind,
+            "exported_at": exported_at,
+            "items": items,
+        }, len(items)
+
+    payload = await _build_skill_management_export_payload(registry, settings, config_store, principal)
+    return payload, len(payload.get("items", []))
+
+def _serialize_management_export_payload(
+    payload: dict[str, Any],
+    export_format: ManagementExportFormat,
+) -> str:
+    if export_format == "yaml":
+        return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+    return f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+
+async def _import_management_payload(
+    db_manager: DatabaseManager,
+    registry: FrameworkRegistry,
+    config_store: ConfigStore,
+    settings: AppSettings,
+    loader: SkillLoader,
+    execution_backend: ExecutionBackend,
+    kind: ManagementKind,
+    raw_text: str,
+    file_name: str | None,
+    principal: ConsolePrincipalContext,
+    request_metadata: RequestMetadata | None = None,
+    sandbox_profile_service: Any | None = None,
+) -> ManagementImportResponse:
+    parsed = _parse_management_upload(raw_text, file_name)
+
+    if kind in {"agents", "mcp"}:
+        raw_items = _extract_management_items(kind, parsed)
+        validated = _validate_config_payload(kind, raw_items, settings)
+        if kind == "agents" and sandbox_profile_service is not None:
+            from .sandbox_profile_service import skill_runtime_lookup_from_registry
+            await sandbox_profile_service.validate_agent_selections(
+                validated,
+                workspace_id=principal.workspace_id,
+                skill_runtime_lookup=skill_runtime_lookup_from_registry(registry),
+            )
+        saved = await config_store.save_document(kind, validated, principal=principal.config)
+        await _apply_runtime_config(registry, config_store, settings, loader, execution_backend, kind, await config_store.get_document(kind))
+        label = "agents" if kind == "agents" else "MCP services"
+        response = ManagementImportResponse(
+            kind=kind,
+            imported_items=len(validated),
+            applied_items=len(saved),
+            summary=f"Imported {len(saved)} {label}.",
+        )
+        await record_audit(
+            db_manager,
+            action="management.imported",
+            target_type=kind,
+            target_id=file_name,
+            principal=principal,
+            request_metadata=request_metadata,
+            metadata={"imported_items": response.imported_items, "applied_items": response.applied_items},
+        )
+        return response
+
+    response = await _import_skill_management_payload(registry, config_store, settings, loader, execution_backend, parsed, principal)
+    await record_audit(
+        db_manager,
+        action="management.imported",
+        target_type=kind,
+        target_id=file_name,
+        principal=principal,
+        request_metadata=request_metadata,
+        metadata={"imported_items": response.imported_items, "applied_items": response.applied_items},
+    )
+    return response
+
+def _parse_management_upload(raw_text: str, file_name: str | None) -> Any:
+    if not raw_text.strip():
+        raise InvalidInputError("Imported file is empty")
+    try:
+        parsed = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        target_name = file_name or "uploaded file"
+        raise InvalidInputError(f"Could not parse {target_name}: {exc}") from exc
+    if parsed is None:
+        raise InvalidInputError("Imported file did not contain any configuration data")
+    return parsed
+
+def _extract_management_items(kind: ConfigKind, payload: Any) -> list[object]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        raise InvalidInputError("Imported configuration must be a YAML/JSON object or array")
+
+    payload_kind = payload.get("kind")
+    if isinstance(payload_kind, str) and payload_kind and payload_kind != kind:
+        raise InvalidInputError(f"Imported file is for '{payload_kind}', not '{kind}'")
+
+    items = payload.get("items")
+    if items is None and isinstance(payload.get("data"), list):
+        items = payload.get("data")
+    if not isinstance(items, list):
+        raise InvalidInputError("Imported configuration must include an 'items' array")
+    return items
+
+def _normalize_config_kind(kind: str) -> ConfigKind:
+    if kind not in {"agents", "mcp", "skill_sources", "providers"}:
+        raise NotFoundError(f"Unknown config kind: {kind}")
+    return kind
+
+def _config_document_response(kind: ConfigKind, payload: list[dict[str, object]], settings: AppSettings) -> ConfigDocumentResponse:
+    label_map = {"agents": "Agents", "mcp": "MCP Servers", "skill_sources": "Skill Sources", "providers": "Providers"}
+    normalized_payload = [
+        _normalize_agent_payload_item(item, settings) if kind == "agents" else item
+        for item in payload
+    ]
+    if kind == "providers":
+        normalized_payload = [_mask_provider_api_key(item) for item in normalized_payload]
+    return ConfigDocumentResponse(
+        kind=kind,
+        label=label_map[kind],
+        filePath=f"postgres://config/{kind}",
+        raw=f"{json.dumps(normalized_payload, ensure_ascii=False, indent=2)}\n",
+        exampleRaw=_example_config_raw(kind),
+        data=normalized_payload,
+    )
+
+# Static config examples shown in the Service Console ("load example").
+# Agents, MCP servers, and skill sources are managed entirely in the console;
+# these are the same placeholder shapes the providers example uses.
+_STATIC_CONFIG_EXAMPLES: dict[str, list[dict[str, object]]] = {
+    "agents": [
+        {
+            "name": "my-agent",
+            "description": "Describe what this agent does",
+            "system_prompt": "You are a helpful assistant.",
+            "provider": {"provider": "openai_compatible", "model": "gpt-4.1", "base_url": "https://api.openai.com/v1", "api_key": "sk-..."},
+            "skills": [],
+            "local_tools": ["get_current_time"],
+            "capabilities": ["chat", "react", "tool_calling", "streaming"],
+            "max_iterations": 10,
+        }
+    ],
+    "mcp": [
+        {"name": "docs", "transport": "streamable_http", "url": "http://localhost:8001/mcp"}
+    ],
+    "skill_sources": [
+        {"source_type": "git", "name": "my-skill", "url": "https://github.com/owner/repo.git", "subdir": "skills/my-skill"}
+    ],
+}
+
+
+def _example_config_raw(kind: ConfigKind) -> str:
+    if kind == "providers":
+        example = {
+            "name": "my-provider",
+            "provider_type": "openai_compatible",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-...",
+            "default_model": "gpt-4.1",
+            "position": 0,
+        }
+        return f"{json.dumps([example], ensure_ascii=False, indent=2)}\n"
+    return f"{json.dumps(_STATIC_CONFIG_EXAMPLES[kind], ensure_ascii=False, indent=2)}\n"
+
+
+def _seed_agent_payload(
+    settings: AppSettings,
+    provider_config: ProviderConfig,
+    mcp_servers: list[McpServerConfig],
+) -> list[dict[str, object]]:
+    default_item = PersistedAgentConfig(
+        name="default",
+        description=DEFAULT_AGENT_DESCRIPTION,
+        system_prompt=DEFAULT_AGENT_SYSTEM_PROMPT,
+        reasoning_prompt=DEFAULT_REASONING_PROMPT,
+        provider=provider_config,
+        skills=[],
+        local_tools=_default_agent_local_tools(settings),
+        mcp_servers=[server.name for server in mcp_servers],
+        capabilities={Capability.CHAT, Capability.REACT, Capability.TOOL_CALLING, Capability.STREAMING},
+        max_iterations=DEFAULT_AGENT_MAX_ITERATIONS,
+    )
+    return [default_item.model_dump(mode="json")]
+
+def _validate_config_payload(kind: ConfigKind, payload: list[object], settings: AppSettings | None = None) -> list[dict[str, object]]:
+    if kind == "mcp":
+        normalized_servers: list[dict[str, object]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise InvalidInputError("MCP server entries must be JSON objects")
+            normalized = McpServerConfig.model_validate(item).model_dump(mode="json")
+            normalized.update({field: item[field] for field in RESOURCE_METADATA_FIELDS if field in item})
+            normalized_servers.append(normalized)
+        return normalized_servers
+
+    if kind == "providers":
+        from covalent_enterprise.infra.config_store import PersistedProviderConfig
+        normalized_providers = [PersistedProviderConfig.model_validate(item).model_dump(mode="json") for item in payload]
+        default_model_names = [
+            str(item.get("name") or "")
+            for item in normalized_providers
+            if str(item.get("default_model") or "").strip()
+        ]
+        if len(default_model_names) > 1:
+            raise InvalidInputError(
+                "Only one provider may declare a default_model. "
+                f"Found: {', '.join(default_model_names)}"
+            )
+
+        if default_model_names:
+            default_name = default_model_names[0]
+            return [
+                {
+                    **item,
+                    "default_model": str(item.get("default_model") or "").strip(),
+                    "is_default": str(item.get("name") or "") == default_name,
+                }
+                for item in normalized_providers
+            ]
+
+        legacy_default_names = [
+            str(item.get("name") or "")
+            for item in normalized_providers
+            if bool(item.get("is_default"))
+        ]
+        if len(legacy_default_names) > 1:
+            raise InvalidInputError(
+                "Only one provider may be marked as default. "
+                f"Found: {', '.join(legacy_default_names)}"
+            )
+
+        return [
+            {
+                **item,
+                "default_model": str(item.get("default_model") or "").strip(),
+            }
+            for item in normalized_providers
+        ]
+
+    if kind == "skill_sources":
+        normalized_sources: list[dict[str, object]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise InvalidInputError("Skill source entries must be JSON objects")
+            normalized = normalize_git_source_payload(item)
+            if normalized is None:
+                raise InvalidInputError("Only git skill sources are currently supported")
+            normalized.update({field: item[field] for field in RESOURCE_METADATA_FIELDS if field in item})
+            normalized_sources.append(PersistedSkillSourceConfig.model_validate(normalized).model_dump(mode="json"))
+        return normalized_sources
+
+    seen_names: set[str] = set()
+    normalized: list[dict[str, object]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise InvalidInputError("Agent config entries must be JSON objects")
+        normalized_item = dict(item)
+        mcp_refs = normalized_item.get("mcp_servers", [])
+        if isinstance(mcp_refs, list):
+            normalized_item["mcp_servers"] = [
+                ref if isinstance(ref, str) else str(ref.get("name"))
+                for ref in mcp_refs
+                if isinstance(ref, str) or (isinstance(ref, dict) and ref.get("name"))
+            ]
+        tool_refs = normalized_item.get("mcp_tools", [])
+        if isinstance(tool_refs, list):
+            normalized_item["mcp_tools"] = [
+                McpToolReference.model_validate(tool_ref).model_dump(mode="json")
+                for tool_ref in tool_refs
+                if isinstance(tool_ref, dict)
+            ]
+        normalized_item = _normalize_agent_payload_item(normalized_item, settings)
+        agent = PersistedAgentConfig.model_validate(normalized_item)
+        if agent.name in seen_names:
+            raise InvalidInputError(f"Duplicate agent name: {agent.name}")
+        # The runtime agent name (internal_name when set, else the public name)
+        # becomes delegate tool names (agent__<name>) that reach OpenAI-compatible
+        # providers verbatim; anything outside ^[a-zA-Z0-9_-]+$ fails the whole
+        # model request with a 400. A display name with spaces is fine as long
+        # as a valid internal_name carries the runtime identity.
+        runtime_name = (agent.internal_name or "").strip() or agent.name
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", runtime_name):
+            raise InvalidInputError(
+                f"Invalid agent name: '{agent.name}'. The runtime agent name (internal_name "
+                "when set, else name) may only contain letters, digits, '-' and '_' — no "
+                "spaces, dots, or non-ASCII characters."
+            )
+        referenced_servers = {tool.server_name for tool in agent.mcp_tools}
+        missing_server_refs = sorted(referenced_servers.difference(agent.mcp_servers))
+        if missing_server_refs:
+            raise InvalidInputError(
+                    f"Agent '{agent.name}' has MCP tool selections for unselected servers: {', '.join(missing_server_refs)}"
+        )
+        seen_names.add(agent.name)
+        normalized.append(agent.model_dump(mode="json"))
+    return normalized
+
+def _extract_agent_renames(metadata: object) -> dict[str, str]:
+    if not isinstance(metadata, dict):
+        return {}
+
+    raw_renames = metadata.get("agent_renames")
+    if not isinstance(raw_renames, list):
+        return {}
+
+    rename_map: dict[str, str] = {}
+    for item in raw_renames:
+        if not isinstance(item, dict):
+            continue
+        old_name = item.get("old_name")
+        new_name = item.get("new_name")
+        if not isinstance(old_name, str) or not isinstance(new_name, str):
+            continue
+        old_normalized = old_name.strip()
+        new_normalized = new_name.strip()
+        if not old_normalized or not new_normalized or old_normalized == new_normalized:
+            continue
+        rename_map[old_normalized] = new_normalized
+
+    return rename_map
+
+def _parse_mcp_servers(payload: list[dict[str, object]]) -> list[McpServerConfig]:
+    return [McpServerConfig.model_validate(_runtime_named_resource_payload(item)) for item in payload]
+
+def _runtime_named_resource_payload(item: dict[str, object]) -> dict[str, object]:
+    runtime_item = dict(item)
+    internal_name = runtime_item.get("internal_name")
+    if isinstance(internal_name, str) and internal_name.strip():
+        runtime_item["name"] = internal_name.strip()
+    return runtime_item
+
+def _runtime_agent_payload_item(
+    item: dict[str, object],
+    *,
+    mcp_internal_by_public: dict[str, str] | None = None,
+    agent_internal_by_public: dict[str, str] | None = None,
+) -> dict[str, object]:
+    runtime_item = _runtime_named_resource_payload(item)
+    mcp_internal_by_public = mcp_internal_by_public or {}
+    agent_internal_by_public = agent_internal_by_public or {}
+
+    if mcp_internal_by_public:
+        runtime_item["mcp_servers"] = [
+            mcp_internal_by_public.get(server_name, server_name)
+            for server_name in _string_list(runtime_item.get("mcp_servers"))
+        ]
+        mapped_tools: list[dict[str, object]] = []
+        for tool_ref in _object_list(runtime_item.get("mcp_tools")):
+            if not isinstance(tool_ref, dict):
+                continue
+            key = tool_ref.get("server_name")
+            mapped = mcp_internal_by_public.get(key, key) if isinstance(key, str) else key
+            mapped_tools.append({**tool_ref, "server_name": mapped})
+        runtime_item["mcp_tools"] = mapped_tools
+
+    if agent_internal_by_public:
+        runtime_item["delegate_agents"] = [
+            agent_internal_by_public.get(agent_name, agent_name)
+            for agent_name in _string_list(runtime_item.get("delegate_agents"))
+        ]
+    return runtime_item
+
+def _runtime_internal_name_map(payload: list[dict[str, object]]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for item in payload:
+        name = item.get("name")
+        internal_name = item.get("internal_name")
+        if not isinstance(name, str) or not name:
+            continue
+        resolved_name = internal_name.strip() if isinstance(internal_name, str) and internal_name.strip() else name
+        mapping[name] = resolved_name
+        mapping[resolved_name] = resolved_name
+    return mapping
+
+def _build_agent_specs(
+    payload: list[dict[str, object]],
+    provider_config: ProviderConfig,
+    mcp_servers: list[McpServerConfig],
+    settings: AppSettings,
+    *,
+    mcp_payload: list[dict[str, object]] | None = None,
+    providers_payload: list[dict[str, object]] | None = None,
+) -> list[AgentSpec]:
+    mcp_by_name = {server.name: server for server in mcp_servers}
+    mcp_internal_by_public = _runtime_internal_name_map(mcp_payload or [])
+    agent_internal_by_public = _runtime_internal_name_map(payload)
+    agents: list[AgentSpec] = []
+    for item in payload:
+        if item.get("enabled", True) is False:
+            continue
+        runtime_item = _runtime_agent_payload_item(
+            item,
+            mcp_internal_by_public=mcp_internal_by_public,
+            agent_internal_by_public=agent_internal_by_public,
+        )
+        persisted = PersistedAgentConfig.model_validate(_normalize_agent_payload_item(runtime_item, settings))
+        selected_provider = provider_config
+        if persisted.provider.base_url:
+            for candidate in providers_payload or []:
+                if (
+                    candidate.get("provider_type") == persisted.provider.provider
+                    and str(candidate.get("base_url", "")).rstrip("/") == persisted.provider.base_url.rstrip("/")
+                    and (
+                        not candidate.get("owner_user_id")
+                        or candidate.get("owner_user_id") == item.get("owner_user_id")
+                        or (candidate.get("visibility") == "public" and candidate.get("publication_status") == "approved")
+                    )
+                ):
+                    selected_provider = ProviderConfig(
+                        provider=str(candidate["provider_type"]),
+                        model=str(candidate.get("default_model") or ""),
+                        base_url=str(candidate["base_url"]),
+                        api_style=candidate.get("api_style"),
+                        api_key=candidate.get("api_key"),
+                        apih=candidate.get("apih"),
+                        timeout_seconds=settings.request_timeout_seconds,
+                    )
+                    break
+        resolved_mcp = [mcp_by_name[name] for name in persisted.mcp_servers if name in mcp_by_name]
+        agents.append(
+            AgentSpec(
+                name=persisted.name,
+                description=persisted.description,
+                system_prompt=persisted.system_prompt,
+                reasoning_prompt=persisted.reasoning_prompt,
+                reasoning_level=persisted.reasoning_level,
+                provider=_merge_provider_config(persisted.provider, selected_provider),
+                skills=persisted.skills,
+                local_tools=[t for t in _dedupe_strings(persisted.local_tools) if t != "echo"],
+                allowed_outbound=_dedupe_strings(getattr(persisted, "allowed_outbound", []) or []),
+                sandbox_profile_id=getattr(persisted, "sandbox_profile_id", None),
+                delegate_agents=persisted.delegate_agents,
+                mcp_servers=resolved_mcp,
+                mcp_tools=persisted.mcp_tools,
+                capabilities=persisted.capabilities,
+                max_iterations=persisted.max_iterations,
+                context_window=persisted.context_window,
+                metadata=dict(persisted.metadata),
+            )
+        )
+    return agents
+
+async def _resolve_default_provider(
+    settings: AppSettings,
+    config_store: ConfigStore,
+    providers_payload: list[dict[str, object]] | None = None,
+) -> ProviderConfig:
+    if providers_payload is None:
+        try:
+            providers_payload = await config_store.get_document("providers")
+        except Exception:
+            # Don't crash agent startup, but surface the DB failure — otherwise a
+            # transient config-store error silently routes traffic to the
+            # fallback default provider/model instead of the configured one.
+            logger.warning(
+                "Failed to load providers from config store; falling back to default provider",
+                exc_info=True,
+            )
+            providers_payload = []
+
+    from covalent_enterprise.infra.config_store import PersistedProviderConfig
+
+    for item in providers_payload or []:
+        default_model = str(item.get("default_model") or "").strip()
+        if default_model and item.get("base_url"):
+            cfg = PersistedProviderConfig.model_validate(item)
+            return ProviderConfig(
+                provider=cfg.provider_type,
+                model=default_model,
+                apih=cfg.apih,
+                api_style=cfg.api_style,
+                api_key=cfg.api_key,
+                base_url=cfg.base_url,
+                timeout_seconds=settings.request_timeout_seconds,
+            )
+
+    for item in providers_payload or []:
+        if item.get("is_default") and item.get("base_url"):
+            cfg = PersistedProviderConfig.model_validate(item)
+            return ProviderConfig(
+                provider=cfg.provider_type,
+                model="",
+                apih=cfg.apih,
+                api_style=cfg.api_style,
+                api_key=cfg.api_key,
+                base_url=cfg.base_url,
+                timeout_seconds=settings.request_timeout_seconds,
+            )
+
+    # No providers registered in the console. Return an empty shell — the
+    # seeded default agent backfills model/key/base_url at runtime from
+    # whichever provider gets registered first (see _merge_provider_config).
+    return ProviderConfig(
+        provider="openai_compatible",
+        model="",
+        api_key=None,
+        base_url=None,
+        api_style=None,
+        timeout_seconds=settings.request_timeout_seconds,
+    )
+
+def _format_api_key_masked(key: str) -> str:
+    if len(key) <= 8:
+        return "•" * len(key)
+    return f"{key[:5]}{'•' * (len(key) - 8)}{key[-3:]}"
+
+def _mask_provider_api_key(item: dict[str, object]) -> dict[str, object]:
+    masked = dict(item)
+    if isinstance(masked.get("apih"), dict):
+        masked["apih"] = {**masked["apih"], "password": None, "has_password": bool(masked["apih"].get("password"))}
+    if masked.get("api_key"):
+        key = str(masked["api_key"])
+        masked["has_api_key"] = bool(key)
+        masked["api_key_masked"] = _format_api_key_masked(key) if key else None
+        masked["api_key"] = None
+    else:
+        masked["has_api_key"] = False
+        masked["api_key_masked"] = None
+    return masked
+
+def _merge_provider_config(
+    provider: ProviderConfig,
+    default_provider: ProviderConfig,
+) -> ProviderConfig:
+    # Console agents with no endpoint inherit the entire connection, including
+    # its auth type. Never send APIH credentials to an explicit other endpoint.
+    inherits = not provider.base_url
+    same_connection = (
+        provider.provider == default_provider.provider
+        and (provider.base_url or "").rstrip("/") == (default_provider.base_url or "").rstrip("/")
+    )
+    # api_style is a property of the endpoint/connection: follow it when the
+    # agent inherits the connection, otherwise keep the agent-level value
+    # (selected_provider carries the row's api_style). Never mix: an explicit
+    # endpoint with no declared style stays on chat completions.
+    api_style = provider.api_style
+    if inherits or same_connection:
+        api_style = provider.api_style or default_provider.api_style
+    return ProviderConfig(
+        provider=default_provider.provider if inherits else provider.provider or default_provider.provider,
+        model=provider.model or default_provider.model,
+        api_key=provider.api_key or (
+            default_provider.api_key if inherits or same_connection or (
+                provider.provider != "apih" and default_provider.provider != "apih"
+            ) else None
+        ),
+        base_url=provider.base_url or default_provider.base_url,
+        api_style=api_style,
+        timeout_seconds=provider.timeout_seconds or default_provider.timeout_seconds,
+        extra={**default_provider.extra, **provider.extra},
+        apih=default_provider.apih if inherits or same_connection else None,
+    )
+

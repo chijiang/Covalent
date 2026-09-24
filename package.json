@@ -1,0 +1,11 @@
+{
+  "name": "covalent-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.24.0",
+  "scripts": {
+    "dev:enterprise": "pnpm --filter @covalent/enterprise-web dev --port 3100",
+    "build:enterprise": "pnpm --filter @covalent/enterprise-web build",
+    "lint": "pnpm --filter @covalent/enterprise-web lint",
+    "typecheck": "pnpm --filter @covalent/enterprise-web exec tsc --noEmit"
+  }
+}

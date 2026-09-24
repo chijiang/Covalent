@@ -109,7 +109,7 @@ class GetUserQueryStatsAuthTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_admin_principal_queries_and_aggregates(self) -> None:
         rows = [
-            ("2026-09-08", "u1", "agent.invoke", "completed", 4, datetime(2026, 9, 8, 9, 0, tzinfo=UTC)),
+            (datetime.now(UTC).strftime("%Y-%m-%d"), "u1", "agent.invoke", "completed", 4, datetime.now(UTC)),
         ]
 
         class _Result:

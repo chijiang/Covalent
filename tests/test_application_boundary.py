@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-APPLICATION_ROOT = Path(__file__).resolve().parents[1] / "src" / "covalent" / "application"
+APPLICATION_ROOT = Path(__file__).resolve().parents[1] / "products/enterprise/backend/src/covalent_enterprise/application"
 
 
 def _application_py_files() -> list[Path]:
@@ -33,7 +33,7 @@ def test_application_module_has_no_api_or_fastapi_dependency(path: Path) -> None
                 continue
             top = node.module.split(".")[0]
             assert top != "fastapi", f"{path} imports from fastapi"
-            if node.module.startswith("covalent.api"):
+            if node.module.startswith(("covalent.api", "covalent_enterprise.api")):
                 assert False, f"{path} imports from covalent.api ({node.module})"
         elif isinstance(node, ast.Attribute):
             # app.state access (request.app.state / app.state.X)

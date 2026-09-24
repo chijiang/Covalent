@@ -1,14 +1,5 @@
-from __future__ import annotations
+"""Compatibility import; implementation lives in covalent_agent_kit.mcp.adapter."""
+import importlib as _importlib
+import sys as _sys
 
-from typing import Any, Protocol
-
-from covalent.core.types import ToolResult
-from covalent.mcp.spec import McpServerConfig, McpToolReference
-
-
-class McpClient(Protocol):
-    async def list_tools(self, server: McpServerConfig) -> list[McpToolReference]:
-        ...
-
-    async def call_tool(self, server: McpServerConfig, tool_name: str, arguments: dict[str, Any]) -> ToolResult:
-        ...
+_sys.modules[__name__] = _importlib.import_module("covalent_agent_kit.mcp.adapter")

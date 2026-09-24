@@ -1,21 +1,5 @@
-from __future__ import annotations
+"""Compatibility import; implementation lives in covalent_agent_kit.models.factory."""
+import importlib as _importlib
+import sys as _sys
 
-from covalent.model.base import ModelAdapter, ProviderConfig
-from covalent.model.openai_compatible import OpenAICompatibleProvider
-from covalent.model.apih import APIHProvider
-
-
-def build_provider(config: ProviderConfig) -> ModelAdapter:
-    if config.provider == "apih":
-        if config.api_style == "responses":
-            from covalent.model.apih import APIHResponsesProvider
-
-            return APIHResponsesProvider(config)
-        return APIHProvider(config)
-    if config.provider == "openai_compatible":
-        if config.api_style == "responses":
-            from covalent.model.openai_responses import ResponsesProvider
-
-            return ResponsesProvider(config)
-        return OpenAICompatibleProvider(config)
-    raise ValueError(f"Unsupported provider: {config.provider}")
+_sys.modules[__name__] = _importlib.import_module("covalent_agent_kit.models.factory")

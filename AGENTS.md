@@ -2,26 +2,27 @@
 
 ## Scope
 
-This repository is a FastAPI backend plus a Next.js control plane for managing agents, MCP services, skills, and chat sessions. The Python package is `covalent` (env vars retain the legacy `AGENT_FRAMEWORK_*` prefix for deploy compatibility). Favor incremental changes that preserve the current architecture and UX over broad rewrites.
+This repository is a FastAPI backend plus a Next.js control plane for managing agents, MCP services, skills, and chat sessions. The Enterprise Python package is `covalent_enterprise`; `covalent` is a legacy compatibility shim (env vars retain the legacy `AGENT_FRAMEWORK_*` prefix for deploy compatibility). Favor incremental changes that preserve the current architecture and UX over broad rewrites.
 
 ## Architectural Boundaries
 
 - Treat the backend and frontend as one product with an explicit contract boundary.
-- **Dependency rule:** `api → application → (core, runtime, infra)`. The application layer must not import `covalent.api.*`, `fastapi`, or read `app.state` — there is an import-guard test (`tests/test_application_boundary.py`) enforcing this.
+- **Dependency rule:** `api → application → (core, runtime, infra)`. The application layer must not import `covalent_enterprise.api.*`, `fastapi`, or read `app.state` — there is an import-guard test (`tests/test_application_boundary.py`) enforcing this.
 - Backend layers:
-  - `src/covalent/api/`: thin FastAPI controllers — routes (`routes/`), SSE constants (`sse_events.py`), auth middleware/cookie helpers (`_auth_helpers.py`), and shared leaf utilities (`_shared.py`/`_session_helpers.py`). `api/auth.py` is a re-export shim over `application/crypto` + `application/principal` for legacy import paths. Routes do auth, input conversion, DTO/exception mapping only — no business logic.
-  - `src/covalent/application/`: framework-independent use-case layer. `services/` (token/user/session/invoke/management/skill/audit/agent_invocation/runtime_apply) owns business orchestration; plus `schemas.py` (Pydantic request/response models — moved here from `api/`), `errors.py` (`ApplicationError` family), `principal.py`, `audit.py`, `crypto.py`, `_utils.py`.
-  - `src/covalent/core/`: agent orchestration, attachment handling, tool wiring, workspace tools.
-  - `src/covalent/infra/`: settings, database, config persistence (`config_store.py` + `agent_repository.py`/`mcp_repository.py`), session persistence.
-  - `src/covalent/mcp/`: MCP transport/client/spec concerns.
-  - `src/covalent/model/`: OpenAI-compatible provider adapters and model configuration (`openai_compatible` only).
-  - `src/covalent/registry/` and `src/covalent/runtime/`: runtime assembly and ReAct execution. Context-window compaction lives in `runtime/context_window_manager.py` (extracted from `react.py`).
-  - `src/covalent/skills/`: skill discovery, metadata, lifecycle, and process management.
+  - `products/enterprise/backend/src/covalent_enterprise/api/`: thin FastAPI controllers — routes (`routes/`), SSE constants (`sse_events.py`), auth middleware/cookie helpers (`_auth_helpers.py`), and shared leaf utilities (`_shared.py`/`_session_helpers.py`). `api/auth.py` is a re-export shim over `application/crypto` + `application/principal` for legacy import paths. Routes do auth, input conversion, DTO/exception mapping only — no business logic.
+  - `products/enterprise/backend/src/covalent_enterprise/application/`: framework-independent use-case layer. `services/` (token/user/session/invoke/management/skill/audit/agent_invocation/runtime_apply) owns business orchestration; plus `schemas.py` (Pydantic request/response models — moved here from `api/`), `errors.py` (`ApplicationError` family), `principal.py`, `audit.py`, `crypto.py`, `_utils.py`.
+  - `products/enterprise/backend/src/covalent_enterprise/infra/`: Enterprise database, settings, config persistence and execution composition.
+  - `packages/python/contracts/src/covalent_contracts/`: serializable messages and Agent/Provider/MCP/Skill configuration.
+  - `packages/python/runtime/src/covalent_runtime/`: domain types, ports, ReAct/context/delegation engine and durable run services. No Enterprise, FastAPI, SQLAlchemy, model SDK or adapter implementation imports, including TYPE_CHECKING.
+  - `packages/python/agent-kit/src/covalent_agent_kit/`: registry, model/MCP adapters, skills and concrete tools.
+  - `packages/python/execution-native/` and `execution-docker/`: execution adapters; runner resources belong to execution-native.
+  - `src/covalent/`: compatibility imports only. Never add new implementation here or import it from canonical packages.
+- Workspace boundaries are enforced by `tests/architecture/test_monorepo.py`. Products cannot import one another; shared packages cannot import products. Root uv/pnpm lockfiles are committed. Build and install wheels independently before claiming package isolation.
 - Frontend layers:
-  - `frontend/app/**`: route entrypoints, redirects, and shell composition. Keep them thin.
-  - `frontend/components/**`: page-level workspaces and client behavior.
-  - `frontend/lib/types.ts`: TypeScript mirror of backend API shapes.
-  - `frontend/lib/client-api.ts`: all backend fetch, SSE parsing, and request helpers.
+  - `products/enterprise/web/app/**`: route entrypoints, redirects, and shell composition. Keep them thin.
+  - `products/enterprise/web/components/**`: page-level workspaces and client behavior.
+  - `products/enterprise/web/lib/types.ts`: TypeScript mirror of backend API shapes.
+  - `products/enterprise/web/lib/client-api.ts`: all backend fetch, SSE parsing, and request helpers.
 - When changing behavior, update the full path in one slice: persistence/schema -> backend route/service -> frontend types -> frontend API client -> UI.
 - Do not introduce parallel config flows or duplicate fetch logic if an existing config document or helper already owns that surface.
 
@@ -30,8 +31,8 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 - Agents, MCP servers, skill sources, LLM providers, and chat sessions are persisted. Treat the database-backed config store as the source of truth.
 - LLM access uses the `openai_compatible` provider type only. Register providers in Service Console (`/service-console/provider-settings`) or via `GET/PUT /config/providers`; env `DEFAULT_*` values are fallbacks when no provider is configured in the database.
 - `.env` JSON values are seed data for first boot when the corresponding tables are empty. Do not build new product behavior that only mutates environment seed payloads.
-- If a persisted shape changes, add an Alembic migration in `alembic/versions/`.
-- Keep backend schemas and frontend field names aligned. Avoid silent shape drift between Pydantic models and `frontend/lib/types.ts`.
+- If a persisted shape changes, add an Alembic migration in `products/enterprise/backend/src/covalent_enterprise/migrations/versions/`.
+- Keep backend schemas and frontend field names aligned. Avoid silent shape drift between Pydantic models and `products/enterprise/web/lib/types.ts`.
 
 ## Skills And MCP
 
@@ -45,7 +46,7 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 ## Frontend Design Language
 
 - Preserve the current light control-plane visual language: neutral surfaces, restrained borders, strong red accent, rounded panels, pill navigation, and compact but readable spacing.
-- Reuse the CSS variables and shared shell/panel primitives in `frontend/app/globals.css` before adding one-off colors, spacing, or radii.
+- Reuse the CSS variables and shared shell/panel primitives in `products/enterprise/web/app/globals.css` before adding one-off colors, spacing, or radii.
 - Keep the primary product structure centered on `Chat Workspace` and `Service Console` unless the information architecture is intentionally changing.
 - The chat workspace is intentionally desktop-first and multi-panel. Do not collapse it to a single column at normal desktop widths.
 - Large screens intentionally widen the chat shell/header only; other workspaces should remain near the standard content width unless there is a page-specific reason.
@@ -62,20 +63,20 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 
 ## Validation And Workflow
 
-- Frontend setup: `cd frontend && pnpm install`
-- Frontend dev: `cd frontend && pnpm dev`
-- Frontend validation: `cd frontend && pnpm exec tsc --noEmit`
-- Frontend lint: `cd frontend && pnpm lint`
+- Frontend setup: `pnpm install --frozen-lockfile`
+- Frontend dev: `pnpm dev:enterprise`
+- Frontend validation: `pnpm typecheck`
+- Frontend lint: `pnpm lint`
 - Backend setup: `uv sync`
 - Backend serve: `uv run python main.py serve --port 5170` or `./dev.sh backend`
 - Backend schema migrations: `uv run python main.py migrate` (run explicitly — the web lifespan does not auto-migrate, to avoid multi-replica startup races). `alembic/env.py` reads `AGENT_FRAMEWORK_DATABASE_URL`.
-- CLI: `main.py` is a typer app (serve / migrate / config / users / providers). `config export|import` moves the full platform configuration between environments as a zip bundle (natural-key upsert, plaintext provider keys — never commit bundles). Bundle service logic lives in `src/covalent/application/services/config_bundle_service.py`; commands in `src/covalent/cli/`.
+- CLI: `main.py` is a typer app (serve / migrate / config / users / providers). `config export|import` moves the full platform configuration between environments as a zip bundle (natural-key upsert, plaintext provider keys — never commit bundles). Bundle service logic lives in `products/enterprise/backend/src/covalent_enterprise/application/services/config_bundle_service.py`; commands in `products/enterprise/backend/src/covalent_enterprise/cli/`.
 - Backend tests: `uv run python -m pytest tests/`. Set `TEST_DATABASE_URL=postgresql+asyncpg://...` to also run the real-DB integration tests (auto-skipped otherwise).
-- Backend lint gate: `uvx ruff check --select F src/ main.py` — catches undefined names / redefinitions / unused imports left by extractions. Keep it green.
+- Backend lint gate: `uv run ruff check --select F packages/python products/enterprise/backend/src src main.py` — catches undefined names / redefinitions / unused imports left by extractions. Keep it green.
 - Local full stack: `./dev.sh both`
-- The frontend proxy in `frontend/app/api/backend/[...path]/route.ts` falls back to `http://127.0.0.1:5170`. If you move the backend, update env vars or proxy assumptions deliberately.
+- The frontend proxy in `products/enterprise/web/app/api/backend/[...path]/route.ts` falls back to `http://127.0.0.1:5170`. If you move the backend, update env vars or proxy assumptions deliberately.
 - If backend route changes seem to have no effect in the running app, restart the backend before debugging the proxy. `main.py` runs uvicorn with `reload=False`.
-- If `frontend/app/globals.css` changes appear to have no effect, restart the Next dev server before assuming the CSS is wrong. Turbopack can serve stale CSS output.
+- If `products/enterprise/web/app/globals.css` changes appear to have no effect, restart the Next dev server before assuming the CSS is wrong. Turbopack can serve stale CSS output.
 - Validate the narrowest affected slice first, then widen only if needed.
 
 ## Change Checklist

@@ -1,14 +1,5 @@
-import typer
+"""Compatibility import; implementation lives in covalent_enterprise.cli.commands.migrate."""
+import importlib as _importlib
+import sys as _sys
 
-from covalent.cli.runtime import load_settings
-
-app = typer.Typer(help="Apply database schema migrations")
-
-
-@app.callback(invoke_without_command=True)
-def migrate() -> None:
-    from covalent.infra.migrations import run_database_migrations
-
-    settings = load_settings()
-    run_database_migrations(settings.database_url.replace("+asyncpg", ""))
-    print("Database migrations applied.")
+_sys.modules[__name__] = _importlib.import_module("covalent_enterprise.cli.commands.migrate")

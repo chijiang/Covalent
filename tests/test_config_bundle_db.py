@@ -41,6 +41,7 @@ class _FakeBundleSettings:
 
     def __init__(self, database_url: str, skills_root: Path) -> None:
         self.database_url = database_url
+        self.database_schema = None
         self.skills_root_dir = str(skills_root)
         self.skills_directories: str | None = None
 

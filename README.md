@@ -60,6 +60,19 @@ Much like atoms sharing electrons in a covalent bond, Covalent binds autonomous 
   </tr>
 </table>
 
+## Monorepo
+
+The full product now lives in [`products/enterprise`](products/enterprise/README.md).
+Shared Python packages live in `packages/python/{contracts,runtime,agent-kit,execution-native,execution-docker}`.
+They use separate distribution/import names and a root uv workspace. The frontend
+is `products/enterprise/web`, managed by the root pnpm workspace.
+
+`main.py`, `dev.sh`, `frontend/`, `alembic/`, and legacy `covalent.*` imports remain
+compatibility entry points. New code must import the owning package directly.
+Lite, Desktop and Monitor remain future consumers, with no placeholder runtimes
+or duplicated product implementations. See [the architecture design](docs/monorepo-architecture.md)
+and [Enterprise build/validation instructions](products/enterprise/README.md).
+
 ## Quick Start
 
 ```bash

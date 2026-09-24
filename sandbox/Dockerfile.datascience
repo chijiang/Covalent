@@ -13,7 +13,7 @@
 FROM python:3.12-slim
 
 # Runners first: they change on every framework release, the stack rarely.
-COPY src/covalent/skills/runners/ /runners/
+COPY packages/python/execution-native/src/covalent_execution_native/runners/ /runners/
 
 RUN pip install --no-cache-dir numpy pandas matplotlib scipy
 
