@@ -1,5 +1,6 @@
 packages:
   - products/*/web
+  - products/desktop/shell
   - packages/typescript/*
 allowBuilds:
   msw: false

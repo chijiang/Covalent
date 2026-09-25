@@ -27,7 +27,7 @@ jobs:
           enable-cache: true
           python-version: '3.12'
       - run: uv sync --frozen
-      - run: uv run ruff check --select F packages/python products/enterprise/backend/src products/lite/service/src src main.py tooling
+      - run: uv run ruff check --select F packages/python products/enterprise/backend/src products/lite/service/src products/desktop/service/src src main.py tooling
       - run: uv run python -m pytest tests/
       - run: uv build --all-packages --wheel
       - run: uv run python tooling/verify_wheels.py

@@ -62,6 +62,8 @@ Much like atoms sharing electrons in a covalent bond, Covalent binds autonomous 
 
 ## Monorepo
 
+Desktop：[项目骨架](products/desktop/README.md) · [开发指南](docs/products/desktop/development.md) · [内核一致性规范](docs/runtime-consistency.md)。当前尚无可运行的桌面应用。
+
 开发导航：[Monorepo 开发指南](docs/development.md) · [Lite 开发指南](docs/products/lite/development.md) · [Lite 接口约定](docs/products/lite/contracts.md)。Lite 目前为包骨架，CLI/API 尚未实现。
 
 

@@ -1,6 +1,6 @@
 # Covalent Monorepo 产品与工程架构
 
-状态：目标架构与分阶段实施计划；Enterprise/共享包已迁移，Lite 已建立包骨架，其余按阶段实施。
+状态：目标架构与分阶段实施计划；Enterprise/共享包已迁移，Lite/Desktop 已建立包骨架，其余按阶段实施。
 更新日期：2026-09-25
 
 实施进展：Enterprise 及共享 Python 包的结构迁移见 [迁移记录](monorepo-migration.md)。本文其余产品与协议规划仍按阶段推进。
@@ -24,7 +24,7 @@
 | --- | --- | --- | --- |
 | Enterprise | 团队 Agent 开发、管理、运行和生产接入；身份、权限、审计 | 服务部署、PostgreSQL；按策略选择执行后端 | 其他产品的启动依赖 |
 | Lite | CLI-first Agent 运行，提供最小 HTTP/SSE 接口 | 单进程、文件配置、请求级无状态执行；无数据库 | 用户/组织管理、完整 UI、会话持久化、后台恢复 |
-| Desktop | 个人 Agent 创建、调试、使用与本地资产管理 | 桌面壳 + Python sidecar、SQLite、本地执行 | 企业租户、常驻 Docker 的强制依赖 |
+| Desktop | 个人 Agent 创建、调试、使用与本地资产管理 | Electron + React/Vite + Python sidecar；SQLite、本地执行（待实现） | 企业租户、常驻 Docker 的强制依赖 |
 | Monitor | Trace 接入、查询、评测、风险分析与治理控制 | 独立 API、处理进程、存储和 Web UI | Agent 编排引擎、业务会话的权威存储 |
 
 Lite/Desktop 没有用户管理，不等于关闭所有访问控制。Lite 默认本机监听；远端部署使用服务凭据或受信网关。Desktop sidecar 只接受桌面壳授权的本机访问。运行上下文使用通用 scope 标识，Enterprise 将用户/租户映射为 scope，不要求其他产品创建虚拟企业用户。
@@ -175,7 +175,7 @@ Runtime 不读取全局配置、不连接具体数据库、不自行发现产品
 ### 4.4 adapters、runtime-http 与产品装配
 
 - execution-native / execution-docker 实现相同执行端口；Docker SDK 只在 Docker 包中。
-- storage-local 先服务 Desktop，负责自己的 SQLite 迁移与数据格式；Lite 首版不依赖它。Enterprise 保留当前 PostgreSQL 实现和迁移历史；第二个真实消费者需要 PostgreSQL 时再抽共享适配器。
+- Desktop 首先在产品 infra 内实现 SQLite 与迁移；storage-local 保留为未来真实复用时的提取方向，Lite 首版不依赖它。Enterprise 保留当前 PostgreSQL 实现和迁移历史；第二个真实消费者需要 PostgreSQL 时再抽共享适配器。
 - runtime-http 仅负责公共执行 API 的参数、异常、SSE 转换；调用 Runtime 用例，身份/鉴权由宿主注入。不得因“共享路由”引入用户库和管理逻辑。
 - 产品 bootstrap 选择适配器、解析凭据与配置并装配运行服务。API/CLI → application → runtime/infra 的产品内部规则继续保留。
 - Enterprise 审计、权限、配额在产品用例层执行；Runtime 工具级策略通过通用 PolicyEvaluator 注入，避免绕过 API 后失去执行策略。
@@ -197,7 +197,7 @@ Enterprise 保持 Next.js 与当前 Chat Workspace / Service Console。Desktop �
 
 共享组件禁止导入 Next.js 路由、企业 auth context、桌面 IPC、固定后端地址。工作台内部可以有明确的能力模型，但不以 edition 判断按钮。先抽纯展示和状态模型，已有单一消费者的页面继续留在产品内。
 
-Desktop shell 的 Electron/Tauri 选型另立 ADR：先验证 Python sidecar 打包、进程回收、文件权限、各目标 OS 安装升级，再决定。两种选择不影响上述公共包边界。
+Desktop 已采用 Electron + React/Vite + Python sidecar 为开发方向，支持 macOS/Windows；理由与验证条件见 [ADR 0001](adr/0001-desktop-stack.md)。当前仅建立骨架，Python 打包、进程回收及双平台安装升级仍须验证。开发路径见 [Desktop 开发指南](products/desktop/development.md)。
 
 ## 6. 资产、配置与数据所有权
 
@@ -222,7 +222,7 @@ Enterprise 的数据库配置仍是唯一权威来源。Lite 首版使用文件�
 | --- | --- | --- |
 | Enterprise 用户、workspace、配置、会话、运行 | Enterprise DB | Enterprise backend |
 | Lite 首版配置 | 部署配置文件；请求状态仅内存 | Lite 配置格式版本 |
-| Desktop 本地配置、会话、运行 | 各实例本地 DB，互不共享文件 | storage-local |
+| Desktop 本地配置、会话、运行 | 各实例本地 DB，互不共享文件 | Desktop infra；未来按需提取 storage-local |
 | Monitor Trace、评测、治理记录 | Monitor DB | Monitor backend |
 | Agent 可移植文件 | 版本化资产包 | contracts 格式转换器 |
 
@@ -357,7 +357,7 @@ Desktop 抽 UI/workbench 并实现本地宿主；Monitor 从事件 SDK、接入�
 
 ## 12. 暂不锁定的决策
 
-- Desktop 壳、首发 OS、自动更新渠道：通过 sidecar 打包验证决定。
+- Desktop 已确定 Electron 开发方向与 macOS/Windows 目标；最低系统版本、CPU 架构覆盖、Python 打包方式及自动更新渠道经发行原型验证后确定。
 - Monitor 大规模存储/队列技术：先以查询、吞吐与保留需求评估，不提前引入分布式组件。
 - 开源与商业许可划分：沿用现有许可，变更另行决策；目录边界不构成仓库访问隔离。
 - 对外包名与 registry：本文为仓库内逻辑命名，发布前核实可用性。

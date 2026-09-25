@@ -8,6 +8,10 @@ importers:
 
   .: {}
 
+  products/desktop/shell: {}
+
+  products/desktop/web: {}
+
   products/enterprise/web:
     dependencies:
       '@base-ui/react':

@@ -11,6 +11,7 @@ members = [
     "agent-framework",
     "covalent-agent-kit",
     "covalent-contracts",
+    "covalent-desktop",
     "covalent-enterprise",
     "covalent-execution-docker",
     "covalent-execution-native",
@@ -434,6 +435,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.11.0" }]
+
+[[package]]
+name = "covalent-desktop"
+version = "0.1.0"
+source = { editable = "products/desktop/service" }
+dependencies = [
+    { name = "covalent-contracts" },
+    { name = "covalent-runtime" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "covalent-contracts", editable = "packages/python/contracts" },
+    { name = "covalent-runtime", editable = "packages/python/runtime" },
+]
 
 [[package]]
 name = "covalent-enterprise"

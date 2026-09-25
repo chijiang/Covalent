@@ -7,7 +7,8 @@
 | `products/enterprise/backend` | 已有实现 | 企业 API、用例、数据库、CLI 和迁移 |
 | `products/enterprise/web` | 已有实现 | Next.js 控制台 |
 | `products/lite/service` | 包骨架 | 独立 Lite 命名空间；CLI/API 待实现 |
-| Desktop、Monitor | 规划 | 暂不建立空应用或引入宿主、数据库依赖 |
+| `products/desktop` | 项目骨架 | Electron/React/Python service 分层；窗口和业务待实现 |
+| Monitor | 规划 | 暂不建立空应用或引入数据库依赖 |
 | `packages/python/contracts` | 已有实现 | 可序列化消息和 Agent/Provider/MCP/Skill 配置 |
 | `packages/python/runtime` | 已有实现 | 执行领域、端口、引擎和运行服务 |
 | `packages/python/agent-kit` | 已有实现 | 模型、MCP、Skill、工具和 registry 实现 |
@@ -21,6 +22,8 @@
 
 - Enterprise：阅读 [产品说明](../products/enterprise/README.md)，沿现有 API → application → runtime/infra 修改。
 - Lite：阅读 [开发指南](products/lite/development.md) 和 [首版接口约定](products/lite/contracts.md)。
+- Desktop：阅读 [开发指南](products/desktop/development.md)、[宿主契约](products/desktop/host-contract.md) 和 [产品说明](../products/desktop/README.md)。
+- 跨产品行为：遵循 [内核一致性规范](runtime-consistency.md)，区分已覆盖与待实现的契约。
 - 共享执行行为：修改 runtime 的引擎/端口；具体模型与工具实现归 agent-kit。
 - 公共数据结构：修改 contracts；企业管理 DTO 保留在 Enterprise。
 - Monitor：独立观测消费者，未来通过版本化协议接入；不得直接读运行产品的业务库。
@@ -44,7 +47,7 @@ pnpm dev:enterprise
 
 ```sh
 uv run python -m pytest tests/architecture/test_monorepo.py
-uv run ruff check --select F packages/python products/enterprise/backend/src products/lite/service/src src main.py
+uv run ruff check --select F packages/python products/enterprise/backend/src products/lite/service/src products/desktop/service/src src main.py
 ```
 
 前端改动运行 `pnpm typecheck` 和 `pnpm lint`。涉及数据库、发行物或共享执行行为时，增加对应迁移、独立 wheel 安装或消费者测试。

@@ -1,0 +1,6 @@
+{
+  "name": "@covalent/desktop-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron host scaffold; no executable entrypoint yet"
+}

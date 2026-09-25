@@ -31,6 +31,13 @@ def check(names: list[str], source: str) -> None:
 
 if __name__ == '__main__':
     common = ['covalent_contracts', 'covalent_runtime']
+    check(common + ['covalent_desktop'], '''
+import importlib.util
+import covalent_desktop.api, covalent_desktop.application, covalent_desktop.infra
+for name in ('covalent', 'covalent_enterprise', 'covalent_lite', 'fastapi', 'sqlalchemy', 'docker'):
+    assert importlib.util.find_spec(name) is None, name
+print('Isolated Desktop scaffold import passed (sidecar not yet implemented)')
+''')
     check(common + ['covalent_lite'], '''
 import importlib.util
 import covalent_lite.api, covalent_lite.cli, covalent_lite.application, covalent_lite.config
