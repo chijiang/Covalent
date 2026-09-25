@@ -7,7 +7,7 @@
 | `products/enterprise/backend` | 已有实现 | 企业 API、用例、数据库、CLI 和迁移 |
 | `products/enterprise/web` | 已有实现 | Next.js 控制台 |
 | `products/lite/service` | 包骨架 | 独立 Lite 命名空间；CLI/API 待实现 |
-| `products/desktop` | 项目骨架 | Electron/React/Python service 分层；窗口和业务待实现 |
+| `products/desktop` | D1a 可运行 | Electron/React/Python service 本地闭环；Agent 与安装包待实现 |
 | Monitor | 规划 | 暂不建立空应用或引入数据库依赖 |
 | `packages/python/contracts` | 已有实现 | 可序列化消息和 Agent/Provider/MCP/Skill 配置 |
 | `packages/python/runtime` | 已有实现 | 执行领域、端口、引擎和运行服务 |
@@ -41,6 +41,7 @@ uv run python main.py serve --port 5170
 # 需要数据库迁移时显式执行：uv run python main.py migrate
 pnpm install --frozen-lockfile
 pnpm dev:enterprise
+# Desktop 本地开发：pnpm dev:desktop
 ```
 
 后端改动先跑受影响测试，再跑依赖边界与 lint：
@@ -50,7 +51,8 @@ uv run python -m pytest tests/architecture/test_monorepo.py
 uv run ruff check --select F packages/python products/enterprise/backend/src products/lite/service/src products/desktop/service/src src main.py
 ```
 
-前端改动运行 `pnpm typecheck` 和 `pnpm lint`。涉及数据库、发行物或共享执行行为时，增加对应迁移、独立 wheel 安装或消费者测试。
+前端改动运行 `pnpm typecheck` 和 `pnpm lint`。Desktop 改动运行 `pnpm typecheck:desktop`、service 测试和 `pnpm smoke:desktop`。
+涉及数据库、发行物或共享执行行为时，增加对应迁移、独立 wheel 安装或消费者测试。
 Lite 产品测试实施后单独运行 `uv run --package covalent-lite python -m pytest products/lite/tests/`。
 当前该测试目录尚未创建，不把未实现的测试命令列为已通过验证。
 

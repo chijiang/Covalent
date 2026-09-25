@@ -57,4 +57,4 @@ Enterprise 整站 covalent-config ZIP 继续保留原语义，不当作公共 Ag
 
 合并门禁：导入边界、受影响包测试、公共契约兼容、已实现的跨产品行为测试。
 发行门禁：从 wheel 干净安装，确保不借用 Enterprise/legacy/editable 包；Desktop 另跑 macOS/Windows 安装及进程清理。
-当前 tooling/verify_wheels.py 验证 Desktop/Lite 骨架隔离与现有 Runtime/Enterprise 行为，尚不代表三产品执行功能完整。
+当前 tooling/verify_wheels.py 验证 Desktop/Lite 包隔离与现有 Runtime/Enterprise 行为；Desktop smoke 另验证宿主/service 本地链路，二者都不代表三产品 Agent 执行功能完整。

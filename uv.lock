@@ -445,10 +445,22 @@ dependencies = [
     { name = "covalent-runtime" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "covalent-contracts", editable = "packages/python/contracts" },
     { name = "covalent-runtime", editable = "packages/python/runtime" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "ruff", specifier = ">=0.12" },
 ]
 
 [[package]]

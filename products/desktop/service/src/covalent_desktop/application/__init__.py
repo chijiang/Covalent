@@ -1,1 +1,1 @@
-"""Framework-independent Desktop use cases; implementation pending."""
+"""Framework-independent Desktop use cases."""

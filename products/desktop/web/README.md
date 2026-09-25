@@ -1,8 +1,8 @@
 # Desktop renderer
 
-当前仅有 workspace manifest，没有 React/Vite 依赖或可运行页面。
+当前已有 React/Vite 状态页，可以显示 Python service 的启动状态、版本、协议和进程号，并从受限 bridge 请求重启。
 
-实施时建立 `src/app/`（路由和壳）、`src/workspaces/`（Agent/Chat/资源工作区）、
+后续建立 `src/app/`（路由和壳）、`src/workspaces/`（Agent/Chat/资源工作区）、
 `src/services/`（typed bridge adapter）。与 Enterprise 共用的组件先提取到 packages/typescript，
 禁止直接导入 products/enterprise/web。
 

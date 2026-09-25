@@ -1,6 +1,6 @@
 # Covalent Monorepo 产品与工程架构
 
-状态：目标架构与分阶段实施计划；Enterprise/共享包已迁移，Lite/Desktop 已建立包骨架，其余按阶段实施。
+状态：目标架构与分阶段实施计划；Enterprise/共享包已迁移，Lite 已建立包骨架，Desktop D1a 本地链路已运行，其余按阶段实施。
 更新日期：2026-09-25
 
 实施进展：Enterprise 及共享 Python 包的结构迁移见 [迁移记录](monorepo-migration.md)。本文其余产品与协议规划仍按阶段推进。
@@ -197,7 +197,7 @@ Enterprise 保持 Next.js 与当前 Chat Workspace / Service Console。Desktop �
 
 共享组件禁止导入 Next.js 路由、企业 auth context、桌面 IPC、固定后端地址。工作台内部可以有明确的能力模型，但不以 edition 判断按钮。先抽纯展示和状态模型，已有单一消费者的页面继续留在产品内。
 
-Desktop 已采用 Electron + React/Vite + Python sidecar 为开发方向，支持 macOS/Windows；理由与验证条件见 [ADR 0001](adr/0001-desktop-stack.md)。当前仅建立骨架，Python 打包、进程回收及双平台安装升级仍须验证。开发路径见 [Desktop 开发指南](products/desktop/development.md)。
+Desktop 已采用 Electron + React/Vite + Python sidecar，支持 macOS/Windows；理由与验证条件见 [ADR 0001](adr/0001-desktop-stack.md)。开发态窗口、握手、鉴权与正常退出已在 macOS 跑通；Python 冻结、异常进程树回收及双平台安装升级仍须验证。开发路径见 [Desktop 开发指南](products/desktop/development.md)。
 
 ## 6. 资产、配置与数据所有权
 

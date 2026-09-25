@@ -5,7 +5,13 @@
   "scripts": {
     "dev:enterprise": "pnpm --filter @covalent/enterprise-web dev --port 3100",
     "build:enterprise": "pnpm --filter @covalent/enterprise-web build",
+    "dev:desktop": "pnpm --filter @covalent/desktop-shell dev",
+    "build:desktop": "pnpm --filter @covalent/desktop-shell build",
+    "start:desktop": "pnpm --filter @covalent/desktop-shell start",
+    "smoke:desktop": "pnpm build:desktop && node products/desktop/shell/scripts/smoke.mjs",
     "lint": "pnpm --filter @covalent/enterprise-web lint",
-    "typecheck": "pnpm --filter @covalent/enterprise-web exec tsc --noEmit"
+    "typecheck:enterprise": "pnpm --filter @covalent/enterprise-web exec tsc --noEmit",
+    "typecheck:desktop": "pnpm --filter @covalent/desktop-web typecheck && pnpm --filter @covalent/desktop-shell typecheck",
+    "typecheck": "pnpm typecheck:enterprise && pnpm typecheck:desktop"
   }
 }

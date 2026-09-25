@@ -1,14 +1,15 @@
 # Desktop shell
 
-当前仅有 workspace manifest，没有 Electron 安装依赖或可执行入口。
+Electron 主进程已经可以启动 React/Vite renderer，并管理本地 Python service 的启动、握手、健康检查、重启和退出回收。
 
-实施时建立：
+当前结构：
 
-- `src/main/`：窗口、菜单、系统对话框、凭据访问、更新和 sidecar supervisor。
-- `src/preload/`：contextBridge 暴露的窄接口；不透传任意 IPC 或 shell 命令。
-- `src/contracts/`：桌面私有 IPC 类型和运行时校验；跨产品调用类型从公共 schema 生成。
+- `src/main/`：安全窗口和 sidecar supervisor；菜单、凭据和更新尚未实现。
+- `src/preload/`：contextBridge 只暴露服务状态与重启。
+- `src/shared/`：握手和 IPC 状态类型，以及握手的运行时校验。
+- `scripts/dev.mjs`：启动 Vite、编译 shell 并打开 Electron。
 
-Electron 与打包工具在第一功能切片选定版本并加入本包。shell 不依赖其他产品，不执行 Agent 算法。
+shell 不依赖其他产品，不执行 Agent 算法。开发环境启动 workspace `.venv` 中的 Python；发行包内的冻结 sidecar 和打包配置仍待实现。
 需要 Node 的 MCP/Skill 运行时须显式打包或验证，不能假设 Electron 内置 Node 自动等价于系统 node 命令。
 
 [进程与 bridge 契约](../../../docs/products/desktop/host-contract.md)

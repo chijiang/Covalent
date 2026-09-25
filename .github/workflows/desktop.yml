@@ -1,0 +1,30 @@
+name: Desktop
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  desktop:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: uv sync --frozen --package covalent-desktop
+      - run: uv run --package covalent-desktop python -m pytest products/desktop/tests
+      - run: uv run --package covalent-desktop ruff check --select F products/desktop/service/src products/desktop/tests
+      - run: uv build --package covalent-desktop --wheel
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck:desktop
+      - run: pnpm build:desktop

@@ -1,9 +1,15 @@
 [project]
 name = "covalent-desktop"
 version = "0.1.0"
-description = "Covalent Desktop service scaffold (sidecar not implemented yet)."
+description = "Local sidecar service for Covalent Desktop."
 requires-python = ">=3.12"
 dependencies = ["covalent-contracts==0.1.0", "covalent-runtime==0.1.0"]
+
+[project.scripts]
+covalent-desktop-service = "covalent_desktop.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.12"]
 
 [build-system]
 requires = ["hatchling"]

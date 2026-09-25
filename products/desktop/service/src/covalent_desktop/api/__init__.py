@@ -1,1 +1,1 @@
-"""Local API adapters; implementation pending."""
+"""Local HTTP adapters for the Desktop host."""

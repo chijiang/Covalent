@@ -62,7 +62,7 @@ Much like atoms sharing electrons in a covalent bond, Covalent binds autonomous 
 
 ## Monorepo
 
-Desktop：[项目骨架](products/desktop/README.md) · [开发指南](docs/products/desktop/development.md) · [内核一致性规范](docs/runtime-consistency.md)。当前尚无可运行的桌面应用。
+Desktop：[本地启动](products/desktop/README.md) · [开发指南](docs/products/desktop/development.md) · [内核一致性规范](docs/runtime-consistency.md)。Electron/React/Python 本地链路已可运行，Agent 功能和安装包待实现。
 
 开发导航：[Monorepo 开发指南](docs/development.md) · [Lite 开发指南](docs/products/lite/development.md) · [Lite 接口约定](docs/products/lite/contracts.md)。Lite 目前为包骨架，CLI/API 尚未实现。
 
@@ -74,8 +74,8 @@ is `products/enterprise/web`, managed by the root pnpm workspace.
 
 `main.py`, `dev.sh`, `frontend/`, `alembic/`, and legacy `covalent.*` imports remain
 compatibility entry points. New code must import the owning package directly.
-Lite, Desktop and Monitor remain future consumers, with no placeholder runtimes
-or duplicated product implementations. See [the architecture design](docs/monorepo-architecture.md)
+Lite and Monitor remain future consumers. Desktop now has a runnable local host/service
+foundation while still sharing the canonical packages instead of copying runtime code. See [the architecture design](docs/monorepo-architecture.md)
 and [Enterprise build/validation instructions](products/enterprise/README.md).
 
 ## Quick Start
