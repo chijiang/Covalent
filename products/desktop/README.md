@@ -1,42 +1,64 @@
 # Covalent Desktop
 
-面向 macOS 和 Windows 的个人 Agent 工作台。技术方向为 Electron + React/Vite + Python sidecar，复用 Covalent 的共享执行内核。
+Desktop is the local Covalent workbench for macOS and Windows. It uses an
+Electron host, a React/Vite renderer and a private Python sidecar while sharing
+the same contracts and execution runtime as Enterprise and Lite.
 
-**当前状态：本地开发链路已可运行。** Electron 窗口、React/Vite 状态页、Python sidecar、随机令牌鉴权、协议握手、健康检查、重启和退出清理已经实现。
-Agent 调用、本地存储、模板交换、冻结 sidecar 和 macOS/Windows 安装包尚未实现。
+**Status:** the local host/service foundation is runnable. Window startup,
+sidecar authentication, protocol handshake, health checks, restart and shutdown
+cleanup are implemented. Agent workspaces, local persistence, template exchange,
+frozen sidecars and signed installers remain in development.
 
-| 目录 | 职责 |
-| --- | --- |
-| `shell/` | Electron 主进程、preload、系统能力与 sidecar 生命周期 |
-| `web/` | React 工作台、对话和资源管理；不依赖 Next.js 服务端 |
-| `service/` | 独立 Python 包 covalent-desktop；应用用例、本地 API、基础设施装配 |
-| `packaging/` | macOS/Windows sidecar、签名、安装与更新验收 |
-| `tests/` | 桌面产品的集成、生命周期和双平台测试规划 |
+[Repository overview](../../README.md) · [Development guide](../../docs/products/desktop/development.md) · [Host contract](../../docs/products/desktop/host-contract.md)
 
-开发顺序见 [开发指南](../../docs/products/desktop/development.md)，进程通信见 [宿主与服务契约](../../docs/products/desktop/host-contract.md)。
-跨产品约束见 [内核一致性规范](../../docs/runtime-consistency.md)，选型依据见 [ADR](../../docs/adr/0001-desktop-stack.md)。
+## Structure
 
-## 本地启动
+```text
+products/desktop/
+├── shell/       # Electron main process, preload and sidecar lifecycle
+├── web/         # React/Vite renderer
+├── service/     # Python sidecar package: covalent-desktop
+├── packaging/   # macOS/Windows release plan and assets
+└── tests/       # Product lifecycle and integration tests
+```
 
-在仓库根目录执行，Python 3.12+，uv；Node/pnpm 遵循根 package.json。
+## Local development
 
-```sh
+Run from the repository root:
+
+```bash
 uv sync --locked --all-packages
 pnpm install --frozen-lockfile
 pnpm dev:desktop
 ```
 
-`dev:desktop` 使用 Vite 热更新 renderer；修改 Electron main/preload 后重新启动命令。开发环境直接使用 workspace `.venv` 中的 Python；可用 `COVALENT_DESKTOP_PYTHON` 指定其他解释器。
-一次性构建并验证完整本地链路：
+The development host uses the workspace `.venv` Python. Set
+`COVALENT_DESKTOP_PYTHON` to test another interpreter. Renderer changes hot
+reload; restart the command after changing Electron main or preload code.
 
-```sh
+The sidecar executable `covalent-desktop-service` is an internal host interface
+and diagnostic entry point, not the user-facing Agent CLI.
+
+## Validation
+
+```bash
 pnpm typecheck:desktop
 uv run --package covalent-desktop python -m pytest products/desktop/tests
 pnpm smoke:desktop
 ```
 
-smoke 会打开窗口，等待 renderer 显示 service ready，再关闭窗口并确认 sidecar 正常退出。当前已在 macOS arm64 实测；Windows 由新增的 CI job 检查源码测试与构建，真实安装包仍待验证。
-现有 `main.py`、`dev.sh`、`pnpm dev:enterprise` 仍是 Enterprise 入口。service 公开的 `covalent-desktop-service` 仅供宿主启动和诊断，不是用户侧 Agent CLI。
-如果只执行过 `uv sync --package covalent-desktop`，运行 Enterprise 前用 `uv sync` 恢复默认环境；同时开发多个产品优先使用 `uv sync --all-packages`。
+The smoke test builds the renderer and shell, opens the desktop window, waits
+for the renderer to report service readiness, then verifies clean sidecar exit.
+It has been exercised on macOS arm64. Windows source/build checks run in CI;
+signed installers still require platform validation.
 
-维护职责：Desktop 维护者负责壳、交互、本地数据和发行；Runtime 维护者负责执行语义；公共模板/调用协议变更需受影响产品维护者共同评审。
+## Boundaries
+
+- Shell owns OS integration and the sidecar lifecycle; it does not run agent algorithms.
+- Renderer communicates through the typed preload bridge and never manages Python directly.
+- Service owns Desktop use cases and local composition; shared execution stays in Runtime.
+- Desktop must not import Enterprise or Lite product code.
+- Shared templates and invoke protocol changes require cross-product review.
+
+See [runtime consistency](../../docs/runtime-consistency.md) and the
+[desktop stack ADR](../../docs/adr/0001-desktop-stack.md).

@@ -1,14 +1,31 @@
-# covalent_runtime
+# covalent-runtime
 
-ReAct, context compaction, delegation, durable runs, execution types and ports.
+The product-independent Covalent agent engine. Distribution: `covalent-runtime`;
+import namespace: `covalent_runtime`.
 
-Allowed dependencies: contracts only. Concrete registries, models, stores and execution backends are injected.
+[Repository overview](../../../README.md) · [Runtime consistency](../../../docs/runtime-consistency.md)
 
-Maintainer: Covalent runtime maintainers. Public imports live under `covalent_runtime`;
-The removed `covalent.*` aliases are not supported; import `covalent_runtime` directly.
-The package uses its own `pyproject.toml`; root uv workspace supplies local sources.
+## Responsibilities
 
-Validation: `uv run python -m pytest tests/` (existing regression suite),
-`uv run python -m pytest tests/architecture/`, and `uv run python tooling/verify_wheels.py`
-after building wheels. New package-specific tests can live in this package
-and must be included in the root validation command.
+- ReAct execution and model/tool turn orchestration
+- Context compaction and message sanitization
+- Delegation and human-in-the-loop continuation semantics
+- Durable run lifecycle services
+- Domain types and ports for models, memory, execution and persistence
+
+## Dependency boundary
+
+Runtime may depend on `covalent-contracts` only. Registries, model SDKs,
+databases, FastAPI, SQLAlchemy, Docker and product settings are injected through
+ports and must not be imported, including under `TYPE_CHECKING`.
+
+## Development
+
+```bash
+uv sync --package covalent-runtime
+uv build --package covalent-runtime --wheel
+uv run python -m pytest tests/architecture/test_monorepo.py
+```
+
+Use `tooling/verify_wheels.py` after building all workspace wheels to verify the
+Runtime imports and executes without product or adapter packages installed.

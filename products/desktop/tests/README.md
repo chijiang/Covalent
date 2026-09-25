@@ -1,11 +1,31 @@
-# Desktop 测试归属
+# Covalent Desktop Tests
 
-当前 `test_service.py` 验证 service 状态契约、随机端口握手、Bearer 鉴权和 SIGTERM 清理。
+Desktop product tests cover the Electron-to-sidecar lifecycle and behavior that
+does not belong in shared Runtime tests.
 
-- Python：已覆盖 D1 service 生命周期；后续覆盖配置/模板映射、本地存储迁移、调用、取消和资源清理。
-- Shell：bridge 参数与调用来源校验、sidecar supervisor、异常退出和升级流程。
-- Renderer：工作区交互、连接失败与错误展示；不以截图替代执行语义验证。
-- 打包集成：在 macOS/Windows 无开发环境机器验证完整执行链路。
+**Current coverage:** sidecar status contract, random-port handshake, bearer
+authentication, restart behavior and SIGTERM cleanup.
 
-跨产品 fixture 和一致性测试放根 tests 下，规范见 [内核一致性](../../../docs/runtime-consistency.md)。
-现有产品隔离检查在 tests/architecture/test_monorepo.py；新增实际测试后再加入产品 CI 和测试命令。
+[Desktop README](../README.md) · [Runtime consistency](../../../docs/runtime-consistency.md)
+
+## Test ownership
+
+| Area | Coverage target |
+| --- | --- |
+| Python service | Configuration, local storage, invocation, cancellation and cleanup |
+| Electron shell | Bridge validation, supervisor failures, process-tree cleanup and upgrades |
+| Renderer | Workspace interaction and connection/error states |
+| Packaging | Installation, launch, upgrade and removal on macOS and Windows |
+
+Cross-product fixtures and runtime consistency tests belong in root `tests/`.
+
+## Run
+
+```bash
+uv run --package covalent-desktop python -m pytest products/desktop/tests
+pnpm typecheck:desktop
+pnpm smoke:desktop
+```
+
+Screenshots may support visual QA but do not replace lifecycle or execution
+assertions.

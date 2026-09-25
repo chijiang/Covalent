@@ -1,15 +1,38 @@
-# Desktop shell
+# Covalent Desktop Shell
 
-Electron 主进程已经可以启动 React/Vite renderer，并管理本地 Python service 的启动、握手、健康检查、重启和退出回收。
+The Electron host for Covalent Desktop. It creates the application window,
+exposes a narrow preload bridge and supervises the private Python sidecar.
 
-当前结构：
+**Status:** startup, authenticated handshake, health monitoring, restart and
+shutdown cleanup are implemented. Menus, secure credential storage, updates and
+packaged sidecar discovery are future work.
 
-- `src/main/`：安全窗口和 sidecar supervisor；菜单、凭据和更新尚未实现。
-- `src/preload/`：contextBridge 只暴露服务状态与重启。
-- `src/shared/`：握手和 IPC 状态类型，以及握手的运行时校验。
-- `scripts/dev.mjs`：启动 Vite、编译 shell 并打开 Electron。
+[Desktop README](../README.md) · [Host contract](../../../docs/products/desktop/host-contract.md)
 
-shell 不依赖其他产品，不执行 Agent 算法。开发环境启动 workspace `.venv` 中的 Python；发行包内的冻结 sidecar 和打包配置仍待实现。
-需要 Node 的 MCP/Skill 运行时须显式打包或验证，不能假设 Electron 内置 Node 自动等价于系统 node 命令。
+## Structure
 
-[进程与 bridge 契约](../../../docs/products/desktop/host-contract.md)
+```text
+shell/
+├── src/main/       # Window security and sidecar supervisor
+├── src/preload/    # Narrow contextBridge API
+├── src/shared/     # IPC and handshake types with runtime validation
+└── scripts/dev.mjs # Vite + Electron development launcher
+```
+
+## Development and validation
+
+Run from the repository root:
+
+```bash
+pnpm dev:desktop
+pnpm --filter @covalent/desktop-shell typecheck
+pnpm smoke:desktop
+```
+
+## Boundaries
+
+- Keep `contextIsolation` enabled and expose only reviewed bridge operations.
+- Generate sidecar tokens per process and never place them in renderer storage.
+- Terminate the full sidecar process tree on restart and application exit.
+- Package required Python/Node runners explicitly; do not assume system runtimes.
+- Keep agent execution inside the sidecar and shared Python packages.

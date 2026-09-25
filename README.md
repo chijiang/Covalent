@@ -1,648 +1,184 @@
 # Covalent
 
-Run autonomous agents with sandboxed skills, live traces, and production API access.
+Run agents across server, desktop, and embedded deployments with one shared runtime.
 
 <p align="center">
-  <img src="frontend/public/logos/covalent-logo-horizontal-512.png" alt="Covalent" width="280" />
+  <img src="products/enterprise/web/public/logos/covalent-logo-horizontal-512.png" alt="Covalent" width="280" />
 </p>
 
 ![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)
+![Node Version](https://img.shields.io/badge/node-22%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Much like atoms sharing electrons in a covalent bond, Covalent binds autonomous agents together through seamless collaboration. Chat with live traces, manage Anthropic-style skills, wire OpenAI-compatible providers and MCP servers, isolate execution in Docker sandboxes, and expose production invoke access through scoped API tokens.
+Covalent is an agent platform monorepo. Enterprise provides the complete control
+plane and production API, Desktop brings the same agent model to macOS and
+Windows, and Lite is the minimal server runtime for AI-native applications. All
+products share contracts, execution semantics, tools, skills, and adapters
+instead of maintaining separate agent engines.
 
 <p align="center">
   <img src="docs/images/chat-workspace.png" alt="Covalent Chat Workspace" width="100%" />
 </p>
-<p align="center"><em>Chat Workspace — multi-panel chat with live Agent Trace (tool calls, model steps, and final answers)</em></p>
 
-## Features
+## Products
 
-- **Anthropic-style Skills** — `SKILL.md` is the primary skill format for model-facing instructions and compatible with Claude Code style skills
-- **Execution Overrides via `skill.yaml`** — Optional runtime config for process, permissions, and tool wiring when a skill needs executable behavior
-- **Sandboxed Execution** — Docker-backed session containers with resource limits and no outbound network by default; skills also run as isolated processes under the filesystem backend
-- **Process Pool** — Long-running skill processes managed with semaphore-based concurrency control, health checks, and idle eviction
-- **Ordinary Python & Node.js Scripts** — Export normal functions; the framework wraps them with a runner so skill authors do not need to implement JSON-RPC
-- **OpenAI-Compatible LLM Providers** — Register provider endpoints in the Service Console; agents resolve models through persisted `openai_compatible` configs with env fallbacks
-- **MCP Client** — Connect to external tool servers via stdio, SSE, or streamable HTTP
-- **Production API Tokens** — Scoped `cvt_...` tokens for `/v1/*` agent invoke, with usage and audit in the control plane
-- **Multi-Agent Delegation** — Agents can delegate work to other registered agents
-- **ReAct Runtime** — Iterative reasoning loop with tool calling, session history, and streaming SSE
+| Product | Purpose | Status | Documentation |
+| --- | --- | --- | --- |
+| **Enterprise** | FastAPI backend, PostgreSQL persistence, Next.js control plane, public invoke API, managed skills and sandboxes | Runnable full product | [Product README](products/enterprise/README.md) |
+| **Desktop** | Local macOS/Windows workbench using Electron, React and a Python sidecar | Host/service foundation runnable; agent workspace and installers in progress | [Product README](products/desktop/README.md) |
+| **Lite** | Small CLI-first agent server with a stable HTTP/SSE integration surface | Package scaffold; runtime product implementation next | [Product README](products/lite/README.md) |
+| **Monitor** | Cross-product traces, evaluation and operational monitoring | Planned | [Architecture](docs/monorepo-architecture.md) |
 
-## Product Tour
+Enterprise, Desktop, and Lite exchange the same agent, provider, MCP, skill and
+message contracts. Product-specific authentication, storage, UI and deployment
+remain inside each product.
 
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/skills-workspace.png" alt="Skill settings" />
-      <p><strong>Skills</strong> — browse bundled files and preview <code>SKILL.md</code> before enabling</p>
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/agent-settings.png" alt="Agent settings" />
-      <p><strong>Agents</strong> — prompts, providers, tools, skills, and runtime wiring in one place</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/provider-settings.png" alt="Provider settings" />
-      <p><strong>Providers</strong> — register OpenAI-compatible endpoints and default model routes</p>
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/sandbox.png" alt="Sandbox console" />
-      <p><strong>Sandbox</strong> — live Docker sessions with CPU/mem/PID limits and network locked down by default</p>
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2" align="center" valign="top">
-      <img src="docs/images/api-tokens.png" alt="API tokens" width="70%" />
-      <p><strong>API tokens</strong> — scoped <code>cvt_...</code> tokens for production <code>/v1/*</code> invoke, with usage overview</p>
-    </td>
-  </tr>
-</table>
+## Capabilities
 
-## Monorepo
+- ReAct execution with streaming, context compaction and delegation
+- OpenAI-compatible model providers and MCP tool servers
+- `SKILL.md` instructions with optional `skill.yaml` execution configuration
+- Native Python/Node execution and Docker sandbox profiles
+- Session history, durable run events and human-in-the-loop continuation
+- Scoped `cvt_...` API tokens for production application integration
+- Persistent Enterprise configuration and portable configuration bundles
 
-Desktop：[本地启动](products/desktop/README.md) · [开发指南](docs/products/desktop/development.md) · [内核一致性规范](docs/runtime-consistency.md)。Electron/React/Python 本地链路已可运行，Agent 功能和安装包待实现。
+## Repository layout
 
-开发导航：[Monorepo 开发指南](docs/development.md) · [Lite 开发指南](docs/products/lite/development.md) · [Lite 接口约定](docs/products/lite/contracts.md)。Lite 目前为包骨架，CLI/API 尚未实现。
+```text
+covalent/
+├── products/
+│   ├── enterprise/        # FastAPI product, Next.js control plane, deployment
+│   ├── desktop/           # Electron shell, React renderer, Python sidecar
+│   └── lite/              # Minimal server product
+├── packages/python/
+│   ├── contracts/         # Serializable cross-product contracts
+│   ├── runtime/           # Agent engine, domain types, ports and run services
+│   ├── agent-kit/         # Registry, providers, MCP, skills and standard tools
+│   ├── execution-native/  # Native process adapter and packaged runners
+│   └── execution-docker/  # Docker execution adapter
+├── skills/                # Built-in and locally managed skills
+├── sandbox/               # Sandbox image definitions
+├── tests/                 # Cross-package and Enterprise regression tests
+├── docs/                  # Architecture, contracts and product guides
+├── pyproject.toml         # uv workspace; the root is not a Python package
+└── pnpm-workspace.yaml    # Enterprise and Desktop JavaScript workspace
+```
 
+The removed `covalent.*` compatibility package is no longer supported. Import
+the owning package directly; see the [migration table](docs/legacy-python-imports.md).
 
-The full product now lives in [`products/enterprise`](products/enterprise/README.md).
-Shared Python packages live in `packages/python/{contracts,runtime,agent-kit,execution-native,execution-docker}`.
-They use separate distribution/import names and a root uv workspace. The frontend
-is `products/enterprise/web`, managed by the root pnpm workspace.
+## Quick start: Enterprise
 
-`main.py`, `dev.sh`, `frontend/`, and `alembic/` remain compatibility entry points.
-The legacy Python `covalent.*` package has been removed; code must import the owning package directly.
-Lite and Monitor remain future consumers. Desktop now has a runnable local host/service
-foundation while still sharing the canonical packages instead of copying runtime code. See [the architecture design](docs/monorepo-architecture.md)
-and [Enterprise build/validation instructions](products/enterprise/README.md).
-
-## Quick Start
+Requirements: Python 3.12+, uv, Node.js 22+, pnpm, and PostgreSQL.
 
 ```bash
-# Install dependencies
 uv sync
-
-# Configure (copy and edit .env)
+pnpm install --frozen-lockfile
 cp .env.example .env
 
-# Run backend (requires AGENT_FRAMEWORK_DATABASE_URL)
-uv run python main.py serve
-
-# Or start backend + frontend together
+# Apply schema changes explicitly, then start both services.
+uv run python main.py migrate
 ./dev.sh both
 ```
 
-The server starts on `http://0.0.0.0:5170` by default (`AGENT_FRAMEWORK_BACKEND_PORT`).
+- Control plane: `http://localhost:3100`
+- Backend: `http://localhost:5170`
+- Health: `http://localhost:5170/healthz`
 
-### Frontend
+`AGENT_FRAMEWORK_DATABASE_URL` must point to PostgreSQL. Environment variables
+retain the `AGENT_FRAMEWORK_*` prefix for deployment compatibility. Provider and
+agent configuration is persisted in the database and managed from the Service
+Console.
 
-A Next.js control plane lives in [frontend](frontend).
+See [Enterprise](products/enterprise/README.md) for authentication, public API,
+configuration bundles, Docker deployment and operational details.
 
-```bash
-cd frontend
-pnpm install
-pnpm dev
-```
+## Product development
 
-The frontend proxies the FastAPI backend and assumes `http://127.0.0.1:5170` by default. Override with `AGENT_FRAMEWORK_API_BASE_URL` or `NEXT_PUBLIC_AGENT_FRAMEWORK_API_BASE_URL`.
-
-Service Console routes include agent settings, provider settings, MCP services, skill settings, and sandbox monitoring under `frontend/app/service-console/`.
-
-## CLI
-
-`main.py` is a [typer](https://typer.tiangolo.com/) CLI. It always uses `AGENT_FRAMEWORK_DATABASE_URL` (from the environment or `.env`) and talks to the database directly — the server does not need to be running.
+Run commands from the repository root.
 
 ```bash
-# Export the full platform configuration (agents, providers, MCP servers,
-# sandbox profiles, users/workspaces, skills) into a single zip bundle.
-# Provider API keys are exported in plaintext — store the bundle securely.
-uv run python main.py config export -o bundle.zip
+# Enterprise
+./dev.sh both
 
-# Inspect what an import would change without writing anything
-uv run python main.py config import bundle.zip --dry-run
+# Desktop
+uv sync --locked --all-packages
+pnpm dev:desktop
 
-# Import into another environment (e.g. production). Rows are upserted by
-# natural key; rows not present in the bundle are left untouched.
-uv run python main.py migrate
-uv run python main.py config import bundle.zip                 # overwrite conflicts
-uv run python main.py config import bundle.zip --on-conflict skip
-uv run python main.py config import bundle.zip --strict        # abort on unresolved references
-uv run python main.py config import bundle.zip --no-skills     # skip bundled skill files
-
-# User administration
-uv run python main.py users list
-uv run python main.py users create --email ops@example.com --username ops --role admin
-uv run python main.py users set-role ops@example.com member
-uv run python main.py users reset-password ops@example.com
-
-# Provider administration
-uv run python main.py providers list                            # keys are masked
-echo "sk-..." | uv run python main.py providers set-key my-provider --stdin
+# Package-only Lite work
+uv sync --package covalent-lite
+uv run --package covalent-lite python -c "import covalent_lite"
 ```
 
-Migration workflow: configure locally → `config export` → on the target host run `migrate` then `config import` → start the server. Local skills (`uploaded`/`authored`) are bundled with their files; git-synced skills re-sync from their exported `skill_sources` entries.
-
-## Configuration
-
-All settings are loaded from environment variables with the prefix `AGENT_FRAMEWORK_`, or from a `.env` file in the project root. In the `.env` file, use the full prefixed names (e.g. `AGENT_FRAMEWORK_DATABASE_URL`, not `DATABASE_URL`).
-
-### Core Settings
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_FRAMEWORK_DATABASE_URL` | — | PostgreSQL connection string for persistent config |
-| `AGENT_FRAMEWORK_SKILLS_ROOT_DIR` | `skills` | Managed root for built-in, uploaded, authored, and git-synced skills |
-| `AGENT_FRAMEWORK_SKILLS_DIRECTORIES` | derived from `skills_root_dir` | Optional override for local skill scan roots |
-| `AGENT_FRAMEWORK_BACKEND_PORT` | `5170` | Backend port used by `main.py serve` and `dev.sh` |
-| `AGENT_FRAMEWORK_FRONTEND_PORT` | `3100` | Frontend dev port used by `dev.sh` |
-
-See [.env.example](.env.example) for a starter `.env` template (copy it to `.env`).
-
-### Authentication
-
-The backend has two access planes, each with its own auth:
-
-- **External integration API — `/v1/*`**: authenticated per request with an **API token** created in the Service Console, sent as `Authorization: Bearer cvt_...`. Tokens carry scopes and policies (allowed agents, memory modes, trace level, rate limits). See [Production Agent Invoke API](#production-agent-invoke-api).
-- **Everything else** (Service Console routes — `/agents`, `/sessions`, `/config/*`, `/skills/*`, `/users`, `/api-tokens`, etc.): gated by a **console login**. A default-deny middleware rejects any unauthenticated request with `401` before it reaches the route. The only public exceptions are `/healthz` and `/auth/{login,register,logout}`.
-
-The console auth mode is controlled by `AGENT_FRAMEWORK_CONSOLE_AUTH_MODE`:
-
-| Mode | Behavior |
-|------|----------|
-| `dev` | Gate **disabled**. Anonymous requests resolve to a shared local admin. **Local development only — never use in production.** |
-| `local` / `session` / `password` | Cookie session issued by `POST /auth/login` (default). |
-| `trusted_header` | Trust `x-covalent-*` identity headers injected by your reverse proxy. |
-| `jwt` | Validate an external JWT bearer token (requires `AGENT_FRAMEWORK_CONSOLE_AUTH_JWT_SECRET`). |
-
-Security settings that **must** be changed for any non-`dev` deployment:
-
-| Variable | Default | Why it matters |
-|----------|---------|----------------|
-| `AGENT_FRAMEWORK_CONSOLE_AUTH_MODE` | `local` | Set explicitly. `dev` disables all console auth. |
-| `AGENT_FRAMEWORK_CONSOLE_SESSION_SECRET` | `dev-session-secret-change-me` | Signs session cookies; with the default value sessions can be forged. |
-| `AGENT_FRAMEWORK_API_TOKEN_HASH_PEPPER` | `dev-token-pepper-change-me` | Hashes API tokens; rotating it invalidates all existing tokens. |
-
-An initial admin is seeded on first boot from `AGENT_FRAMEWORK_CONSOLE_SEED_ADMIN_*` (enabled by default with `admin` / `admin123` — change the password). Self-service sign-up via `/auth/register` is controlled by `AGENT_FRAMEWORK_CONSOLE_SIGNUP_ENABLED`.
-
-### Persistent Config
-
-Agents, MCP servers, skill sources, and LLM providers are stored in PostgreSQL and managed through the Service Console (agent settings, provider settings, MCP services, skill settings). There are no env-var seeds — register your providers and agents in the console after the first boot. A default agent is seeded once when the agents table is empty; its provider backfills at runtime from whichever provider is registered in the console.
-
-Use `GET/PUT /config/agents`, `GET/PUT /config/mcp`, `GET/PUT /config/skill_sources`, and `GET/PUT /config/providers` to inspect and update persisted config.
-Use `GET /providers/{provider_name}/models` to fetch the model catalog for a saved provider.
-
-### Browser tools (opt-in)
-
-Set `AGENT_FRAMEWORK_BROWSER_TOOLS_ENABLED=true` and run `playwright install chromium` on the host once to give agents Playwright browser tools: `browser_navigate`, `browser_snapshot`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_press_key`, `browser_evaluate`, `browser_close`. Agents interact via an accessibility-style snapshot (interactive elements get refs `e1`, `e2`, …) and address elements by ref; screenshots are returned inline to vision-capable models. Screenshots ride the same multimodal pipeline as `read_pdf` image pages.
-
-The browser is **not sandboxed** — headless Chromium runs in the API server process with the host's network reach, the same trust boundary as the other in-process builtin tools, and works under both the `filesystem` and `docker` backends. The env flag only controls whether the tools register; **exposure is per-agent** — grant them in agent settings → local tools (nothing is granted by default). Tune headless mode, channel/executable, timeouts, idle-context reaping, and the screenshot byte budget via the `AGENT_FRAMEWORK_BROWSER_*` vars (see [.env.example](.env.example)).
-
-### Execution Backend
-
-The **execution backend** decides where a session's skill code and ad-hoc scripts run. It is selected by `AGENT_FRAMEWORK_EXECUTION_BACKEND_KIND` and is transparent to agents — the same skill works under any backend.
-
-| Backend | Where code runs | Isolation | Status |
-|---------|-----------------|-----------|--------|
-| `filesystem` (default) | Local host subprocesses | None | Stable |
-| `docker` | One container per agent per session | Container: per-profile resource limits + no network by default | Stable |
-| `kubernetes` | One Pod per session | Pod + cluster network policy | Planned |
-
-Under `filesystem` (the default) skills run as host subprocesses with the backend process's permissions — fine for trusted local/development use.
-
-Under `docker`, every agent gets its own logical sandbox instance — a master agent and its delegates run in **separate containers** while sharing the session workspace (cooperative read/write): a Python master can write a file a Node delegate immediately reads. Skill runners and scripts are exec'd into the instance over a hijacked socket; the session workspace is bind-mounted read/write, skill sources read-only, and each instance gets private `HOME`/caches plus a sized `tmpfs /tmp`. Containers are created with per-profile resource ceilings (`mem` / `pids` / `cpu`) and **no outbound network by default** (`network_mode=none` — the model provider runs on the host, so skill runners don't need network). Containers are torn down when the session is deleted, swept on startup, and reclaimed by a per-instance reaper.
-
-To use Docker:
-
-```bash
-# 1. Build the sandbox images (see sandbox/README.md for the full matrix:
-#    python / nodejs / polyglot / slim / toolbox / datascience):
-docker build -t covalent-sandbox:dev -f sandbox/Dockerfile.python .
-docker build -t covalent-sandbox-node:dev -f sandbox/Dockerfile.nodejs .
-
-# 2. Select the backend and (optionally) tune:
-AGENT_FRAMEWORK_EXECUTION_BACKEND_KIND=docker
-# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_IMAGE=covalent-sandbox:dev   # seeds the default profile
-# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_MAX_INSTANCES=0  # 0=unlimited; >0 = queue when full
-# AGENT_FRAMEWORK_EXECUTION_BACKEND_DOCKER_IDLE_TIMEOUT_SECONDS=1800  # 0=never auto-stop
-```
-
-**Sandbox profiles.** Administrators manage environment templates (**Service Console → Sandbox profiles**): image reference, runtime capabilities (`python`/`nodejs`/`shell`), resource limits, and pull policy. A profile must pass image validation (probed in a short-lived, network-disabled container) before it can be enabled or made default; the first boot seeds a compatibility `default` profile from the Docker settings above (marked *unverified* until validated). Agents select a profile in agent settings (unset = the workspace default), so a Python master can delegate to a Node agent running its native runtime. Editing a profile only affects new bindings — existing sessions keep their pinned revision snapshot. Disabling a profile is emergency revocation: its live containers stop and lazy recreation is blocked until re-enabled. Optional operator hard maximums (`..._MAX_MEMORY`/`..._MAX_CPUS`/`..._MAX_PIDS`) and an image registry allowlist (`..._ALLOWED_IMAGE_REGISTRIES`) constrain what profiles may request.
-
-**Per-agent outbound whitelist.** Configure `allowed_outbound` on any agent (agent settings → "Allowed outbound hosts", e.g. `api.example.com, *.openai.com`). When non-empty, that agent's session containers switch to `bridge` networking and the skill SDK enforces the patterns via `SKILL_NET_ALLOW`. Leave empty for `network_mode=none` (no outbound). The container is automatically recreated if the outbound config changes mid-session.
-
-**Sandbox shell tool (opt-in).** Under the Docker backend, set `AGENT_FRAMEWORK_EXECUTION_BACKEND_SHELL_TOOL_ENABLED=true` to give agents a `run_shell` tool that runs a shell command inside the session container. It inherits the resource limits and network policy, and is the same trust boundary as the skill code already running there. It is never registered on the `filesystem` backend. Tune the binary (`sh`/`bash`), timeout, and output cap with the other `EXECUTION_BACKEND_SHELL_TOOL_*` vars.
-
-**Sandbox management.** The Service Console's **Sandbox** admin page groups live containers by session with one nested row per instance: agent, profile + revision, status/idle, per-profile resources, network policy, and stop (keep the binding) / reset (re-resolve the profile next run) actions, plus a session-level stop-all. Metrics (containers started/stopped/swept, image pulls, recreations, capacity waits) are exposed via `GET /healthz` under `checks.sandbox`.
-
-**Lifecycle.** Containers are created lazily (first skill/script/shell call — model-only agents consume no Docker capacity), stopped on session delete, swept on startup, and reclaimed by a per-instance reaper. Idle containers are auto-stopped after `IDLE_TIMEOUT_SECONDS` (default 30 min) while their logical bindings survive, so the next run recreates them from the pinned spec. New instances queue when `MAX_INSTANCES` is reached (instead of being rejected). Stateless `memory.mode=none` invocations use a run-scoped sandbox that is always cleaned up on completion, failure, or client disconnect. A real-Docker acceptance script covering the multi-profile scenarios lives at `scripts/sandbox_acceptance.py`.
-
-Full design — the pluggable `ExecutionBackend` interface, lifecycle, security model, and phase roadmap — is in [`docs/execution-backend-design.md`](docs/execution-backend-design.md).
-
-### Stateful Delegates (experimental)
-
-`AGENT_FRAMEWORK_STATEFUL_DELEGATES_ENABLED` (default `false`) turns the fire-and-forget delegate tool into **stateful delegate runs**: private per-run memory, an `ask_parent` tool (delegates question their parent, never the end user), root-agent `delegate_send` / `delegate_list` / `delegate_release` tools, and lifecycle SSE events. **Before enabling, run `uv run python main.py migrate`** — migration `20260818_000027` adds the backing tables.
-
-Tune via env vars (defaults shown): `AGENT_FRAMEWORK_DELEGATE_MAX_ACTIVE_RUNS_PER_PARENT=4`, `..._DELEGATE_MAX_RUNS_PER_SCOPE=32` (both count ACTIVE runs only — released/failed runs never exhaust a quota), `..._DELEGATE_MAX_DEPTH=3` (0 = unlimited), `..._DELEGATE_MAX_MESSAGES_PER_RUN=200`, `..._DELEGATE_IDLE_TTL_SECONDS=86400` and `..._DELEGATE_WAITING_TTL_SECONDS=3600` (`0` = never expire), `..._DELEGATE_RELEASED_RETENTION_SECONDS=3600` (raw run memory kept after release; `0` = prune immediately), `..._DELEGATE_RUNNING_LEASE_SECONDS=900` (stale-running lease before orphan recovery; must be > 0 — the service floors it to 60s, and live turns heartbeat their lease while streaming).
-
-Rollout checklist: enable in dev first and soak on the `delegate_run_transition` / error logs → remove the legacy child-`input_required` promotion path → remove the flag after one compatibility release (each on its own branch).
-
-## Skills
-
-### Directory Layout
-
-All skills live under the managed `skills/` root:
-
-```text
-skills/
-  built_in/       # repository-owned skills
-  uploaded/       # user-imported local bundles
-  authored/       # agent- or developer-authored bundles
-  github_synced/  # git-backed synced bundles from DB skill_sources
-```
-
-The default skill format is:
-
-```
-my-skill/
-  SKILL.md            # model-facing instructions and metadata
-  src/
-    main.py           # optional executable entry point
-```
-
-If a skill needs execution-specific configuration, add an optional `skill.yaml`:
-
-```
-my-skill/
-  SKILL.md            # for the model
-  skill.yaml          # for the execution environment
-  src/
-    main.py
-```
-
-`SKILL.md` is for the model.
-- Instructions in the Markdown body are injected into the agent prompt.
-- YAML frontmatter can define `name`, `description`, `version`, and `references`.
-
-`skill.yaml` is for the runtime.
-- Runtime type and protocol
-- Permissions
-- Process limits and timeouts
-- Optional explicit tool-to-handler mappings
-
-### `SKILL.md` Example
-
-```md
----
-name: weather-python
-description: Fetch current weather for a city
-version: "1.0.0"
-references:
-  - references/methodology.md
----
-
-# Weather Skill
-
-Use this skill when the user asks for current weather.
-Call `get_weather` and present the result clearly.
-```
-
-### Optional `skill.yaml`
-
-```yaml
-runtime:
-  type: python                    # "python" | "nodejs"
-  protocol: callable              # "callable" | "rpc"
-  entry_point: src/main.py        # relative to skill directory
-  args: []                        # extra CLI args (optional)
-  env: {}                         # static env vars (optional)
-
-tools:                            # optional explicit tool declarations
-  - name: my_tool
-    handler: my_tool              # Python/JS function name for callable mode
-    description: What it does
-    parameters:
-      type: object
-      properties:
-        query: { type: string, description: "Search query" }
-      required: [query]
-
-permissions:
-  network:
-    allow_outbound: ["*.example.com"]
-    deny: []
-  filesystem:
-    read: ["${SKILL_DIR}/data"]
-    write: ["${SKILL_DIR}/cache"]
-  env_vars: ["API_KEY"]           # host env vars the skill may read
-  subprocess: false               # can the skill spawn child processes?
-
-process:
-  max_instances: 1                # concurrent process pool size
-  idle_timeout_seconds: 300       # evict idle processes after this
-  startup_timeout_seconds: 15     # max time for process to become ready
-  max_request_timeout_seconds: 60 # per-request timeout
-
-health_check:
-  interval_seconds: 30
-  max_failures: 3
-```
-
-If `skill.yaml` is absent, the framework builds a default runtime config:
-- It reads instructions from `SKILL.md`.
-- It infers `src/main.py`, `main.py`, `src/main.js`, `main.js`, or `index.js` as the entry point when present.
-- It treats top-level Python functions or exported Node.js functions as tools.
-- It uses `callable` protocol automatically.
-
-### Permission Enforcement
-
-Permissions are enforced at two levels:
-
-1. **Framework side** — Environment variables are filtered at spawn time; only declared `env_vars` and system essentials pass through.
-2. **Runner / SDK side** — In `callable` mode the framework runner patches common filesystem entry points before loading the user module. In `rpc` mode the SDK provides the same guardrails. Network and subprocess restrictions are still exposed through environment variables for skill code to respect explicitly.
-
-### Ordinary Python Skill Example
-
-```python
-def get_weather(city: str) -> str:
-    """Get weather for a city."""
-    import urllib.request
-    url = f"https://wttr.in/{city}?format=3"
-    req = urllib.request.Request(url, headers={"User-Agent": "curl/8"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return resp.read().decode().strip()
-```
-
-### Ordinary Node.js Skill Example
-
-```js
-async function hello_node({ name }) {
-  return `Hello, ${name}!`;
-}
-
-module.exports = { hello_node };
-```
-
-### Using the SDK (optional)
-
-If you want custom RPC behavior, dynamic tool registration, or framework-managed permission helpers inside the skill process, you can still use the SDK and set `runtime.protocol: rpc`.
-
-```python
-# src/main.py
-import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
-from skill_sdk import SkillServer
-
-server = SkillServer()
-
-@server.tool("greet")
-def greet(name: str) -> str:
-    """Greet someone."""
-    return f"Hello, {name}!"
-
-server.run()
-```
-
-The SDK auto-generates tool parameter schemas from function signatures and enforces declared permissions.
-
-## API Reference
-
-### Agent Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/agents` | List all agents |
-| `GET` | `/agents/{name}` | Get agent details |
-| `POST` | `/agents/{name}/run` | Run agent (sync) |
-| `POST` | `/agents/{name}/stream` | Run agent (SSE stream) |
-| `POST` | `/v1/agent/invoke` | External production API for token-authenticated agent invokes |
-
-**Run agent:**
-
-```bash
-curl -X POST http://localhost:5170/agents/default/run \
-  -H "Content-Type: application/json" \
-  -d '{"input": "What is the weather in Tokyo?"}'
-```
-
-**Stream agent:**
-
-```bash
-curl -N http://localhost:5170/agents/default/stream \
-  -H "Content-Type: application/json" \
-  -d '{"input": "Hello", "session_id": "abc123"}'
-```
-
-### Production Agent Invoke API
-
-External callers should use the single public API surface:
-
-```text
-POST /v1/agent/invoke
-Authorization: Bearer cvt_<token-prefix>_<secret>
-Content-Type: application/json
-```
-
-A full token looks like `cvt_0a1b2c3d4e5f6g7h_<random-secret>`. Only this `cvt_<prefix>_<secret>` form is accepted on the `Authorization` header; the database stores only a salted hash of the secret plus the public prefix, so the full secret is shown **once** at creation time and cannot be recovered later.
-
-#### Creating an API token
-
-API tokens are created in the Service Console UI:
-
-1. **Sign in** to the console. On first boot an admin is seeded from `AGENT_FRAMEWORK_CONSOLE_SEED_ADMIN_*` (default `admin` / `admin123` — change the password before exposing the console).
-2. Open **Service Console → API Tokens** in the left navigation (also reachable from your account page → *api-tokens* tab). The page shows usage overview tiles, a request chart, and a two-panel token workspace: the token inventory list on the left, the editor form on the right.
-3. Click **New token** (the button appears in both the page header and the inventory panel heading). The right panel switches to **Create API token** mode and pre-fills a default name like `api-token-YYYY-MM-DD`.
-4. **Token details** — edit the **Name** (required) and optionally set **Expires at** as a local date/time. Scope is fixed to `agent:invoke`; the workspace is the current one.
-5. **Access policy**:
-   - **Allowed agents** — multi-select of configured agents. Leave empty to allow all agents created in your workspace; restrict to a subset (e.g. only `researcher`) to lock the token to those agents.
-   - **Allowed memory modes** — multi-select of *Stateless* (`none`) and/or *Session memory* (`session`). At least one is required; default is both. Controls whether callers using this token may use stateless or session memory.
-   - **Max trace level** — `None`, `Steps` (default), or `Debug`. Hides/reveals execution detail in streamed invoke responses. *Debug* can expose tool arguments and result summaries.
-   - **Requests per minute** / **Requests per day** / **Tokens per day** — optional positive integers. Leave blank for unlimited. Each is enforced against prior recorded invoke logs.
-6. Click **Create token**. A dialog opens titled **API token created** showing the full secret (`cvt_...`) in a read-only field with a **Copy** button next to it. ⚠️ This is the only time the secret is displayed — the backend keeps only a salted hash plus the public prefix, so it cannot be recovered. Copy it into your secrets manager (e.g. `export COVALENT_API_TOKEN=cvt_...`), then click **Done**.
-
-After creation the token appears in the inventory list, marked active with its prefix (`cvt_…`) and policy badges. Selecting a token opens it in the editor where you can update its name/policy with **Save changes**, review **Recent activity** (the last invoke logs), or revoke it:
-- **Revoke token** sits in the danger zone of the editor. Clicking it opens a confirmation dialog (`Revoke <name>?`). Confirming revokes immediately — any app still using `cvt_<prefix>_<secret>` is rejected on the next request. Revocation is permanent, but historical usage stays for audit. Revoked tokens' fields become read-only.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api-tokens` | List the caller's tokens (summary only, no secret) |
-| `POST` | `/api-tokens` | Create a token; returns the one-time plaintext secret |
-| `PATCH` | `/api-tokens/{token_id}` | Update name, scopes, policy, or expiry |
-| `DELETE` | `/api-tokens/{token_id}` | Revoke a token |
-| `GET` | `/api-tokens/usage` | Aggregated usage metrics (default last 30 days) |
-| `GET` | `/api-tokens/{token_id}/runs` | Recent invoke logs for a token |
-
-#### Token scopes & policy
-
-Each token is owned by one user and workspace, and can be constrained with a fine-grained policy:
-
-```json
-{
-  "allowed_agents": ["researcher"],
-  "allowed_memory_modes": ["none", "session"],
-  "max_trace_level": "steps",
-  "max_requests_per_minute": 60,
-  "max_requests_per_day": 1000,
-  "max_tokens_per_day": 200000
-}
-```
-
-Supported policy fields:
-
-| Field | Description |
-|-------|-------------|
-| `allowed_agents` | Optional allow-list of agent names this token can invoke |
-| `allowed_memory_modes` | Optional allow-list containing `none`, `session`, or both |
-| `max_trace_level` | Highest stream trace level: `none`, `steps`, or `debug` |
-| `max_requests_per_minute` | Optional token-level burst limit enforced from invoke logs |
-| `max_requests_per_day` | Optional token-level daily request quota enforced from invoke logs |
-| `max_tokens_per_day` | Optional daily token quota using recorded `total_tokens` |
-
-#### Invoking with a token
-
-Send the token as a bearer `Authorization` header on `POST /v1/agent/invoke`. The request body takes `agent`, `input` (string or OpenAI-style content array), optional `stream`, `memory`, `trace`, and `metadata`. The token's policy is enforced before the run — denied calls (invalid/expired token, agent not in `allowed_agents`, disallowed memory mode or trace level, or quota exceeded) return `4xx` and write an `agent.invoke.denied` audit event.
-
-Stateless invoke does not write conversation memory:
-
-```bash
-curl -X POST http://localhost:5170/v1/agent/invoke \
-  -H "Authorization: Bearer $COVALENT_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent": "researcher",
-    "input": "Summarize the latest uploaded brief.",
-    "memory": { "mode": "none" },
-    "trace": { "level": "steps" }
-  }'
-```
-
-Session invoke stores and reuses memory scoped to the token owner's user and workspace:
-
-```bash
-curl -X POST http://localhost:5170/v1/agent/invoke \
-  -H "Authorization: Bearer $COVALENT_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent": "researcher",
-    "input": "Continue from the prior analysis.",
-    "memory": { "mode": "session", "session_id": "customer-brief-001" }
-  }'
-```
-
-Set `stream: true` to receive Server-Sent Events. `trace.level` controls how much execution detail is exposed: `none` suppresses tool and thought events, `steps` emits redacted execution steps, and `debug` includes tool arguments and summarized results.
-
-```bash
-curl -N http://localhost:5170/v1/agent/invoke \
-  -H "Authorization: Bearer $COVALENT_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent": "researcher",
-    "input": "Inspect the configured tools before answering.",
-    "stream": true,
-    "memory": { "mode": "none" },
-    "trace": { "level": "debug" }
-  }'
-```
-
-Every public invoke writes an `agent_run_logs` row and an audit event. Denied calls, including missing or invalid tokens, cross-user private agent access, disallowed policy values, and quota failures, write `agent.invoke.denied` audit events when the request reaches the application.
-
-### Skill Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/skills` | List all skills |
-| `GET` | `/skills/{name}` | Get skill details |
-| `POST` | `/skills/install` | Install from local directory or register a git-backed skill source |
-| `POST` | `/skills/upload` | Upload a `.zip` skill bundle into `skills/uploaded` or `skills/authored` |
-| `DELETE` | `/skills/{name}` | Uninstall skill |
-| `POST` | `/skills/{name}/start` | Pre-warm process pool |
-| `POST` | `/skills/{name}/stop` | Stop process pool |
-| `GET` | `/skills/{name}/health` | Check process health |
-
-`/skills/install` accepts either a server-local directory path or a git source payload. `/skills/upload` accepts multipart form data with a `.zip` archive and a target category.
+The root compatibility entry points `main.py`, `dev.sh`, `frontend/`, `alembic/`
+and `Dockerfile` still target Enterprise. New code should use canonical product
+paths and package names.
 
 ## Architecture
 
 ```mermaid
-graph TD
-    Request([User Request]) --> API[FastAPI Server]
-    API --> Runtime[ReactAgentRuntime]
-    Runtime <--> LLM[LLM / Tool Calling]
-    Runtime --> Registry[FrameworkRegistry]
+flowchart LR
+    Enterprise[Enterprise] --> Contracts
+    Desktop[Desktop] --> Contracts
+    Lite[Lite] --> Contracts
 
-    subgraph Tool Resolution
-        Registry --> Resolve[resolve_tools_for_agent]
-        Resolve --> Local[Local Tools]
-        Resolve --> MCP[MCP Tools]
-        Resolve --> SkillTools[Skill-owned Tools]
-    end
+    Enterprise --> Runtime
+    Desktop --> Runtime
+    Lite --> Runtime
 
-    Registry --> Exec[execute_tool_call]
-    Exec --> SPM[SkillProcessManager]
-    Exec --> Scripts[Scripts & Shell]
+    Runtime[covalent-runtime] --> Contracts[covalent-contracts]
+    AgentKit[covalent-agent-kit] --> Runtime
+    AgentKit --> Contracts
+    Native[covalent-execution-native] --> Runtime
+    Docker[covalent-execution-docker] --> Runtime
+    Docker --> Native
 
-    SPM --> Backend{ExecutionBackend<br/><code>EXECUTION_BACKEND_KIND</code>}
-    Scripts --> Backend
-
-    Backend -->|filesystem default| Host[Host Subprocess<br/>no isolation · fast]
-    Backend -->|docker| Docker[Docker Container per Session<br/>mem / cpu / pids limits · network=none<br/>idle-timeout · max-sessions queue]
-    Backend -.-> Admin[Sandbox Console<br/>monitor · stop · metrics]
+    Enterprise --> AgentKit
+    Desktop -. product milestone .-> AgentKit
+    Lite -. product milestone .-> AgentKit
 ```
 
-## Bundled Skills
-
-Managed skills are organized under `skills/` by category:
+The enforced dependency rule is:
 
 ```text
-skills/
-  built_in/       # repository-owned skills
-  uploaded/       # user-imported local bundles
-  authored/       # agent- or developer-authored bundles
-  github_synced/  # git-backed synced bundles from DB skill_sources
+product API → product application → shared runtime/contracts + product infra
 ```
 
-Install or sync additional skills through the Service Console or the `/skills/install` and `/skills/upload` endpoints.
+Shared packages never import products, and products never import one another.
+Architecture tests enforce package direction, including imports used only for
+typing.
 
-## Development
+## Validation
 
 ```bash
-uv sync
-uv run python main.py serve
-./dev.sh both
-cd frontend && pnpm install && pnpm exec tsc --noEmit
+uv run ruff check --select F \
+  packages/python products/enterprise/backend/src \
+  products/lite/service/src products/desktop/service/src \
+  tests scripts main.py tooling
+uv run python -m pytest tests/
+uv build --all-packages --wheel
+uv run python tooling/verify_wheels.py
+
+pnpm typecheck
+pnpm lint
+pnpm build:enterprise
+pnpm smoke:desktop
 ```
 
-## Acknowledgments
+Set `TEST_DATABASE_URL` to a disposable PostgreSQL database to enable real-DB
+integration tests. Docker integration and acceptance tests require a reachable
+Docker daemon and locally built sandbox images.
 
-Covalent is built on top of excellent open-source projects:
+## Documentation
 
-**Backend**
-
-- [FastAPI](https://fastapi.tiangolo.com) — async web framework
-- [SQLAlchemy](https://www.sqlalchemy.org) + [Alembic](https://alembic.sqlalchemy.org) — ORM and migrations
-- [asyncpg](https://github.com/MagicStack/asyncpg) — PostgreSQL async driver
-- [Pydantic](https://pydantic.dev) + [pydantic-settings](https://github.com/pydantic/pydantic-settings) — data validation and settings
-- [Uvicorn](https://www.uvicorn.org) — ASGI server
-- [OpenAI Python SDK](https://github.com/openai/openai-python) — LLM provider client
-- [Model Context Protocol](https://github.com/modelcontextprotocol/python-sdk) — MCP client integration
-- [Docker SDK for Python](https://github.com/docker/docker-py) — sandbox container management
-- [httpx](https://www.python-httpx.org) — HTTP client
-- [PyJWT](https://github.com/jpadilla/pyjwt) — JWT authentication
-- [python-pptx](https://github.com/scanny/python-pptx) / [openpyxl](https://openpyxl.readthedocs.io) / [PyMuPDF](https://pymupdf.readthedocs.io) — document generation
-
-**Frontend**
-
-- [Next.js](https://nextjs.org) — React framework
-- [shadcn/ui](https://ui.shadcn.com) — UI component system
-- [Tailwind CSS](https://tailwindcss.com) — styling
-- [Lucide](https://lucide.dev) — icon library
-- [react-markdown](https://github.com/remarkjs/react-markdown) — markdown rendering
-
-**Tooling**
-
-- [uv](https://github.com/astral-sh/uv) — Python package manager
-- [pnpm](https://pnpm.io) — Node.js package manager
+- [Monorepo development guide](docs/development.md)
+- [Architecture and product boundaries](docs/monorepo-architecture.md)
+- [Runtime consistency rules](docs/runtime-consistency.md)
+- [Desktop development guide](docs/products/desktop/development.md)
+- [Lite development guide](docs/products/lite/development.md)
+- [Lite API contracts](docs/products/lite/contracts.md)
+- [Sandbox images](sandbox/README.md)
 
 ## License
 

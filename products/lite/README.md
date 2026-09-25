@@ -1,26 +1,61 @@
 # Covalent Lite
 
-面向外部 AI-native 应用的轻量 Agent 运行产品：CLI 优先，提供小而稳定的 HTTP/SSE 接口。
+Lite is the small, CLI-first Covalent runtime for external AI-native
+applications. It will expose a stable agent invocation surface without the
+Enterprise control plane, PostgreSQL dependency or desktop shell.
 
-**当前状态：目录与可安装 Python 包骨架；尚无可运行的 Lite CLI、HTTP 服务或配置加载器。**
-Enterprise 的 `main.py` 和 `dev.sh` 仍是 Enterprise 入口。
+**Status:** installable package scaffold. Agent assembly, CLI commands, config
+loading and HTTP/SSE endpoints are not implemented yet.
 
-- [开发指南与模块归属](../../docs/products/lite/development.md)
-- [首版功能与接口约定](../../docs/products/lite/contracts.md)
-- [Monorepo 开发导航](../../docs/development.md)
+[Repository overview](../../README.md) · [Development guide](../../docs/products/lite/development.md) · [API contracts](../../docs/products/lite/contracts.md)
 
-`service/` 是独立分发包 `covalent-lite`，命名空间为 `covalent_lite`。
-当前仅声明 contracts/runtime 依赖；实现装配时再增加 agent-kit 与 CLI/HTTP 依赖。
-不依赖 Enterprise、数据库、桌面壳或 Monitor。维护职责归 Lite 产品维护者；
-共享执行语义由 Runtime 维护者评审，公共协议变更同时邀请 Enterprise 维护者。
+## Intended scope
 
-骨架验证（仓库根目录，Python 3.12+）：
+- File-based agent, provider, MCP and skill configuration
+- CLI-first validation, listing and invocation
+- Small HTTP API with synchronous and SSE agent calls
+- Native execution by default, with explicit optional Docker support
+- The same contracts, Runtime and Agent Kit semantics as Enterprise and Desktop
 
-```sh
-uv sync --package covalent-lite
-uv run --package covalent-lite python -c "import covalent_lite"
-uv build --package covalent-lite --out-dir /tmp/covalent-lite-dist
-uv run python -m pytest tests/architecture/test_monorepo.py
+Lite does not own user administration, workspaces, audit dashboards, database
+configuration, enterprise policy or a permanent frontend.
+
+## Structure
+
+```text
+products/lite/
+└── service/
+    └── src/covalent_lite/
+        ├── api/          # Future HTTP transport
+        ├── application/  # Lite use cases and composition
+        ├── cli/          # Future user-facing CLI
+        └── config/       # File configuration loading and validation
 ```
 
-这些命令验证包结构，不代表 Agent 功能可用。开发 Enterprise 时执行 `uv sync` 恢复其依赖环境。
+The distribution is `covalent-lite`; its Python namespace is `covalent_lite`.
+
+## Development
+
+Run from the repository root:
+
+```bash
+uv sync --package covalent-lite
+uv run --package covalent-lite python -c "import covalent_lite"
+```
+
+This verifies the current package scaffold only. Enterprise remains the default
+root environment; run `uv sync` to restore it after package-only work.
+
+## Validation
+
+```bash
+uv run python -m pytest tests/architecture/test_monorepo.py
+uv build --package covalent-lite --wheel
+```
+
+## Boundaries
+
+- Depend on shared packages, never on Enterprise or Desktop.
+- Keep runtime behavior in `covalent_runtime`; Lite owns assembly and transport.
+- Keep configuration portable and filesystem-based.
+- Preserve the common invocation and SSE contracts documented for Lite.

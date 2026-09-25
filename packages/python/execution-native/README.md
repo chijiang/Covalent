@@ -1,14 +1,28 @@
-# covalent_execution_native
+# covalent-execution-native
 
-Native execution adapter and packaged Python/Node Skill runners.
+Native subprocess execution adapter and packaged Python/Node skill runners.
+Distribution: `covalent-execution-native`; import namespace:
+`covalent_execution_native`.
 
-Allowed dependencies: runtime only. Settings are supplied by the host. Native subprocesses are not an OS security sandbox.
+[Repository overview](../../../README.md) · [Execution design](../../../docs/execution-backend-design.md)
 
-Maintainer: Covalent runtime maintainers. Public imports live under `covalent_execution_native`;
-The removed `covalent.*` aliases are not supported; import `covalent_execution_native` directly.
-The package uses its own `pyproject.toml`; root uv workspace supplies local sources.
+## Responsibilities
 
-Validation: `uv run python -m pytest tests/` (existing regression suite),
-`uv run python -m pytest tests/architecture/`, and `uv run python tooling/verify_wheels.py`
-after building wheels. New package-specific tests can live in this package
-and must be included in the root validation command.
+- Execute commands and skill processes on the host
+- Manage process I/O, timeouts and termination
+- Package runner resources used by native and Docker execution
+- Map Runtime execution ports to local filesystem/process behavior
+
+## Dependency boundary
+
+This package may depend on Runtime. Host settings are supplied by the product.
+It must not import products or Docker-specific implementations. Native execution
+is a process boundary, not an operating-system security sandbox.
+
+## Development
+
+```bash
+uv sync --package covalent-execution-native
+uv build --package covalent-execution-native --wheel
+uv run python -m pytest tests/architecture/test_monorepo.py
+```

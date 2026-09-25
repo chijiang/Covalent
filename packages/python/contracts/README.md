@@ -1,14 +1,29 @@
-# covalent_contracts
+# covalent-contracts
 
-Agent/Provider/MCP/Skill configuration and serializable messages.
+Serializable cross-product contracts for agents, providers, MCP servers, skills
+and messages. Distribution: `covalent-contracts`; import namespace:
+`covalent_contracts`.
 
-Allowed dependencies: Pydantic only; no Runtime, products or infrastructure.
+[Repository overview](../../../README.md) · [Architecture](../../../docs/monorepo-architecture.md)
 
-Maintainer: Covalent runtime maintainers. Public imports live under `covalent_contracts`;
-The removed `covalent.*` aliases are not supported; import `covalent_contracts` directly.
-The package uses its own `pyproject.toml`; root uv workspace supplies local sources.
+## Responsibilities
 
-Validation: `uv run python -m pytest tests/` (existing regression suite),
-`uv run python -m pytest tests/architecture/`, and `uv run python tooling/verify_wheels.py`
-after building wheels. New package-specific tests can live in this package
-and must be included in the root validation command.
+- Pydantic configuration models exchanged by products
+- Wire-safe message and content representations
+- Stable identifiers and enums required across process or product boundaries
+
+## Dependency boundary
+
+Contracts may depend on Pydantic only. They must not import Runtime, adapters or
+products. Keep behavior and infrastructure out of serializable schemas.
+
+## Development
+
+```bash
+uv sync --package covalent-contracts
+uv build --package covalent-contracts --wheel
+uv run python -m pytest tests/architecture/test_monorepo.py
+```
+
+The removed `covalent.*` aliases are unsupported; import
+`covalent_contracts` directly.

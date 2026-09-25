@@ -1,7 +1,11 @@
 # Desktop 发行验收
 
-状态：发行计划，无构建脚本和安装包。首发覆盖 macOS 和 Windows；建议验证 macOS arm64/x64、Windows x64，Windows arm64 的原生支持单独验证后声明。
+Desktop 的跨平台打包、签名、安装和升级验收规范。
+
+**当前状态：发行计划，无构建脚本和安装包。** 首发覆盖 macOS 和 Windows；建议验证 macOS arm64/x64、Windows x64，Windows arm64 的原生支持单独验证后声明。
 最低 OS 版本在 Electron 与 Python 打包器版本选定后记录，不能仅凭开发机版本声明支持。
+
+[Desktop README](../README.md) · [开发指南](../../../docs/products/desktop/development.md)
 
 ## 构建流水线目标
 

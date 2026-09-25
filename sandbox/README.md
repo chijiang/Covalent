@@ -6,6 +6,10 @@ declared runtime binaries on PATH, framework runners at `/runners/`).
 Build context is always the repository root, because the runners are copied
 from `packages/python/execution-native/src/covalent_execution_native/runners/`.
 
+[Repository overview](../README.md) · [Docker adapter](../packages/python/execution-docker/README.md) · [Execution design](../docs/execution-backend-design.md)
+
+## Image matrix
+
 | Dockerfile | Image | Capabilities | Base | Notes |
 |---|---|---|---|---|
 | `Dockerfile.python` | `covalent-sandbox` | python, shell | python:3.12-alpine | Compatibility/default image. |
@@ -26,3 +30,15 @@ docker build -t covalent-sandbox-datascience:dev -f sandbox/Dockerfile.datascien
 ```
 
 Production profiles should reference images by digest, not a floating tag.
+
+## Validation
+
+With a reachable Docker daemon and the required development tags built:
+
+```bash
+uv run python scripts/sandbox_acceptance.py
+uv run python -m pytest tests/test_docker_backend.py
+```
+
+The images contain execution runtimes and runners only. Model provider access,
+credentials, configuration and persistence remain in the host product.

@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Covalent Enterprise Web
 
-## Getting Started
+The Next.js control plane for Covalent Enterprise. It provides the Chat
+Workspace and Service Console for agents, providers, MCP servers, skills,
+sandbox profiles, users and API tokens.
 
-First, run the development server:
+**Status:** runnable product UI. It requires the Enterprise backend; browser
+requests are proxied through `app/api/backend/[...path]/route.ts`.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+[Enterprise README](../README.md) · [Repository overview](../../../README.md)
+
+## Structure
+
+```text
+web/
+├── app/               # Route entrypoints, redirects and shell composition
+├── components/        # Workspaces and client behavior
+├── hooks/             # Shared React hooks
+├── lib/
+│   ├── client-api.ts  # Backend fetch and SSE boundary
+│   └── types.ts       # TypeScript mirror of backend API shapes
+├── public/            # Logos, fonts and static assets
+└── styles/            # Workspace-specific styles
 ```
 
-Open [http://localhost:3100](http://localhost:3100) with your browser to see the result.
+Keep route files thin. Backend calls belong in `lib/client-api.ts`; do not add
+parallel fetch helpers inside components.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Local development
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Run from the repository root:
 
-## Learn More
+```bash
+pnpm install --frozen-lockfile
+pnpm dev:enterprise
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open `http://localhost:3100`. The proxy targets
+`http://127.0.0.1:5170` unless `AGENT_FRAMEWORK_API_BASE_URL` or
+`NEXT_PUBLIC_AGENT_FRAMEWORK_API_BASE_URL` overrides it.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Validation
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+pnpm typecheck:enterprise
+pnpm lint
+pnpm build:enterprise
+```
 
-## Deploy on Vercel
+## Boundaries
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Preserve the light control-plane design language and desktop-first multi-panel chat layout.
+- Keep backend Pydantic shapes and `lib/types.ts` aligned.
+- Keep authentication, persistence and execution logic in the backend.
+- Do not import Desktop or Lite product code.
+- Use the repository root as Docker build context; see `products/enterprise/deploy`.

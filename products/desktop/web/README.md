@@ -1,12 +1,39 @@
-# Desktop renderer
+# Covalent Desktop Renderer
 
-当前已有 React/Vite 状态页，可以显示 Python service 的启动状态、版本、协议和进程号，并从受限 bridge 请求重启。
+The React/Vite renderer for Covalent Desktop. It receives a typed service state
+from Electron preload and presents the local workbench without requiring a
+Next.js server.
 
-后续建立 `src/app/`（路由和壳）、`src/workspaces/`（Agent/Chat/资源工作区）、
-`src/services/`（typed bridge adapter）。与 Enterprise 共用的组件先提取到 packages/typescript，
-禁止直接导入 products/enterprise/web。
+**Status:** service status, version, protocol, process ID and restart controls
+are implemented. Agent, chat and resource workspaces are the next milestone.
 
-保持现有浅色、红色强调、多面板的工作台语言。共享组件通过 props/services 注入行为，
-不依赖 Electron、Next.js 路由或企业身份。Renderer 不保存长期服务凭据，不直接管理 Python 进程。
+[Desktop README](../README.md) · [Development guide](../../../docs/products/desktop/development.md)
 
-[开发指南](../../../docs/products/desktop/development.md)
+## Structure
+
+```text
+web/src/
+├── App.tsx       # Current status application
+├── main.tsx      # Renderer entrypoint
+└── styles.css    # Desktop visual foundation
+```
+
+Future workspace code should group route/shell composition, product workspaces
+and typed bridge adapters explicitly rather than importing Enterprise UI code.
+
+## Development and validation
+
+Run from the repository root:
+
+```bash
+pnpm dev:desktop
+pnpm --filter @covalent/desktop-web typecheck
+pnpm --filter @covalent/desktop-web build
+```
+
+## Boundaries
+
+- Use only the preload bridge for host capabilities.
+- Do not store long-lived service credentials in renderer state.
+- Preserve Covalent's light, red-accented, multi-panel design language.
+- Extract proven shared components into a shared package before cross-product reuse.

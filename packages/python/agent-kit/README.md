@@ -1,14 +1,34 @@
-# covalent_agent_kit
+# covalent-agent-kit
 
-Standard registry, model adapters, MCP, Skill lifecycle and tools.
+Standard agent assembly components: registry, model adapters, MCP integration,
+skill lifecycle and built-in tools. Distribution: `covalent-agent-kit`; import
+namespace: `covalent_agent_kit`.
 
-Allowed dependencies: contracts, runtime and execution-native. Document/browser capabilities are optional extras.
+[Repository overview](../../../README.md) · [Skill design](../../../docs/skill-system-design.md)
 
-Maintainer: Covalent runtime maintainers. Public imports live under `covalent_agent_kit`;
-The removed `covalent.*` aliases are not supported; import `covalent_agent_kit` directly.
-The package uses its own `pyproject.toml`; root uv workspace supplies local sources.
+## Responsibilities
 
-Validation: `uv run python -m pytest tests/` (existing regression suite),
-`uv run python -m pytest tests/architecture/`, and `uv run python tooling/verify_wheels.py`
-after building wheels. New package-specific tests can live in this package
-and must be included in the root validation command.
+- Agent, model, tool and skill registry
+- OpenAI-compatible provider adapters
+- MCP transports and tool normalization
+- Skill discovery, process management and SDK resources
+- Standard workspace, shell, browser and document tools
+
+Document and browser capabilities are optional dependency extras.
+
+## Dependency boundary
+
+Agent Kit may depend on Contracts, Runtime and native runner resources. It must
+not import products or concrete product storage. Product composition selects
+providers, execution adapters and settings.
+
+## Development
+
+```bash
+uv sync --package covalent-agent-kit
+uv build --package covalent-agent-kit --wheel
+uv run python -m pytest tests/architecture/test_monorepo.py
+```
+
+Import `covalent_agent_kit` directly; the removed `covalent.*` aliases are not
+available.

@@ -1,14 +1,31 @@
-# covalent_execution_docker
+# covalent-execution-docker
 
-Docker execution adapter and process transport.
+Docker execution adapter for isolated agent skill and script processes.
+Distribution: `covalent-execution-docker`; import namespace:
+`covalent_execution_docker`.
 
-Allowed dependencies: runtime and execution-native runner resources, plus Docker SDK. No product imports.
+[Repository overview](../../../README.md) · [Sandbox images](../../../sandbox/README.md) · [Execution design](../../../docs/execution-backend-design.md)
 
-Maintainer: Covalent runtime maintainers. Public imports live under `covalent_execution_docker`;
-The removed `covalent.*` aliases are not supported; import `covalent_execution_docker` directly.
-The package uses its own `pyproject.toml`; root uv workspace supplies local sources.
+## Responsibilities
 
-Validation: `uv run python -m pytest tests/` (existing regression suite),
-`uv run python -m pytest tests/architecture/`, and `uv run python tooling/verify_wheels.py`
-after building wheels. New package-specific tests can live in this package
-and must be included in the root validation command.
+- Create and supervise per-agent session containers
+- Execute runner processes over Docker's multiplexed exec transport
+- Apply resource limits, mounts and network policy
+- Reclaim idle, reset and stateless-run containers
+
+## Dependency boundary
+
+This package may depend on Runtime, native runner resources and the Docker SDK.
+It must not import product configuration or persistence. Products translate
+their settings and stored sandbox profiles into Runtime execution contracts.
+
+## Development
+
+```bash
+uv sync --package covalent-execution-docker
+uv build --package covalent-execution-docker --wheel
+uv run python -m pytest tests/test_docker_backend.py
+```
+
+Real integration cases require a reachable Docker daemon and sandbox images;
+unit tests use fake clients and run without Docker.
