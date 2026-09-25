@@ -5,7 +5,7 @@ Native execution adapter and packaged Python/Node Skill runners.
 Allowed dependencies: runtime only. Settings are supplied by the host. Native subprocesses are not an OS security sandbox.
 
 Maintainer: Covalent runtime maintainers. Public imports live under `covalent_execution_native`;
-legacy `covalent.*` aliases live exclusively in the root compatibility distribution.
+The removed `covalent.*` aliases are not supported; import `covalent_execution_native` directly.
 The package uses its own `pyproject.toml`; root uv workspace supplies local sources.
 
 Validation: `uv run python -m pytest tests/` (existing regression suite),

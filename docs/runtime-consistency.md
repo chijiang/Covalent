@@ -13,7 +13,7 @@
 | 身份、配置存储、会话、审计、宿主集成 | 各产品 | 按产品需求实现 |
 
 依赖方向保持 api/cli → application → runtime/contracts 与注入端口；bootstrap 装配具体实现。
-不允许产品互导、共享包导入产品、通过 legacy covalent 绕过边界或复制执行循环。
+不允许产品互导、共享包导入产品或复制执行循环；旧 `covalent.*` 导入包已经移除。
 当前 AST 门禁覆盖 Python 导入（包括 TYPE_CHECKING），不能代替语义和动态加载测试。
 
 Desktop 的会话持久化、Lite 的无状态、Enterprise 的权限/审计可以不同；共同能力的执行语义必须一致。
@@ -56,5 +56,5 @@ Enterprise 整站 covalent-config ZIP 继续保留原语义，不当作公共 Ag
 同一产品独立升级时运行受影响消费者及兼容 fixture；不得通过浮动依赖偷偷更新内核。
 
 合并门禁：导入边界、受影响包测试、公共契约兼容、已实现的跨产品行为测试。
-发行门禁：从 wheel 干净安装，确保不借用 Enterprise/legacy/editable 包；Desktop 另跑 macOS/Windows 安装及进程清理。
+发行门禁：从 wheel 干净安装，确保不借用 Enterprise 或 editable 包；Desktop 另跑 macOS/Windows 安装及进程清理。
 当前 tooling/verify_wheels.py 验证 Desktop/Lite 包隔离与现有 Runtime/Enterprise 行为；Desktop smoke 另验证宿主/service 本地链路，二者都不代表三产品 Agent 执行功能完整。

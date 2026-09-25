@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
-from covalent.api.app import create_app
-from covalent.infra.settings import AppSettings
-from covalent.registry.registry import FrameworkRegistry
+from covalent_enterprise.api.app import create_app
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -141,14 +141,12 @@ def _build_app(*, config_store=None, settings=None):
     app.state.session_store = SimpleNamespace()
 
     # Seed the initial agent so /agents/{name} works.
-    from covalent.application.services.management_service import _resolve_default_provider, _build_agent_specs
     return app, TestClient(app)
 
 
 async def _seed_registry(app) -> None:
     """Run build_agent_specs after creating the app (must be async)."""
-    from covalent.application.services.management_service import _resolve_default_provider, _build_agent_specs
-    from covalent.mcp.spec import McpServerConfig
+    from covalent_enterprise.application.services.management_service import _resolve_default_provider, _build_agent_specs
     settings = app.state.settings
     config_store = app.state.config_store
     provider = await _resolve_default_provider(settings, config_store, [])
@@ -158,8 +156,8 @@ async def _seed_registry(app) -> None:
 
 
 def _admin_cookie(settings):
-    from covalent.api._auth_helpers import _make_console_session_token
-    from covalent.api._shared import ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
     p = ConsolePrincipalContext(user_id="admin", email="admin@t", display_name="A", role="admin",
                                 workspace_id="w", workspace_name="W", workspace_slug="w", workspace_role="admin")
     return f"{settings.console_session_cookie_name}={_make_console_session_token(settings, p)}"
@@ -173,8 +171,8 @@ class AgentCrudTests(unittest.IsolatedAsyncioTestCase):
             settings=self.settings,
         )
         # Direct-register so GET /agents/{name} works.
-        from covalent.core.agent import AgentSpec
-        from covalent.model.base import ProviderConfig
+        from covalent_contracts.agent import AgentSpec
+        from covalent_runtime.ports.model import ProviderConfig
         self.app.state.registry.register_agent(AgentSpec(
             name="default", description="Default agent",
             system_prompt="You are a helpful assistant.",
@@ -282,19 +280,19 @@ class AgentNameValidationTests(unittest.TestCase):
 
     @staticmethod
     def _validated(name: str, internal_name: str | None = None) -> list[dict]:
-        from covalent.application.services.management_service import _validate_config_payload
+        from covalent_enterprise.application.services.management_service import _validate_config_payload
 
         payload = [dict(_AGENT_PAYLOAD[0], name=name, internal_name=internal_name)]
         return _validate_config_payload("agents", payload, AppSettings())
 
     def test_spaced_agent_name_is_rejected(self) -> None:
-        from covalent.application.errors import InvalidInputError
+        from covalent_enterprise.application.errors import InvalidInputError
 
         with self.assertRaises(InvalidInputError):
             self._validated("Random Speech Maker")
 
     def test_dotted_and_non_ascii_agent_names_are_rejected(self) -> None:
-        from covalent.application.errors import InvalidInputError
+        from covalent_enterprise.application.errors import InvalidInputError
 
         for name in ("my.agent", "研究助手", "agent!"):
             with self.assertRaises(InvalidInputError, msg=name):
@@ -306,7 +304,7 @@ class AgentNameValidationTests(unittest.TestCase):
         self.assertEqual(validated[0]["internal_name"], "story-teller")
 
     def test_spaced_display_name_with_spaced_internal_name_is_rejected(self) -> None:
-        from covalent.application.errors import InvalidInputError
+        from covalent_enterprise.application.errors import InvalidInputError
 
         with self.assertRaises(InvalidInputError):
             self._validated("Story Teller", internal_name="story teller")

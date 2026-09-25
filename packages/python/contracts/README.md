@@ -5,7 +5,7 @@ Agent/Provider/MCP/Skill configuration and serializable messages.
 Allowed dependencies: Pydantic only; no Runtime, products or infrastructure.
 
 Maintainer: Covalent runtime maintainers. Public imports live under `covalent_contracts`;
-legacy `covalent.*` aliases live exclusively in the root compatibility distribution.
+The removed `covalent.*` aliases are not supported; import `covalent_contracts` directly.
 The package uses its own `pyproject.toml`; root uv workspace supplies local sources.
 
 Validation: `uv run python -m pytest tests/` (existing regression suite),

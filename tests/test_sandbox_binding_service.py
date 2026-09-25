@@ -16,18 +16,18 @@ from sqlalchemy import pool, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from covalent.application.errors import ConflictError, NotFoundError
-from covalent.application.schemas import SandboxProfileUpdateRequest
-from covalent.application.services.sandbox_binding_service import SandboxBindingService
-from covalent.application.services.sandbox_profile_service import SandboxProfileService
-from covalent.core.agent import AgentSpec
-from covalent.core.types import RunContext
-from covalent.infra.db import ChatSessionRow
-from covalent.infra.migrations import run_database_migrations
-from covalent.infra.sandbox_repository import SandboxRepository
-from covalent.infra.settings import AppSettings
-from covalent.model.base import ProviderConfig
-from covalent.runtime.backend import SandboxBinding
+from covalent_enterprise.application.errors import ConflictError, NotFoundError
+from covalent_enterprise.application.schemas import SandboxProfileUpdateRequest
+from covalent_enterprise.application.services.sandbox_binding_service import SandboxBindingService
+from covalent_enterprise.application.services.sandbox_profile_service import SandboxProfileService
+from covalent_contracts.agent import AgentSpec
+from covalent_runtime.domain.types import RunContext
+from covalent_enterprise.infra.db import ChatSessionRow
+from covalent_enterprise.infra.migrations import run_database_migrations
+from covalent_enterprise.infra.sandbox_repository import SandboxRepository
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_runtime.ports.model import ProviderConfig
+from covalent_runtime.ports.execution import SandboxBinding
 
 _SANDBOX_TABLES = (
     "sandbox_instances, sandbox_profiles, agents, agent_capabilities, "
@@ -410,7 +410,7 @@ def _backend_of(service: SandboxBindingService) -> _FakeBackend:
 
 
 def _profile_create(name: str, *, runtime: list[str]) -> Any:
-    from covalent.application.schemas import SandboxProfileCreateRequest
+    from covalent_enterprise.application.schemas import SandboxProfileCreateRequest
 
     return SandboxProfileCreateRequest(
         name=name,

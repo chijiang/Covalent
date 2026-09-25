@@ -5,11 +5,11 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from covalent.core.types import GenerationRequest
-from covalent.model.apih import APIHProvider, APIHResponsesProvider, APIHTokenManager
-from covalent.model.apih_config import APIHConfig, apih_base_url
-from covalent.model.base import ModelProviderError, ProviderConfig
-from covalent.model.factory import build_provider
+from covalent_runtime.domain.types import GenerationRequest
+from covalent_agent_kit.models.apih import APIHProvider, APIHResponsesProvider, APIHTokenManager
+from covalent_contracts.apih import APIHConfig, apih_base_url
+from covalent_runtime.ports.model import ModelProviderError, ProviderConfig
+from covalent_agent_kit.models.factory import build_provider
 
 
 def settings(**updates):
@@ -88,7 +88,7 @@ async def test_retry_and_sanitized_failure(monkeypatch):
     delays = []
     async def sleep(delay):
         delays.append(delay)
-    monkeypatch.setattr("covalent.model.apih.asyncio.sleep", sleep)
+    monkeypatch.setattr("covalent_agent_kit.models.apih.asyncio.sleep", sleep)
     def handler(request):
         calls.append(request)
         return httpx.Response(503, text="password-secret access-secret", headers={"Retry-After": "100"})

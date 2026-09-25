@@ -327,7 +327,7 @@ CI 按改动包和反向依赖闭包运行，不能只按产品目录判断。�
 
 ### M1：在原目录内拆依赖
 
-先分离 memory port/adapter、运行状态存储、领域异常与企业审计。新增边界测试；保持 `src/covalent`、数据库和前端位置。新旧实现通过同一入口切换，避免双写和两套配置路径。
+先分离 memory port/adapter、运行状态存储、领域异常与企业审计。新增边界测试；此阶段曾保留 `src/covalent`、数据库和前端位置。新旧实现通过同一入口切换，避免双写和两套配置路径。
 
 退出条件：Runtime 在测试替身端口下执行、流式输出、委派和取消；现有 Enterprise 测试保持基线。
 
@@ -335,7 +335,7 @@ CI 按改动包和反向依赖闭包运行，不能只按产品目录判断。�
 
 抽 contracts、runtime、agent-kit 与执行适配器；建立 uv workspace。随后迁移 Enterprise 目录、构建脚本和前端 pnpm workspace；机械移动与行为修改分 PR。旧 `covalent.*` import、`main.py`、`dev.sh` 通过有期限的单向兼容 shim 保持入口，公共包绝不依赖 shim。
 
-退出条件：Enterprise 从独立产物启动并对现有数据库完成迁移验证；干净环境可安装公共包；锁文件与 CI 包边界生效。旧 `agent-framework` 分发名的退役作为显式兼容事项处理。
+退出条件：Enterprise 从独立产物启动并对现有数据库完成迁移验证；干净环境可安装公共包；锁文件与 CI 包边界生效。该阶段已完成；旧 `agent-framework` 分发名及 `covalent.*` shim 于 2026-09-25 退役。
 
 ### M3：Lite 验证完整复用链
 
@@ -351,7 +351,7 @@ Desktop 抽 UI/workbench 并实现本地宿主；Monitor 从事件 SDK、接入�
 
 ### M5：独立发布与兼容维护
 
-完善产品 release manifest、升级测试和兼容矩阵；按真实需求提取更多适配器或 SDK。兼容 shim 只有在调用方完成迁移且有明确退役版本后删除。
+完善产品 release manifest、升级测试和兼容矩阵；按真实需求提取更多适配器或 SDK。Python 兼容 shim 已在仓库内调用方完成迁移后删除。
 
 退出条件：一次产品私有 UI 修改可独立发布；一次共享 Runtime 修改能识别、测试所有消费者而不强制同时发布。
 

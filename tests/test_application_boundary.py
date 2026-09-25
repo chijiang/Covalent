@@ -1,6 +1,6 @@
 """Architecture boundary guard.
 
-Enforces that ``covalent.application`` never imports from ``covalent.api`` or
+Enforces that ``covalent_enterprise.application`` never imports from the API layer or
 FastAPI, and never reads ``app.state``. This keeps the application layer
 framework-independent (see docs/architecture-assessment.md §3.5).
 """
@@ -27,14 +27,14 @@ def test_application_module_has_no_api_or_fastapi_dependency(path: Path) -> None
             for alias in node.names:
                 module = alias.name.split(".")[0]
                 assert module != "fastapi", f"{path} imports fastapi"
-                assert module != "covalent", f"{path} imports covalent.{alias.name}"
+                assert module != "covalent", f"{path} imports the removed covalent package"
         elif isinstance(node, ast.ImportFrom):
             if node.module is None:
                 continue
             top = node.module.split(".")[0]
             assert top != "fastapi", f"{path} imports from fastapi"
-            if node.module.startswith(("covalent.api", "covalent_enterprise.api")):
-                assert False, f"{path} imports from covalent.api ({node.module})"
+            if node.module.startswith("covalent_enterprise.api"):
+                assert False, f"{path} imports from the API layer ({node.module})"
         elif isinstance(node, ast.Attribute):
             # app.state access (request.app.state / app.state.X)
             if node.attr == "state" and isinstance(node.value, ast.Name):

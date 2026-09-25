@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import unittest
 
-from covalent.core.types import Capability
-from covalent.infra.config_store import PersistedAgentConfig
-from covalent.runtime.react import CHART_CAPABILITY_POLICY, ReactAgentRuntime
+from covalent_runtime.domain.types import Capability
+from covalent_enterprise.infra.config_store import PersistedAgentConfig
+from covalent_runtime.engine.react import CHART_CAPABILITY_POLICY, ReactAgentRuntime
 
 from tests.helpers import make_test_agent, make_test_registry, make_test_runtime
 

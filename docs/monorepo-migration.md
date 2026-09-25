@@ -26,10 +26,11 @@ streaming, buffering, cancellation and replay use a shared `RunStore` port.
 Enterprise still owns its permission, audit, user and configuration behavior.
 MCP timeout configuration is passed by Enterprise instead of read by the SDK.
 
-The root uv/pnpm workspaces and lockfiles own dependency resolution. The root
-`agent-framework` distribution contains compatibility imports only. `main.py`,
-`frontend/`, `alembic/` and the old Dockerfile paths remain forwarding entry
-points. New code imports canonical namespaces; tests enforce this direction.
+The root uv/pnpm workspaces and lockfiles own dependency resolution. The root is
+a non-package uv workspace; `main.py`, `frontend/`, `alembic/` and the old
+Dockerfile paths remain forwarding entry points. The legacy `agent-framework`
+distribution and `covalent.*` namespace were retired on 2026-09-25 after all
+in-repository callers moved to canonical namespaces.
 
 Migrations are inside the backend Python package so a wheel installation outside
 this checkout can run them. This intentionally refines the design's schematic
@@ -55,7 +56,7 @@ introduced as part of this structural migration.
   existing `react-hooks/exhaustive-deps` warning in `chat-workspace.tsx`.
 - Production standalone server served the login page and 20 JS/CSS/font assets
   with HTTP 200.
-- All seven wheels (including the compatibility distribution) build. Clean
+- All product and shared-package wheels build. Clean
   temporary environments outside the checkout exercised standalone Runtime,
   minimal Agent Kit, and Enterprise API/CLI/migration discovery. Runtime executed
   without Enterprise/FastAPI/SQLAlchemy/Docker/model SDK installed.
@@ -98,6 +99,6 @@ moves introduce no new database revisions. For individual services use
 [`products/enterprise/README.md`](../products/enterprise/README.md).
 
 Validation and packaging commands are documented in the Enterprise README.
-Legacy imports/aliases are temporary compatibility surfaces; remove them only
-through a separately announced compatibility change. Symlink aliases require
-symlink support in the checkout; canonical product paths work without using them.
+The removed Python import aliases are documented in
+[`legacy-python-imports.md`](legacy-python-imports.md). Symlink aliases for old
+frontend and migration entry points still require symlink support in the checkout.

@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, UTC
 
 from tests.test_session_activity_api import _admin_cookie, _build_app_with_store
-from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage, InMemorySessionStore
+from covalent_enterprise.infra.memory import ChatSessionRecord, ChatTranscriptMessage, InMemorySessionStore
 
 
 def _seed_session(store: InMemorySessionStore, session_id: str) -> None:
@@ -42,7 +42,7 @@ def _get_session(client, headers, session_id="sess-1", **params):
 
 class SessionMessagesPaginationTestCase(unittest.TestCase):
     def setUp(self) -> None:
-        from covalent.infra.memory import InMemorySessionStore
+        from covalent_enterprise.infra.memory import InMemorySessionStore
 
         self.store = InMemorySessionStore()
         _seed_session(self.store, "sess-1")

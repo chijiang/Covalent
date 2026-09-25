@@ -17,7 +17,7 @@ from alembic.config import Config
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from covalent.infra.migrations import run_database_migrations
+from covalent_enterprise.infra.migrations import run_database_migrations
 
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "set TEST_DATABASE_URL to run")

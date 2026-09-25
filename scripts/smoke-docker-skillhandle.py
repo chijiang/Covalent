@@ -15,10 +15,10 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from covalent.infra.settings import AppSettings
-from covalent.runtime.docker_backend import DockerBackend
-from covalent.skills.process import SkillProcessHandle
-from covalent.skills.spec import ManifestSkillSpec
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_execution_docker.backend import DockerBackend
+from covalent_agent_kit.skills.process import SkillProcessHandle
+from covalent_contracts.skill import ManifestSkillSpec
 
 # Space-tolerant sh JSON-RPC server: SkillProcessHandle.send_request emits
 # json.dumps with spaces (e.g. "method": "ping"), so we extract id/method via

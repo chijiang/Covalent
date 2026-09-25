@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import types
 import unittest
 
 import docker
 
-from covalent.infra.settings import AppSettings
-from covalent.runtime.backend import BackendUnavailable
-from covalent.runtime.sandbox_image_validator import DockerImageValidator, sanitize_error_message
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_runtime.ports.execution import BackendUnavailable
+from covalent_enterprise.infra.sandbox_image_validator import DockerImageValidator, sanitize_error_message
 
 
 def _candidate(**overrides: object) -> dict[str, object]:

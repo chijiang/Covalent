@@ -5,7 +5,7 @@ Docker execution adapter and process transport.
 Allowed dependencies: runtime and execution-native runner resources, plus Docker SDK. No product imports.
 
 Maintainer: Covalent runtime maintainers. Public imports live under `covalent_execution_docker`;
-legacy `covalent.*` aliases live exclusively in the root compatibility distribution.
+The removed `covalent.*` aliases are not supported; import `covalent_execution_docker` directly.
 The package uses its own `pyproject.toml`; root uv workspace supplies local sources.
 
 Validation: `uv run python -m pytest tests/` (existing regression suite),

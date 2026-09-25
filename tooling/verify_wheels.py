@@ -36,14 +36,14 @@ import importlib.util
 import covalent_desktop.api, covalent_desktop.application, covalent_desktop.infra
 for name in ('covalent', 'covalent_enterprise', 'covalent_lite', 'fastapi', 'sqlalchemy', 'docker'):
     assert importlib.util.find_spec(name) is None, name
-print('Isolated Desktop scaffold import passed (sidecar not yet implemented)')
+print('Isolated Desktop sidecar import passed')
 ''')
     check(common + ['covalent_lite'], '''
 import importlib.util
 import covalent_lite.api, covalent_lite.cli, covalent_lite.application, covalent_lite.config
 for name in ('covalent', 'covalent_enterprise', 'fastapi', 'sqlalchemy', 'docker'):
     assert importlib.util.find_spec(name) is None, name
-print('Isolated Lite scaffold import passed (CLI/API not yet implemented)')
+print('Isolated Lite package import passed')
 ''')
     check(common, '''
 import asyncio, importlib.util

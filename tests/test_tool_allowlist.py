@@ -14,11 +14,9 @@ import unittest
 from types import SimpleNamespace
 from typing import Any
 
-from covalent.core.types import RunContext
-from covalent.mcp.spec import McpServerConfig, McpToolReference
-from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.delegation import DelegateRunHandle
-from covalent.runtime.react import ReactAgentRuntime
+from covalent_runtime.domain.types import RunContext
+from covalent_contracts.mcp import McpServerConfig, McpToolReference
+from covalent_runtime.ports.delegation import DelegateRunHandle
 
 from tests.helpers import (
     ScriptedModelAdapter,
@@ -154,7 +152,7 @@ class LifecycleStringifyGuardStillCovered(unittest.IsolatedAsyncioTestCase):
         registry = make_test_registry(agent, tools={"delegate_send": (_tool_schema("delegate_send"), _handler)})
         runtime = make_test_runtime(registry)
 
-        from covalent.core.types import ToolCall
+        from covalent_runtime.domain.types import ToolCall
 
         results = await runtime._execute_tool_calls(
             agent,

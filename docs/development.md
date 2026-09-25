@@ -13,7 +13,6 @@
 | `packages/python/runtime` | 已有实现 | 执行领域、端口、引擎和运行服务 |
 | `packages/python/agent-kit` | 已有实现 | 模型、MCP、Skill、工具和 registry 实现 |
 | `packages/python/execution-*` | 已有实现 | native / Docker 执行适配器 |
-| `src/covalent` | 兼容层 | 只保留旧导入，不添加实现 |
 
 完整目标见 [架构设计](monorepo-architecture.md)，已完成的搬迁与验证见 [迁移记录](monorepo-migration.md)。
 目标目录不代表功能已经交付。共享包优先服务真实消费者，不预建所有规划包。
@@ -48,7 +47,7 @@ pnpm dev:enterprise
 
 ```sh
 uv run python -m pytest tests/architecture/test_monorepo.py
-uv run ruff check --select F packages/python products/enterprise/backend/src products/lite/service/src products/desktop/service/src src main.py
+uv run ruff check --select F packages/python products/enterprise/backend/src products/lite/service/src products/desktop/service/src main.py tooling
 ```
 
 前端改动运行 `pnpm typecheck` 和 `pnpm lint`。Desktop 改动运行 `pnpm typecheck:desktop`、service 测试和 `pnpm smoke:desktop`。

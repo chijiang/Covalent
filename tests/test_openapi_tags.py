@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from covalent.api.app import create_app
+from covalent_enterprise.api.app import create_app
 
 
 class OpenApiTagTests(unittest.TestCase):

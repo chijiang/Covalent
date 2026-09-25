@@ -12,10 +12,10 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from covalent.core.types import RunContext
-from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.backend import ExecutionTarget, SandboxBinding, SandboxSpec
-from covalent.runtime.react import ReactAgentRuntime
+from covalent_runtime.domain.types import RunContext
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_runtime.ports.execution import ExecutionTarget, SandboxBinding, SandboxSpec
+from covalent_runtime.engine.react import ReactAgentRuntime
 
 from tests.helpers import (
     InMemorySessionStore,
@@ -238,7 +238,7 @@ class ExecutionBindingIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
 class DelegateContextTests(unittest.TestCase):
     def test_delegate_context_inherits_scope_not_instance(self) -> None:
-        from covalent.runtime.react import ReactAgentRuntime
+        from covalent_runtime.engine.react import ReactAgentRuntime
 
         runtime = ReactAgentRuntime.__new__(ReactAgentRuntime)
         parent = make_test_agent(name="master", description="m", system_prompt="m")
@@ -260,7 +260,7 @@ class DelegateContextTests(unittest.TestCase):
         self.assertEqual(delegate_context.metadata["memory_mode"], "session")
 
     def test_stateless_parent_delegate_context_has_no_session(self) -> None:
-        from covalent.runtime.react import ReactAgentRuntime
+        from covalent_runtime.engine.react import ReactAgentRuntime
 
         runtime = ReactAgentRuntime.__new__(ReactAgentRuntime)
         parent = make_test_agent(name="master", description="m", system_prompt="m")

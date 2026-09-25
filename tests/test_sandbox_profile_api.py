@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
 
-from covalent.infra.settings import AppSettings
+from covalent_enterprise.infra.settings import AppSettings
 
 from tests.test_sandbox_admin_api import (
     _admin_cookie,
@@ -54,7 +53,7 @@ class _FakeProfileService:
         return out
 
     async def profile_response(self, profile_id, workspace_id=None):
-        from covalent.application.errors import NotFoundError
+        from covalent_enterprise.application.errors import NotFoundError
 
         profile = self.profiles.get(profile_id)
         if profile is None or (profile["workspace_id"] not in (None, workspace_id)):
@@ -62,7 +61,7 @@ class _FakeProfileService:
         return dict(profile)
 
     async def create_profile(self, request, workspace_id=None):
-        from covalent.application.errors import ConflictError
+        from covalent_enterprise.application.errors import ConflictError
 
         existing = [p for p in self.profiles.values() if p["name"] == request.name]
         if existing:

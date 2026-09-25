@@ -10,14 +10,14 @@ from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
-from covalent.api.app import create_app
-from covalent.infra.memory import (
+from covalent_enterprise.api.app import create_app
+from covalent_enterprise.infra.memory import (
     ChatActivityItem,
     ChatSessionRecord,
     ChatTranscriptMessage,
     InMemorySessionStore,
 )
-from covalent.infra.settings import AppSettings
+from covalent_enterprise.infra.settings import AppSettings
 
 
 class _FakeTransaction:
@@ -85,8 +85,8 @@ def _build_app_with_store(store: InMemorySessionStore):
 
 
 def _admin_cookie(app) -> str:
-    from covalent.api._auth_helpers import _make_console_session_token
-    from covalent.api._shared import ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
     settings = app.state.settings
     principal = ConsolePrincipalContext(
         user_id="admin", email="admin@local", display_name="Local Admin",

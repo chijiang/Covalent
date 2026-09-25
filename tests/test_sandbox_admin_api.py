@@ -9,13 +9,12 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 from starlette.testclient import TestClient
 
-from covalent.api.app import create_app
-from covalent.infra.settings import AppSettings
-from covalent.registry.registry import FrameworkRegistry
+from covalent_enterprise.api.app import create_app
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +104,8 @@ class _FakeDbSession:
 
 def _admin_cookie(settings: AppSettings) -> str:
     """Build a console session cookie for an admin identity."""
-    from covalent.api._auth_helpers import _make_console_session_token
-    from covalent.api._shared import ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id="admin-1",
@@ -125,8 +124,8 @@ def _admin_cookie(settings: AppSettings) -> str:
 
 def _member_cookie(settings: AppSettings) -> str:
     """Build a console session cookie for a non-admin identity."""
-    from covalent.api._auth_helpers import _make_console_session_token
-    from covalent.api._shared import ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id="member-1",

@@ -8,7 +8,6 @@ COPY products/enterprise/backend ./products/enterprise/backend
 # uv discovers every workspace member; only Enterprise is installed below.
 COPY products/lite/service/pyproject.toml ./products/lite/service/pyproject.toml
 COPY products/desktop/service/pyproject.toml ./products/desktop/service/pyproject.toml
-COPY src ./src
 RUN uv sync --frozen --package covalent-enterprise --no-dev --no-editable
 COPY skills/built_in ./skills/built_in
 ENV PATH="/app/.venv/bin:$PATH"

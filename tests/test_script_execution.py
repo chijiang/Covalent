@@ -13,10 +13,10 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from covalent.runtime.filesystem_backend import FileSystemBackend
-from covalent.skills.bundle import SkillBundle, slice_text_lines
-from covalent.skills.meta_tools import _read_skill_instructions, _read_skill_resource, _run_skill_script
-from covalent.skills.spec import ManifestSkillSpec, ScriptDeclaration, SkillSpec
+from covalent_execution_native.backend import FileSystemBackend
+from covalent_agent_kit.skills.bundle import SkillBundle, slice_text_lines
+from covalent_agent_kit.skills.meta_tools import _read_skill_instructions, _run_skill_script
+from covalent_contracts.skill import ManifestSkillSpec, ScriptDeclaration, SkillSpec
 
 
 class _DummySettings:
@@ -246,7 +246,7 @@ class SkillLineWindowTests(unittest.TestCase):
             self.assertIsNone(page2["next_offset"])
 
     def test_read_skill_resource_rejects_line_range_on_binary(self) -> None:
-        from covalent.skills.bundle import SkillBundleError
+        from covalent_agent_kit.skills.bundle import SkillBundleError
 
         with tempfile.TemporaryDirectory(prefix="af-skill-read-") as tmp:
             (Path(tmp) / "blob.bin").write_bytes(bytes(range(256)))

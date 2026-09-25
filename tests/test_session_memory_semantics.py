@@ -12,12 +12,11 @@ Guards the two session-memory invariants the UI depends on:
 
 from __future__ import annotations
 
-import asyncio
 import unittest
 
-from covalent.core.types import Message, RunContext
-from covalent.infra.memory import InMemorySessionStore
-from covalent.registry.registry import FrameworkRegistry
+from covalent_runtime.domain.types import Message, RunContext
+from covalent_enterprise.infra.memory import InMemorySessionStore
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 
 from tests.helpers import (
     ScriptedModelAdapter,
@@ -28,7 +27,7 @@ from tests.helpers import (
 
 
 def _runtime(store: InMemorySessionStore):
-    from covalent.runtime.react import ReactAgentRuntime
+    from covalent_runtime.engine.react import ReactAgentRuntime
 
     return ReactAgentRuntime(
         FrameworkRegistry(),
@@ -50,9 +49,9 @@ class TranscriptEditDrivesModelContextTests(unittest.IsolatedAsyncioTestCase):
 
         from starlette.testclient import TestClient
 
-        from covalent.api.app import create_app
-        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
-        from covalent.infra.settings import AppSettings
+        from covalent_enterprise.api.app import create_app
+        from covalent_enterprise.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent_enterprise.infra.settings import AppSettings
         from types import SimpleNamespace
 
         from tests.test_session_transcript_replace_api import (
@@ -131,7 +130,7 @@ class TranscriptEditDrivesModelContextTests(unittest.IsolatedAsyncioTestCase):
         registry = FrameworkRegistry()
         registry.register_agent(agent)
         registry.model_providers[agent.provider.cache_key()] = model
-        from covalent.runtime.react import ReactAgentRuntime
+        from covalent_runtime.engine.react import ReactAgentRuntime
 
         runtime = ReactAgentRuntime(
             registry, session_store=store, session_history_limit=10, enable_llm_summarization=False
@@ -152,9 +151,9 @@ class TranscriptEditDrivesModelContextTests(unittest.IsolatedAsyncioTestCase):
 
         from starlette.testclient import TestClient
 
-        from covalent.api.app import create_app
-        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
-        from covalent.infra.settings import AppSettings
+        from covalent_enterprise.api.app import create_app
+        from covalent_enterprise.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent_enterprise.infra.settings import AppSettings
         from tests.test_session_transcript_replace_api import _FakeDbSession, _admin_cookie
 
         attachment = {
@@ -228,9 +227,9 @@ class TranscriptEditDrivesModelContextTests(unittest.IsolatedAsyncioTestCase):
 
         from starlette.testclient import TestClient
 
-        from covalent.api.app import create_app
-        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
-        from covalent.infra.settings import AppSettings
+        from covalent_enterprise.api.app import create_app
+        from covalent_enterprise.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent_enterprise.infra.settings import AppSettings
         from tests.test_session_transcript_replace_api import _FakeDbSession, _admin_cookie
 
         store = InMemorySessionStore()
@@ -316,7 +315,7 @@ class ConcurrentDelegatePersistenceTests(unittest.IsolatedAsyncioTestCase):
             registry.register_agent(spec)
         registry.model_providers[master.provider.cache_key()] = model
 
-        from covalent.runtime.react import ReactAgentRuntime
+        from covalent_runtime.engine.react import ReactAgentRuntime
 
         runtime = ReactAgentRuntime(
             registry, session_store=store, session_history_limit=10, enable_llm_summarization=False
@@ -350,8 +349,8 @@ class ConcurrentDelegatePersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_delegate_context_residue_after_parent_failure(self) -> None:
         """Delegates complete, then the MASTER's next model call fails — the
         delegates' internal context must not linger in session memory."""
-        from covalent.model.base import ModelProviderError
-        from covalent.runtime.react import ReactAgentRuntime
+        from covalent_runtime.ports.model import ModelProviderError
+        from covalent_runtime.engine.react import ReactAgentRuntime
 
         store = InMemorySessionStore()
         master = make_test_agent(name="master", description="m", system_prompt="m")
@@ -391,7 +390,7 @@ class _ExplodingAfterAdapter(ScriptedModelAdapter):
         self._calls = 0
 
     async def generate(self, request):
-        from covalent.model.base import ModelProviderError
+        from covalent_runtime.ports.model import ModelProviderError
 
         self._calls += 1
         if self._calls > self._explode_after:
@@ -403,7 +402,7 @@ def _multi_tool_response(calls: list[tuple[str, str, str]]):
     """A single model response carrying several tool calls at once."""
     import json
 
-    from covalent.core.types import GenerationResponse, TokenUsage, ToolCall
+    from covalent_runtime.domain.types import GenerationResponse, TokenUsage, ToolCall
 
     raw_calls = [
         {

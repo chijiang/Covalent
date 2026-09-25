@@ -27,9 +27,10 @@ import uuid
 from pathlib import Path
 
 import docker
-from covalent.infra.settings import AppSettings
-from covalent.runtime.docker_backend import DockerBackend, _RUNNERS_HOST_DIR
-from covalent.runtime.docker_process import DockerExecProcess
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_execution_docker.backend import DockerBackend, _RUNNERS_HOST_DIR
+from covalent_execution_docker.process import DockerExecProcess
+from covalent_runtime.ports.execution import SandboxBinding
 
 IMAGE = "covalent-sandbox:dev"
 
@@ -279,7 +280,7 @@ class DockerBackendUnitTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(backend.metrics_snapshot()["containers_swept_startup"], 2)
 
     async def test_daemon_down_raises_backend_unavailable(self) -> None:
-        from covalent.runtime.backend import BackendUnavailable
+        from covalent_runtime.ports.execution import BackendUnavailable
 
         class _DownContainers:
             def run(self, **_kw):
@@ -408,7 +409,7 @@ def _binding(
     mem_limit: str = "512m",
     cpus: float = 1.0,
 ) -> "SandboxBinding":
-    from covalent.runtime.backend import ExecutionTarget, SandboxBinding, SandboxSpec
+    from covalent_runtime.ports.execution import ExecutionTarget, SandboxSpec
 
     resolved_session: str | None
     if session_id == "inherit":
@@ -769,8 +770,8 @@ def _image_present() -> bool:
 )
 class DockerBackendIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        from covalent.skills.process import SkillProcessHandle  # noqa: F401
-        from covalent.skills.spec import ManifestSkillSpec  # noqa: F401
+        from covalent_agent_kit.skills.process import SkillProcessHandle  # noqa: F401
+        from covalent_contracts.skill import ManifestSkillSpec  # noqa: F401
 
         self._tmp = tempfile.TemporaryDirectory(prefix="af-docker-test-")
         root = Path(self._tmp.name)
@@ -791,8 +792,8 @@ class DockerBackendIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self._tmp.cleanup()
 
     async def test_spawn_stream_drives_skill_handle(self) -> None:
-        from covalent.skills.process import SkillProcessHandle
-        from covalent.skills.spec import ManifestSkillSpec
+        from covalent_agent_kit.skills.process import SkillProcessHandle
+        from covalent_contracts.skill import ManifestSkillSpec
 
         spec = ManifestSkillSpec(name="echo", description="integration test skill")
         server_path = str(self.server_dir / "server.py")
@@ -857,7 +858,7 @@ class DockerBackendIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(result.exit_code, 0)
 
     async def test_run_shell_tool_executes_in_container(self) -> None:
-        from covalent.core.shell_tools import RUN_SHELL_TOOL, register_shell_tool
+        from covalent_agent_kit.tools.shell_tools import RUN_SHELL_TOOL, register_shell_tool
 
         # register_shell_tool reads the enabled flag off settings; the default
         # asyncSetUp settings don't enable it, so build an enabled settings with

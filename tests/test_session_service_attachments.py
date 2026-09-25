@@ -11,12 +11,12 @@ from __future__ import annotations
 import json
 import unittest
 
-from covalent.application.services.session_service import (
+from covalent_enterprise.application.services.session_service import (
     _append_assistant_attachments,
     _attachment_metadata_key,
     _published_download_attachments_from_tool_results,
 )
-from covalent.infra.memory import ChatTranscriptMessage
+from covalent_enterprise.infra.memory import ChatTranscriptMessage
 
 
 def _publish_content(name: str = "story.html", content_type: str = "text/html") -> str:

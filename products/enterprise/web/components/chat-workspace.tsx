@@ -378,7 +378,7 @@ function buildAttachmentId(file: Pick<File, "name" | "size" | "lastModified">, d
   return `${file.name}-${file.size}-${file.lastModified}-${deliveryMode || "default"}`;
 }
 
-// Mirror of the backend TEXT_EXTENSIONS in src/covalent/core/attachment_processing.py.
+// Mirror of TEXT_EXTENSIONS in covalent_agent_kit.tools.attachment_processing.
 const INLINE_PARSED_TEXT_EXTENSIONS = new Set([".txt", ".md", ".json", ".py", ".yaml", ".yml", ".csv", ".tsv"]);
 
 function isInlineParsedByDefault(file: Pick<File, "name" | "type">): boolean {

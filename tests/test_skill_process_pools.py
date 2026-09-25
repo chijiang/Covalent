@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import unittest
 
-from covalent.core.types import RunContext
-from covalent.skills.process import SkillProcessHandle, SkillProcessManager
-from covalent.skills.spec import ManifestSkillSpec, ProcessConfig, SkillRuntime
+from covalent_runtime.domain.types import RunContext
+from covalent_agent_kit.skills.process import SkillProcessHandle, SkillProcessManager
+from covalent_contracts.skill import ManifestSkillSpec, ProcessConfig, SkillRuntime
 
 
 class _FakeProc:

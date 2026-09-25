@@ -18,12 +18,12 @@ from sqlalchemy import pool, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from covalent.infra.agent_repository import AgentRepository
-from covalent.infra.config_store import PersistedAgentConfig
-from covalent.infra.db import ChatSessionRow
-from covalent.infra.migrations import run_database_migrations
-from covalent.infra.sandbox_repository import SandboxRepository
-from covalent.model.base import ProviderConfig
+from covalent_enterprise.infra.agent_repository import AgentRepository
+from covalent_enterprise.infra.config_store import PersistedAgentConfig
+from covalent_enterprise.infra.db import ChatSessionRow
+from covalent_enterprise.infra.migrations import run_database_migrations
+from covalent_enterprise.infra.sandbox_repository import SandboxRepository
+from covalent_runtime.ports.model import ProviderConfig
 
 _SANDBOX_TABLES = (
     "sandbox_instances, sandbox_profiles, agents, agent_capabilities, "

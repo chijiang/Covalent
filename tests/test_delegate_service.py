@@ -12,7 +12,7 @@ import json
 import unittest
 from datetime import UTC, datetime, timedelta
 
-from covalent.application.errors import (
+from covalent_enterprise.application.errors import (
     DelegateConcurrentModificationError,
     DelegateDefinitionError,
     DelegateOwnershipError,
@@ -22,25 +22,25 @@ from covalent.application.errors import (
     DelegateTransitionError,
     InvalidInputError,
 )
-from covalent.application.services.delegate_service import (
+from covalent_enterprise.application.services.delegate_service import (
     DelegateService,
     register_ask_parent_tool,
     run_startup_sweeps,
 )
-from covalent.core.types import (
+from covalent_runtime.domain.types import (
     DelegateRunStatus,
     Message,
     ParentInputRequest,
     RunContext,
     ToolCall,
 )
-from covalent.infra.delegate_repository import (
+from covalent_enterprise.infra.delegate_repository import (
     DelegateRunRecord,
     InMemoryDelegateRunStore,
 )
-from covalent.infra.settings import AppSettings
-from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.delegation import (
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_runtime.ports.delegation import (
     DelegateActor,
     DelegateCoordinator,
     DelegateTurnOutcome,

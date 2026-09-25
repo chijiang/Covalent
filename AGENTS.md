@@ -16,7 +16,7 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
   - `packages/python/runtime/src/covalent_runtime/`: domain types, ports, ReAct/context/delegation engine and durable run services. No Enterprise, FastAPI, SQLAlchemy, model SDK or adapter implementation imports, including TYPE_CHECKING.
   - `packages/python/agent-kit/src/covalent_agent_kit/`: registry, model/MCP adapters, skills and concrete tools.
   - `packages/python/execution-native/` and `execution-docker/`: execution adapters; runner resources belong to execution-native.
-  - `src/covalent/`: compatibility imports only. Never add new implementation here or import it from canonical packages.
+- The legacy `src/covalent` compatibility distribution has been removed. Always import the owning canonical package.
 - Workspace boundaries are enforced by `tests/architecture/test_monorepo.py`. Products cannot import one another; shared packages cannot import products. Root uv/pnpm lockfiles are committed. Build and install wheels independently before claiming package isolation.
 - Frontend layers:
   - `products/enterprise/web/app/**`: route entrypoints, redirects, and shell composition. Keep them thin.
@@ -72,7 +72,7 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 - Backend schema migrations: `uv run python main.py migrate` (run explicitly — the web lifespan does not auto-migrate, to avoid multi-replica startup races). `alembic/env.py` reads `AGENT_FRAMEWORK_DATABASE_URL`.
 - CLI: `main.py` is a typer app (serve / migrate / config / users / providers). `config export|import` moves the full platform configuration between environments as a zip bundle (natural-key upsert, plaintext provider keys — never commit bundles). Bundle service logic lives in `products/enterprise/backend/src/covalent_enterprise/application/services/config_bundle_service.py`; commands in `products/enterprise/backend/src/covalent_enterprise/cli/`.
 - Backend tests: `uv run python -m pytest tests/`. Set `TEST_DATABASE_URL=postgresql+asyncpg://...` to also run the real-DB integration tests (auto-skipped otherwise).
-- Backend lint gate: `uv run ruff check --select F packages/python products/enterprise/backend/src src main.py` — catches undefined names / redefinitions / unused imports left by extractions. Keep it green.
+- Backend lint gate: `uv run ruff check --select F packages/python products/enterprise/backend/src products/lite/service/src products/desktop/service/src main.py tooling` — catches undefined names / redefinitions / unused imports left by extractions. Keep it green.
 - Local full stack: `./dev.sh both`
 - The frontend proxy in `products/enterprise/web/app/api/backend/[...path]/route.ts` falls back to `http://127.0.0.1:5170`. If you move the backend, update env vars or proxy assumptions deliberately.
 - If backend route changes seem to have no effect in the running app, restart the backend before debugging the proxy. `main.py` runs uvicorn with `reload=False`.

@@ -15,8 +15,8 @@ import types
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from covalent.core.agent import AgentSpec
-from covalent.core.browser_tools import (
+from covalent_contracts.agent import AgentSpec
+from covalent_agent_kit.tools.browser_tools import (
     BROWSER_CLICK_TOOL,
     BROWSER_CLOSE_TOOL,
     BROWSER_EVALUATE_TOOL,
@@ -30,9 +30,9 @@ from covalent.core.browser_tools import (
     _render_snapshot,
     register_browser_tools,
 )
-from covalent.infra.settings import AppSettings
-from covalent.model.base import ProviderConfig
-from covalent.registry.registry import FrameworkRegistry
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_runtime.ports.model import ProviderConfig
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 
 
 def _agent(local_tools: list[str] | None = None) -> AgentSpec:
@@ -134,21 +134,21 @@ class _FakeManager:
 class RegistrationGatingTests(unittest.TestCase):
     def test_not_registered_when_flag_off(self) -> None:
         registry = FrameworkRegistry()
-        from covalent.application.services.management_service import _register_browser_tools_if_enabled
+        from covalent_enterprise.application.services.management_service import _register_browser_tools_if_enabled
         _register_browser_tools_if_enabled(registry, AppSettings(browser_tools_enabled=False))
         self.assertEqual(registry.local_tools, {})
         self.assertIsNone(registry.browser_manager)
 
     def test_registered_when_flag_on(self) -> None:
         registry = FrameworkRegistry()
-        from covalent.application.services.management_service import _register_browser_tools_if_enabled
+        from covalent_enterprise.application.services.management_service import _register_browser_tools_if_enabled
         _register_browser_tools_if_enabled(registry, AppSettings(browser_tools_enabled=True))
         for name in BROWSER_TOOL_NAMES:
             self.assertIn(name, registry.local_tools)
         self.assertIsNotNone(registry.browser_manager)
 
     def test_console_lists_only_registered_browser_tools(self) -> None:
-        from covalent.application.services.management_service import (
+        from covalent_enterprise.application.services.management_service import (
             _available_local_tool_summaries,
             _register_browser_tools_if_enabled,
         )
@@ -167,7 +167,7 @@ class ExposureTests(unittest.IsolatedAsyncioTestCase):
     otherwise invisible even though registered."""
 
     async def asyncSetUp(self) -> None:
-        from covalent.application.services.management_service import _register_browser_tools_if_enabled
+        from covalent_enterprise.application.services.management_service import _register_browser_tools_if_enabled
 
         self.registry = FrameworkRegistry()
         _register_browser_tools_if_enabled(self.registry, AppSettings(browser_tools_enabled=True))
@@ -258,7 +258,6 @@ class HandlerBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("closed", result.lower())
 
     async def test_screenshot_returns_image_part_and_saved_artifact(self) -> None:
-        from pathlib import Path
 
         settings, _, page, tools = self._make()
         page.png_bytes = b"\x89PNG" + b"0" * 128
@@ -288,7 +287,7 @@ class HandlerBehaviorTests(unittest.IsolatedAsyncioTestCase):
     async def test_screenshot_save_failure_keeps_image_part(self) -> None:
         from unittest.mock import patch
 
-        import covalent.core.workspace_tools as workspace_tools_module
+        import covalent_agent_kit.tools.workspace_tools as workspace_tools_module
 
         _, _, page, tools = self._make()
         page.png_bytes = b"\x89PNG-fallback"
@@ -390,7 +389,7 @@ class RealBrowserIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         import tempfile
 
-        from covalent.runtime.browser_manager import BrowserManager
+        from covalent_agent_kit.browser_manager import BrowserManager
 
         self._tmp = tempfile.TemporaryDirectory()
         settings = AppSettings(browser_tools_enabled=True, workspace_root_dir=self._tmp.name)

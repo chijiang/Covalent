@@ -6,7 +6,7 @@ import unittest
 
 from typer.testing import CliRunner
 
-from covalent.cli.app import app
+from covalent_enterprise.cli.app import app
 
 runner = CliRunner()
 

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from covalent.application.errors import (
+from covalent_enterprise.application.errors import (
     DelegateConcurrentModificationError, DelegateOwnershipError, DelegateQuotaError,
     DelegateRunGoneError, DelegateRunNotFoundError, DelegateTransitionError,
 )
-from covalent.infra.settings import AppSettings
+from covalent_enterprise.infra.settings import AppSettings
 
 
 class DelegateSettingsTests(unittest.TestCase):

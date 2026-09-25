@@ -11,24 +11,24 @@ import jwt
 
 from datetime import UTC, datetime
 
-from covalent.api._shared import (
+from covalent_enterprise.api._shared import (
     ConsolePrincipalContext,
     _agent_run_log_response,
     _audit_request_metadata,
 )
-from covalent.api._auth_helpers import (
+from covalent_enterprise.api._auth_helpers import (
     _resolve_console_identity,
 )
-from covalent.application.services.audit_service import list_audit_logs
-from covalent.application.errors import ForbiddenError, NotFoundError, QuotaExceededError
-from covalent.application.services import token_service
-from covalent.application.services.token_service import _normalize_token_policy, _normalize_token_scopes
-from covalent.application.services.invoke_service import (
+from covalent_enterprise.application.services.audit_service import list_audit_logs
+from covalent_enterprise.application.errors import ForbiddenError, NotFoundError, QuotaExceededError
+from covalent_enterprise.application.services import token_service
+from covalent_enterprise.application.services.token_service import _normalize_token_policy, _normalize_token_scopes
+from covalent_enterprise.application.services.invoke_service import (
     _enforce_api_token_policy_limits,
     _public_stream_events,
     _record_public_agent_run,
 )
-from covalent.application.services.management_service import (
+from covalent_enterprise.application.services.management_service import (
     _build_agent_specs,
     _ensure_console_principal_can_access_session,
     _parse_mcp_servers,
@@ -36,11 +36,11 @@ from covalent.application.services.management_service import (
     _pick_resource_row_for_principal,
     _validate_config_payload,
 )
-from covalent.application.services.skill_service import _ensure_skill_state_mutation_allowed
-from covalent.api.app import (
+from covalent_enterprise.application.services.skill_service import _ensure_skill_state_mutation_allowed
+from covalent_enterprise.api.app import (
     create_app,
 )
-from covalent.api.auth import (
+from covalent_enterprise.api.auth import (
     ApiPrincipal,
     generate_api_token,
     hash_api_token,
@@ -49,10 +49,10 @@ from covalent.api.auth import (
     require_scope,
     require_trace_level_allowed,
 )
-from covalent.core.agent import AgentSpec
-from covalent.core.types import GenerationResponse, TokenUsage
-from covalent.infra.db import AgentRow, AgentRunLogRow, ApiTokenRow, AuditLogRow, McpServerRow, UserRow, WorkspaceRow
-from covalent.infra.config_store import (
+from covalent_contracts.agent import AgentSpec
+from covalent_runtime.domain.types import GenerationResponse, TokenUsage
+from covalent_enterprise.infra.db import AgentRow, AgentRunLogRow, ApiTokenRow, AuditLogRow, McpServerRow, UserRow, WorkspaceRow
+from covalent_enterprise.infra.config_store import (
     ConfigPrincipal,
     PersistedAgentConfig,
     _display_resource_name,
@@ -60,12 +60,12 @@ from covalent.infra.config_store import (
     _resource_name_map,
     _scoped_resource_name,
 )
-from covalent.infra.memory import ChatSessionRecord
-from covalent.infra.settings import AppSettings
-from covalent.infra.config_store import _is_editable_by_principal
-from covalent.model.base import ProviderConfig
-from covalent.registry.registry import FrameworkRegistry
-from covalent.application.schemas import (
+from covalent_enterprise.infra.memory import ChatSessionRecord
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_enterprise.infra.config_store import _is_editable_by_principal
+from covalent_runtime.ports.model import ProviderConfig
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_enterprise.application.schemas import (
     ConsoleAccountUpdateRequest,
     ConsoleLoginRequest,
     ConsoleRegisterRequest,
@@ -854,8 +854,8 @@ def _build_guard_app(settings):
 
 
 def _session_cookie(settings: AppSettings, *, user_id: str = "user_1", email: str = "u1@example.com") -> str:
-    from covalent.api._auth_helpers import _make_console_session_token
-    from covalent.api._shared import ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id=user_id,

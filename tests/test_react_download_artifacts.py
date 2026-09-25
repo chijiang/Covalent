@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from covalent.runtime.react import ReactAgentRuntime
+from covalent_runtime.engine.react import ReactAgentRuntime
 
 
 def _screenshot_content() -> list[dict]:

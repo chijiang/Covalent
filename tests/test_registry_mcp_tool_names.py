@@ -3,8 +3,8 @@ from __future__ import annotations
 import base64
 import unittest
 
-from covalent.mcp.spec import McpServerConfig, McpToolReference
-from covalent.registry.registry import FrameworkRegistry
+from covalent_contracts.mcp import McpServerConfig, McpToolReference
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 
 
 def _b64(value: str) -> str:

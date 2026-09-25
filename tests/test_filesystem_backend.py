@@ -5,9 +5,9 @@ import os
 import sys
 import unittest
 
-from covalent.infra.settings import AppSettings
-from covalent.runtime.backend import make_backend
-from covalent.runtime.filesystem_backend import FileSystemBackend
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_enterprise.infra.execution import make_backend
+from covalent_execution_native.backend import FileSystemBackend
 
 
 class FileSystemBackendTests(unittest.TestCase):

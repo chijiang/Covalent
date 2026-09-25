@@ -8,7 +8,7 @@ name must be prefix-consistent, short enough for the activity title column
 
 import unittest
 
-from covalent.api.sse_events import (
+from covalent_enterprise.api.sse_events import (
     SSE_EVENT_DELEGATE_CANCELLED,
     SSE_EVENT_DELEGATE_CREATED,
     SSE_EVENT_DELEGATE_EXPIRED,

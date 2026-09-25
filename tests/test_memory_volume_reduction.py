@@ -11,11 +11,11 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from covalent.core.agent import AgentSpec
-from covalent.core.types import GenerationResponse, Message
-from covalent.model.base import ProviderConfig
-from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.context_window_manager import (
+from covalent_contracts.agent import AgentSpec
+from covalent_runtime.domain.types import GenerationResponse, Message
+from covalent_runtime.ports.model import ProviderConfig
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_runtime.engine.context_window_manager import (
     OLD_TOOL_RESULT_CHAR_LIMIT,
     RECENT_TOOL_RESULTS_KEPT,
     ContextWindowManager,

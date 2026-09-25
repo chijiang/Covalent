@@ -14,19 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from covalent.infra.settings import AppSettings  # noqa: E402
-from covalent.runtime.backend import (  # noqa: E402
+from covalent_enterprise.infra.settings import AppSettings  # noqa: E402
+from covalent_runtime.ports.execution import (  # noqa: E402
     ExecutionTarget,
     SandboxBinding,
     SandboxSpec,
 )
-from covalent.runtime.docker_backend import DockerBackend  # noqa: E402
+from covalent_execution_docker.backend import DockerBackend  # noqa: E402
 
 PY_IMAGE = "covalent-sandbox:dev"
 NODE_IMAGE = "covalent-sandbox-node:dev"
@@ -201,9 +198,9 @@ async def _acceptance_binding_service_checks(workspace_root: str, database_url: 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
     from sqlalchemy.pool import NullPool
 
-    from covalent.application.services.sandbox_binding_service import SandboxBindingService
-    from covalent.application.services.sandbox_profile_service import SandboxProfileService
-    from covalent.infra.sandbox_repository import SandboxRepository
+    from covalent_enterprise.application.services.sandbox_binding_service import SandboxBindingService
+    from covalent_enterprise.application.services.sandbox_profile_service import SandboxProfileService
+    from covalent_enterprise.infra.sandbox_repository import SandboxRepository
 
     engine = create_async_engine(database_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)

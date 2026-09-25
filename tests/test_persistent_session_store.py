@@ -17,7 +17,7 @@ import unittest
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from covalent.infra.migrations import run_database_migrations
+from covalent_enterprise.infra.migrations import run_database_migrations
 
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "set TEST_DATABASE_URL to run")
@@ -58,7 +58,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
             await session.commit()
 
     def _store(self):
-        from covalent.infra.memory import PersistentSessionStore
+        from covalent_enterprise.infra.memory import PersistentSessionStore
 
         return PersistentSessionStore(self.session_factory)
 
@@ -72,7 +72,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_save_then_get_round_trips_messages_in_order(self) -> None:
         from datetime import UTC, datetime
 
-        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent_enterprise.infra.memory import ChatSessionRecord, ChatTranscriptMessage
 
         store = self._store()
         now = datetime.now(UTC)
@@ -105,7 +105,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
         payload plus has_raw_* flags; the detail endpoint merges them back."""
         from datetime import UTC, datetime
 
-        from covalent.infra.memory import ChatActivityItem, ChatSessionRecord, ChatTranscriptMessage
+        from covalent_enterprise.infra.memory import ChatActivityItem, ChatSessionRecord, ChatTranscriptMessage
 
         store = self._store()
         now = datetime.now(UTC)
@@ -149,7 +149,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_resave_replaces_messages_without_duplicates(self) -> None:
         from datetime import UTC, datetime
 
-        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent_enterprise.infra.memory import ChatSessionRecord, ChatTranscriptMessage
 
         store = self._store()
         now = datetime.now(UTC)
@@ -188,7 +188,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_delete_session_removes_messages_via_cascade(self) -> None:
         from datetime import UTC, datetime
 
-        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent_enterprise.infra.memory import ChatSessionRecord, ChatTranscriptMessage
 
         store = self._store()
         now = datetime.now(UTC)
@@ -217,7 +217,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_list_sessions_reports_message_count(self) -> None:
         from datetime import UTC, datetime
 
-        from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage
+        from covalent_enterprise.infra.memory import ChatSessionRecord, ChatTranscriptMessage
 
         store = self._store()
         now = datetime.now(UTC)
@@ -251,7 +251,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_activity_round_trips_in_order(self) -> None:
         from datetime import UTC, datetime
 
-        from covalent.infra.memory import ChatActivityItem, ChatSessionRecord
+        from covalent_enterprise.infra.memory import ChatActivityItem, ChatSessionRecord
 
         store = self._store()
         now = datetime.now(UTC)
@@ -280,7 +280,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_activity_append_is_idempotent(self) -> None:
         from datetime import UTC, datetime
 
-        from covalent.infra.memory import ChatActivityItem, ChatSessionRecord
+        from covalent_enterprise.infra.memory import ChatActivityItem, ChatSessionRecord
 
         store = self._store()
         now = datetime.now(UTC)
@@ -317,7 +317,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_delete_session_removes_activity_via_cascade(self) -> None:
         from datetime import UTC, datetime
 
-        from covalent.infra.memory import ChatActivityItem, ChatSessionRecord
+        from covalent_enterprise.infra.memory import ChatActivityItem, ChatSessionRecord
 
         store = self._store()
         now = datetime.now(UTC)
@@ -345,7 +345,7 @@ class PersistentSessionStoreTestCase(unittest.IsolatedAsyncioTestCase):
         # rows (append-only), proving the no-rewrite / O(new-items) behavior.
         from datetime import UTC, datetime
 
-        from covalent.infra.memory import ChatActivityItem, ChatSessionRecord
+        from covalent_enterprise.infra.memory import ChatActivityItem, ChatSessionRecord
 
         store = self._store()
         now = datetime.now(UTC)

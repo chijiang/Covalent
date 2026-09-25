@@ -15,11 +15,11 @@ from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
-from covalent.api._auth_helpers import _make_console_session_token
-from covalent.api._shared import ConsolePrincipalContext
-from covalent.api.app import create_app
-from covalent.infra.db import UserRow, WorkspaceMemberRow, WorkspaceRow
-from covalent.infra.settings import AppSettings
+from covalent_enterprise.api._auth_helpers import _make_console_session_token
+from covalent_enterprise.api._shared import ConsolePrincipalContext
+from covalent_enterprise.api.app import create_app
+from covalent_enterprise.infra.db import UserRow, WorkspaceMemberRow, WorkspaceRow
+from covalent_enterprise.infra.settings import AppSettings
 
 
 class _FakeTransaction:

@@ -23,17 +23,17 @@ import unittest
 from types import SimpleNamespace
 from typing import Any
 
-from covalent.application.services.delegate_service import (
+from covalent_enterprise.application.services.delegate_service import (
     DelegateService,
     register_ask_parent_tool,
     register_delegate_lifecycle_tools,
 )
-from covalent.application.services.session_service import (
+from covalent_enterprise.application.services.session_service import (
     AgentRunInput,
     _build_resume_tool_result,
     _extract_pending_user_input,
 )
-from covalent.core.types import (
+from covalent_runtime.domain.types import (
     DelegateRunResult,
     DelegateRunStatus,
     GenerationResponse,
@@ -41,11 +41,11 @@ from covalent.core.types import (
     UserInputRequest,
     UserQuestion,
 )
-from covalent.infra.delegate_repository import InMemoryDelegateRunStore
-from covalent.infra.memory import ChatActivityItem, InMemorySessionStore
-from covalent.infra.settings import AppSettings
-from covalent.runtime.memory_port import RuntimeMemoryAdapter
-from covalent.runtime.react import ReactAgentRuntime
+from covalent_enterprise.infra.delegate_repository import InMemoryDelegateRunStore
+from covalent_enterprise.infra.memory import ChatActivityItem, InMemorySessionStore
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_runtime.ports.memory import RuntimeMemoryAdapter
+from covalent_runtime.engine.react import ReactAgentRuntime
 
 from tests.helpers import (
     _EnvelopeRunIdAdapter,

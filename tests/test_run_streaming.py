@@ -7,9 +7,9 @@ import os
 import unittest
 from typing import Any
 
-from covalent.model.base import ProviderConfig
-from covalent.model.openai_compatible import OpenAICompatibleProvider
-from covalent.runtime.run_manager import RunManager
+from covalent_runtime.ports.model import ProviderConfig
+from covalent_agent_kit.models.openai_compatible import OpenAICompatibleProvider
+from covalent_enterprise.infra.run_manager import RunManager
 
 
 class _FakeChunk:
@@ -103,7 +103,7 @@ class StreamGenerationAggregationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call.arguments, {"q": "cats"})
 
     async def test_no_choices_raises_provider_error(self) -> None:
-        from covalent.model.base import ModelProviderError
+        from covalent_runtime.ports.model import ModelProviderError
 
         provider = _provider([{"choices": []}])
         with self.assertRaises(ModelProviderError):
@@ -112,7 +112,7 @@ class StreamGenerationAggregationTests(unittest.IsolatedAsyncioTestCase):
 
 
 def _request(messages: list[dict[str, Any]]) -> Any:
-    from covalent.core.types import GenerationRequest
+    from covalent_runtime.domain.types import GenerationRequest
 
     return GenerationRequest(model="fake-model", messages=messages)
 
@@ -121,12 +121,11 @@ def _request(messages: list[dict[str, Any]]) -> Any:
 class RunManagerTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        import asyncio
 
-        from sqlalchemy import pool, text
+        from sqlalchemy import pool
         from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-        from covalent.infra.migrations import run_database_migrations
+        from covalent_enterprise.infra.migrations import run_database_migrations
 
         cls.database_url = os.environ["TEST_DATABASE_URL"]
         os.environ["AGENT_FRAMEWORK_DATABASE_URL"] = cls.database_url
@@ -146,7 +145,7 @@ class RunManagerTests(unittest.IsolatedAsyncioTestCase):
     async def _create_session(self) -> str:
         from datetime import UTC, datetime
 
-        from covalent.infra.db import ChatSessionRow
+        from covalent_enterprise.infra.db import ChatSessionRow
 
         self.session_counter += 1
         session_id = f"sess-{self.session_counter}"

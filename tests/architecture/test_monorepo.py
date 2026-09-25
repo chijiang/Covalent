@@ -1,8 +1,7 @@
-"""Product/package boundaries, including annotations and compatibility imports."""
+"""Product/package dependency boundaries, including annotations."""
 from __future__ import annotations
 
 import ast
-import importlib
 from pathlib import Path
 
 import pytest
@@ -46,18 +45,6 @@ def test_dependency_direction(package):
                     assert top not in forbidden_frameworks, f'{path} imports {module}'
 
 
-@pytest.mark.parametrize(('old', 'new'), [
-    ('covalent.core.types', 'covalent_runtime.domain.types'),
-    ('covalent.core.agent', 'covalent_contracts.agent'),
-    ('covalent.infra.db', 'covalent_enterprise.infra.db'),
-    ('covalent.api.app', 'covalent_enterprise.api.app'),
-    ('covalent.registry.registry', 'covalent_agent_kit.registry.registry'),
-    ('covalent.runtime.docker_backend', 'covalent_execution_docker.backend'),
-])
-def test_legacy_modules_preserve_identity(old, new):
-    assert importlib.import_module(old) is importlib.import_module(new)
-
-
 def test_migrations_and_runners_are_package_resources():
     from alembic.script import ScriptDirectory
     from covalent_enterprise.infra.migrations import migration_config
@@ -69,3 +56,24 @@ def test_migrations_and_runners_are_package_resources():
     assert ScriptDirectory.from_config(config).get_heads()
     assert (RUNNERS_DIR / 'python_runner.py').is_file()
     assert (RUNNERS_DIR / 'node_runner.js').is_file()
+
+
+def test_legacy_source_tree_is_removed():
+    assert not (ROOT / 'src' / 'covalent').exists()
+
+
+@pytest.mark.parametrize('directory', ['packages', 'products', 'scripts', 'tests', 'tooling'])
+def test_repository_does_not_import_removed_namespace(directory):
+    for path in (ROOT / directory).rglob('*.py'):
+        if any(part in {'.next', '.venv', '__pycache__', 'node_modules'} for part in path.parts):
+            continue
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            modules = []
+            if isinstance(node, ast.Import):
+                modules = [item.name for item in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                modules = [node.module]
+            assert all(module.split('.')[0] != 'covalent' for module in modules), (
+                f'{path} imports the removed covalent namespace'
+            )

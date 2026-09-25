@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from covalent.application.services.management_service import (
+from covalent_enterprise.application.services.management_service import (
     DEFAULT_AGENT_DESCRIPTION,
     DEFAULT_AGENT_MAX_ITERATIONS,
     DEFAULT_AGENT_SYSTEM_PROMPT,
@@ -25,8 +25,8 @@ from covalent.application.services.management_service import (
     _resolve_default_provider,
     _seed_agent_payload,
 )
-from covalent.infra.settings import AppSettings
-from covalent.model.base import ProviderConfig
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_runtime.ports.model import ProviderConfig
 
 
 def _settings() -> AppSettings:

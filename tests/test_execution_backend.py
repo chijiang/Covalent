@@ -3,9 +3,9 @@ from __future__ import annotations
 import dataclasses
 import unittest
 
-from covalent.core.types import RunContext
-from covalent.runtime.backend import ExecutionTarget, SandboxBinding, SandboxSpec
-from covalent.runtime.filesystem_backend import FileSystemBackend
+from covalent_runtime.domain.types import RunContext
+from covalent_runtime.ports.execution import ExecutionTarget, SandboxBinding, SandboxSpec
+from covalent_execution_native.backend import FileSystemBackend
 
 
 def _sample_spec() -> SandboxSpec:

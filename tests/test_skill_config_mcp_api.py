@@ -13,10 +13,10 @@ from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
-from covalent.api.app import create_app
-from covalent.infra.settings import AppSettings
-from covalent.registry.registry import FrameworkRegistry
-from covalent.skills.spec import ManifestSkillSpec, SkillSpec, SkillRuntime
+from covalent_enterprise.api.app import create_app
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_contracts.skill import ManifestSkillSpec, SkillSpec, SkillRuntime
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +100,8 @@ class _DummySessionStore:
 
 
 def _admin_cookie(settings):
-    from covalent.api._auth_helpers import _make_console_session_token
-    from covalent.api._shared import ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
     p = ConsolePrincipalContext(
         user_id="admin", email="admin@t", display_name="A", role="admin",
         workspace_id="ws-1", workspace_name="Workspace 1", workspace_slug="ws-1", workspace_role="admin",
@@ -402,7 +402,7 @@ class SkillManifestToolNameValidationTests(unittest.TestCase):
 
     @staticmethod
     def _validate(tool_names: list[str]) -> None:
-        from covalent.skills.loader import SkillLoader
+        from covalent_agent_kit.skills.loader import SkillLoader
 
         loader = SkillLoader(AppSettings())
         with tempfile.TemporaryDirectory() as tmp:
@@ -418,13 +418,13 @@ class SkillManifestToolNameValidationTests(unittest.TestCase):
             loader._validate_manifest(spec, pathlib.Path(tmp))
 
     def test_spaced_tool_name_is_rejected(self) -> None:
-        from covalent.skills.exceptions import SkillLoadError
+        from covalent_agent_kit.skills.exceptions import SkillLoadError
 
         with self.assertRaises(SkillLoadError):
             self._validate(["Random Speech Maker"])
 
     def test_dotted_tool_name_is_rejected(self) -> None:
-        from covalent.skills.exceptions import SkillLoadError
+        from covalent_agent_kit.skills.exceptions import SkillLoadError
 
         with self.assertRaises(SkillLoadError):
             self._validate(["my.skill.do"])

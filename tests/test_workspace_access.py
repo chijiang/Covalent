@@ -9,10 +9,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from covalent.infra.settings import AppSettings
-from covalent.runtime.backend import HostPathWorkspace
-from covalent.runtime.docker_backend import DockerBackend
-from covalent.runtime.filesystem_backend import FileSystemBackend
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_runtime.ports.execution import HostPathWorkspace
+from covalent_execution_docker.backend import DockerBackend
+from covalent_execution_native.backend import FileSystemBackend
 
 
 class WorkspaceAccessTests(unittest.TestCase):

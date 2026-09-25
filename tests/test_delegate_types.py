@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from covalent.core.types import (
-    DelegateRunResult, DelegateRunStatus, Message, ParentInputRequest, RunContext, ToolResult,
+from covalent_runtime.domain.types import (
+    DelegateRunResult, DelegateRunStatus, ParentInputRequest, RunContext, ToolResult,
 )
 
 

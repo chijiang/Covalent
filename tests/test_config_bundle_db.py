@@ -17,16 +17,16 @@ from pathlib import Path
 import yaml
 from sqlalchemy import text
 
-from covalent.application.services.config_bundle_schema import (
+from covalent_enterprise.application.services.config_bundle_schema import (
     BUNDLE_KIND,
     SCHEMA_VERSION,
 )
-from covalent.application.services.config_bundle_service import (
+from covalent_enterprise.application.services.config_bundle_service import (
     BUNDLE_CONFIG_NAME,
     export_bundle,
     import_bundle,
 )
-from covalent.infra.migrations import run_database_migrations
+from covalent_enterprise.infra.migrations import run_database_migrations
 
 _BUNDLE_TABLES = (
     "agents, agent_capabilities, agent_skills, agent_delegates, "

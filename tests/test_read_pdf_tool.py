@@ -14,13 +14,13 @@ from typing import Any
 
 import pymupdf
 
-import covalent.core.pdf_tools as pdf_tools_module
-from covalent.core.agent import AgentSpec
-from covalent.core.pdf_tools import PDF_MAX_PAGES_PER_CALL, _parse_page_selector, register_pdf_tools
-from covalent.core.types import Message, RunContext, ToolResult
-from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.context_window_manager import ContextWindowManager
-from covalent.runtime.react import ReactAgentRuntime
+import covalent_agent_kit.tools.pdf_tools as pdf_tools_module
+from covalent_contracts.agent import AgentSpec
+from covalent_agent_kit.tools.pdf_tools import PDF_MAX_PAGES_PER_CALL, _parse_page_selector, register_pdf_tools
+from covalent_runtime.domain.types import Message, RunContext, ToolResult
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_runtime.engine.context_window_manager import ContextWindowManager
+from covalent_runtime.engine.react import ReactAgentRuntime
 
 from tests.helpers import ScriptedModelAdapter, text_response, tool_call_response
 

@@ -9,17 +9,17 @@ from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
-from covalent.api.app import create_app
-from covalent.application.schemas import (
+from covalent_enterprise.api.app import create_app
+from covalent_enterprise.application.schemas import (
     ChatTranscriptMessageInput,
     TranscriptReplaceRequest,
 )
-from covalent.infra.memory import (
+from covalent_enterprise.infra.memory import (
     ChatSessionRecord,
     ChatTranscriptMessage,
     InMemorySessionStore,
 )
-from covalent.infra.settings import AppSettings
+from covalent_enterprise.infra.settings import AppSettings
 
 
 class TranscriptReplaceRequestSchemaTestCase(unittest.TestCase):
@@ -117,8 +117,8 @@ def _admin_cookie(app) -> str:
     anonymous requests with 401, so tests must present a valid signed session
     cookie (same proven pattern as tests/test_agent_crud_api.py).
     """
-    from covalent.api._auth_helpers import _make_console_session_token
-    from covalent.api._shared import ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
     settings = app.state.settings
     principal = ConsolePrincipalContext(
         user_id="admin", email="admin@local", display_name="Local Admin",

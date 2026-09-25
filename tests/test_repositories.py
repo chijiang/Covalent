@@ -18,11 +18,11 @@ import unittest
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from covalent.infra.agent_repository import AgentRepository
-from covalent.infra.config_store import PersistedAgentConfig
-from covalent.infra.mcp_repository import McpRepository
-from covalent.infra.migrations import run_database_migrations
-from covalent.model.base import ProviderConfig
+from covalent_enterprise.infra.agent_repository import AgentRepository
+from covalent_enterprise.infra.config_store import PersistedAgentConfig
+from covalent_enterprise.infra.mcp_repository import McpRepository
+from covalent_enterprise.infra.migrations import run_database_migrations
+from covalent_runtime.ports.model import ProviderConfig
 
 _REPO_TABLES = (
     "agents, agent_capabilities, agent_skills, agent_delegates, "

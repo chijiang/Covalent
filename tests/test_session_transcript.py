@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import unittest
 
-from covalent.application.errors import ConflictError
-from covalent.application.services.session_service import (
+from covalent_enterprise.application.errors import ConflictError
+from covalent_enterprise.application.services.session_service import (
     AgentRunInput,
     _build_resume_tool_result,
     _build_user_transcript_message,
@@ -20,8 +20,8 @@ from covalent.application.services.session_service import (
     _request_display_input,
     _upsert_assistant_reasoning,
 )
-from covalent.application.services.session_service import ChatTranscriptMessage
-from covalent.core.types import UserInputRequest
+from covalent_enterprise.application.services.session_service import ChatTranscriptMessage
+from covalent_runtime.domain.types import UserInputRequest
 
 
 class SessionTranscriptTestCase(unittest.TestCase):

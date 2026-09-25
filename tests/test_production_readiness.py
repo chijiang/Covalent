@@ -11,21 +11,20 @@ from __future__ import annotations
 
 import json
 import unittest
-from types import SimpleNamespace
 
 from pydantic import ValidationError
 
-from covalent.api._shared import to_agent_summary
-from covalent.application.services.management_service import _normalize_agent_payload_item
-from covalent.application.schemas import AgentRunRequest
-from covalent.core.agent import AgentSpec
-from covalent.core.types import RunContext, ToolCall
-from covalent.infra.settings import AppSettings
-from covalent.model.base import ProviderConfig
-from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.backend import BackendUnavailable
-from covalent.skills.process import SkillProcessManager
-from covalent.skills.spec import ManifestSkillSpec, SkillRuntime
+from covalent_enterprise.api._shared import to_agent_summary
+from covalent_enterprise.application.services.management_service import _normalize_agent_payload_item
+from covalent_enterprise.application.schemas import AgentRunRequest
+from covalent_contracts.agent import AgentSpec
+from covalent_runtime.domain.types import RunContext, ToolCall
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_runtime.ports.model import ProviderConfig
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_runtime.ports.execution import BackendUnavailable
+from covalent_agent_kit.skills.process import SkillProcessManager
+from covalent_contracts.skill import ManifestSkillSpec, SkillRuntime
 
 from tests.helpers import make_test_agent, make_test_registry, make_test_runtime, text_response, ScriptedModelAdapter
 
@@ -40,7 +39,7 @@ class _FailingBackend:
         return command
 
     def workspace(self, session_id):
-        from covalent.runtime.backend import HostPathWorkspace
+        from covalent_runtime.ports.execution import HostPathWorkspace
         from pathlib import Path
         return HostPathWorkspace(host_path=Path("/tmp"))
 
@@ -170,7 +169,7 @@ class SkillErrorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_acquire_non_executable_skill_raises(self) -> None:
         """Acquiring a non-executable skill → SkillProcessError."""
-        from covalent.skills.exceptions import SkillProcessError
+        from covalent_agent_kit.skills.exceptions import SkillProcessError
         spec = ManifestSkillSpec(name="no-runtime", description="no runtime", source_dir="/tmp")
         spm = SkillProcessManager()
         with self.assertRaises(SkillProcessError):

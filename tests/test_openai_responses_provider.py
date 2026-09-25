@@ -5,10 +5,10 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from covalent.core.types import GenerationRequest, Message
-from covalent.model.base import ProviderConfig
-from covalent.model.factory import build_provider
-from covalent.model.openai_responses import ResponsesProvider
+from covalent_runtime.domain.types import GenerationRequest, Message
+from covalent_runtime.ports.model import ProviderConfig
+from covalent_agent_kit.models.factory import build_provider
+from covalent_agent_kit.models.openai_responses import ResponsesProvider
 
 
 class _FakeChunk:
@@ -249,12 +249,12 @@ class FactoryAndCacheKeyTests(unittest.TestCase):
         )
         self.assertIsInstance(build_provider(responses_config), ResponsesProvider)
         completions_config = responses_config.model_copy(update={"api_style": None})
-        from covalent.model.openai_compatible import OpenAICompatibleProvider
+        from covalent_agent_kit.models.openai_compatible import OpenAICompatibleProvider
         self.assertIsInstance(build_provider(completions_config), OpenAICompatibleProvider)
 
     def test_factory_dispatches_apih_with_responses(self) -> None:
-        from covalent.model.apih import APIHProvider, APIHResponsesProvider
-        from covalent.model.apih_config import APIHConfig
+        from covalent_agent_kit.models.apih import APIHProvider, APIHResponsesProvider
+        from covalent_contracts.apih import APIHConfig
         config = ProviderConfig(
             provider="apih",
             model="m",
@@ -275,7 +275,7 @@ class FactoryAndCacheKeyTests(unittest.TestCase):
 
 class MergeProviderConfigTests(unittest.TestCase):
     def test_inherits_api_style_from_default_provider(self) -> None:
-        from covalent.application.services.management_service import _merge_provider_config
+        from covalent_enterprise.application.services.management_service import _merge_provider_config
 
         default = ProviderConfig(
             provider="openai_compatible", model="m1", base_url="http://x/v1", api_style="responses", api_key="k"

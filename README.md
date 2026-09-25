@@ -72,8 +72,8 @@ Shared Python packages live in `packages/python/{contracts,runtime,agent-kit,exe
 They use separate distribution/import names and a root uv workspace. The frontend
 is `products/enterprise/web`, managed by the root pnpm workspace.
 
-`main.py`, `dev.sh`, `frontend/`, `alembic/`, and legacy `covalent.*` imports remain
-compatibility entry points. New code must import the owning package directly.
+`main.py`, `dev.sh`, `frontend/`, and `alembic/` remain compatibility entry points.
+The legacy Python `covalent.*` package has been removed; code must import the owning package directly.
 Lite and Monitor remain future consumers. Desktop now has a runnable local host/service
 foundation while still sharing the canonical packages instead of copying runtime code. See [the architecture design](docs/monorepo-architecture.md)
 and [Enterprise build/validation instructions](products/enterprise/README.md).

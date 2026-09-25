@@ -5,7 +5,6 @@
 
 # Dependencies
 node_modules
-frontend/node_modules
 .venv
 
 # Build outputs
@@ -36,13 +35,12 @@ __pycache__
 # tmp
 tmp
 
-# build
+# Framework build output
 .next
 **/next-env.d.ts
 
 # Local generated artifacts
 .pnpm-store/
-frontend/.pnpm-store/
 *.tsbuildinfo
 .covalent/
 
@@ -51,10 +49,6 @@ frontend/.pnpm-store/
 
 # local skills
 skills/uploaded
-
-# agent workspace
-.covalent/session-workspaces/
-.covalent/downloads/
 
 .playwright-cli
 bun.lockb

@@ -6,13 +6,13 @@ import unittest
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from covalent.application.errors import ForbiddenError
-from covalent.application.services.audit_service import (
+from covalent_enterprise.application.errors import ForbiddenError
+from covalent_enterprise.application.services.audit_service import (
     _stat_type,
     build_query_stats,
     get_user_query_stats,
 )
-from covalent.infra.db import UserRow
+from covalent_enterprise.infra.db import UserRow
 
 _NOW = datetime(2026, 9, 8, 12, 0, 0, tzinfo=UTC)
 

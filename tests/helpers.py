@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from covalent.core.agent import AgentSpec
-from covalent.core.types import (
+from covalent_contracts.agent import AgentSpec
+from covalent_runtime.domain.types import (
     Capability,
     GenerationRequest,
     GenerationResponse,
@@ -20,10 +20,10 @@ from covalent.core.types import (
     TokenUsage,
     ToolCall,
 )
-from covalent.infra.memory import InMemorySessionStore
-from covalent.model.base import ModelAdapter, ProviderConfig
-from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.react import ReactAgentRuntime
+from covalent_enterprise.infra.memory import InMemorySessionStore
+from covalent_runtime.ports.model import ModelAdapter, ProviderConfig
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_runtime.engine.react import ReactAgentRuntime
 
 
 # ---------------------------------------------------------------------------

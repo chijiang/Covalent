@@ -11,8 +11,8 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from covalent.application.services.invoke_service import public_invoke_stream
-from covalent.model.base import ModelProviderError
+from covalent_enterprise.application.services.invoke_service import public_invoke_stream
+from covalent_runtime.ports.model import ModelProviderError
 
 
 class _RecordingLimiter:

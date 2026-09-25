@@ -4,8 +4,8 @@ stripper, the streaming tag splitter, and the reasoning-fragment grouper.
 
 from __future__ import annotations
 
-from covalent.runtime.react import ThinkTagSplitter, strip_think_blocks
-from covalent.runtime.run_manager import _group_reasoning_fragments
+from covalent_runtime.engine.react import ThinkTagSplitter, strip_think_blocks
+from covalent_enterprise.infra.run_manager import _group_reasoning_fragments
 
 
 def test_strip_think_blocks_removes_complete_blocks() -> None:

@@ -16,18 +16,18 @@ from typing import Any
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from covalent.application.errors import (
+from covalent_enterprise.application.errors import (
     ConflictError,
     NotFoundError,
     ServiceUnavailableError,
     UnprocessableEntityError,
 )
-from covalent.application.schemas import SandboxProfileCreateRequest, SandboxProfileUpdateRequest
-from covalent.application.services.sandbox_profile_service import SandboxProfileService
-from covalent.infra.db import AgentRow
-from covalent.infra.migrations import run_database_migrations
-from covalent.infra.sandbox_repository import SandboxRepository
-from covalent.infra.settings import AppSettings
+from covalent_enterprise.application.schemas import SandboxProfileCreateRequest, SandboxProfileUpdateRequest
+from covalent_enterprise.application.services.sandbox_profile_service import SandboxProfileService
+from covalent_enterprise.infra.db import AgentRow
+from covalent_enterprise.infra.migrations import run_database_migrations
+from covalent_enterprise.infra.sandbox_repository import SandboxRepository
+from covalent_enterprise.infra.settings import AppSettings
 
 _SANDBOX_TABLES = (
     "sandbox_instances, sandbox_profiles, agents, agent_capabilities, "
@@ -58,7 +58,7 @@ class _DownImageValidator:
     """Raises BackendUnavailable like a validator whose daemon is unreachable."""
 
     async def validate(self, candidate: dict[str, Any]) -> dict[str, Any]:
-        from covalent.runtime.backend import BackendUnavailable
+        from covalent_runtime.ports.execution import BackendUnavailable
 
         raise BackendUnavailable("daemon down", cause=ConnectionError("refused"))
 

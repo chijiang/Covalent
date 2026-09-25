@@ -2,14 +2,14 @@ import json
 
 import pytest
 
-from covalent.application.services.management_service import (
+from covalent_enterprise.application.services.management_service import (
     _build_agent_specs, _config_document_response, _merge_provider_config,
     _resolve_default_provider, _validate_config_payload,
 )
-from covalent.infra.config_store import ConfigStore, PersistedProviderConfig, _resolve_provider_config
-from covalent.infra.db import ProviderRow
-from covalent.infra.settings import AppSettings
-from covalent.model.base import ProviderConfig
+from covalent_enterprise.infra.config_store import ConfigStore, PersistedProviderConfig, _resolve_provider_config
+from covalent_enterprise.infra.db import ProviderRow
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_runtime.ports.model import ProviderConfig
 from tests.test_skill_config_mcp_api import _admin_cookie, _build_app, _FakeConfigStore
 
 

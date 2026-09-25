@@ -269,7 +269,7 @@ Modified:
 
 Unchanged:
 - `frontend/lib/types.ts`, `frontend/lib/client-api.ts`,
-  `src/covalent/api/app.py` (the `GET /skills/{name}/preview` endpoint
+  `products/enterprise/backend/src/covalent_enterprise/api/app.py` (the `GET /skills/{name}/preview` endpoint
   and its helpers).
 
 ## Data Layer (Unchanged)

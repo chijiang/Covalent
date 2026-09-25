@@ -7,13 +7,13 @@ import zipfile
 
 import yaml
 
-from covalent.application.services.config_bundle_schema import (
+from covalent_enterprise.application.services.config_bundle_schema import (
     BUNDLE_KIND,
     SCHEMA_VERSION,
     ConfigBundle,
     validate_schema_version,
 )
-from covalent.application.services.config_bundle_service import (
+from covalent_enterprise.application.services.config_bundle_service import (
     BUNDLE_CONFIG_NAME,
     read_bundle,
 )

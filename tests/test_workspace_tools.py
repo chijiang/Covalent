@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from covalent.core.workspace_tools import (
+from covalent_agent_kit.tools.workspace_tools import (
     _build_download_payload,
     _copy_workspace_entry,
     _edit_workspace_file,
@@ -21,7 +21,7 @@ from covalent.core.workspace_tools import (
     _zip_workspace_entries,
     register_workspace_tools,
 )
-from covalent.registry.registry import FrameworkRegistry
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 
 
 class DummySettings:

@@ -20,9 +20,9 @@ from typing import Any
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from covalent.core.types import DelegateRunStatus, Message, ParentInputRequest
-from covalent.infra.db import ChatSessionRow
-from covalent.infra.delegate_repository import (
+from covalent_runtime.domain.types import DelegateRunStatus, Message, ParentInputRequest
+from covalent_enterprise.infra.db import ChatSessionRow
+from covalent_enterprise.infra.delegate_repository import (
     DelegateRunConflictError,
     DelegateRunMissingError,
     DelegateRunRecord,
@@ -30,7 +30,7 @@ from covalent.infra.delegate_repository import (
     InMemoryDelegateRunStore,
     PostgresDelegateRunStore,
 )
-from covalent.infra.migrations import run_database_migrations
+from covalent_enterprise.infra.migrations import run_database_migrations
 
 _FIXED_NOW = datetime(2026, 8, 18, 12, 0, 0, tzinfo=timezone.utc)
 

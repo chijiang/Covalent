@@ -14,9 +14,9 @@ from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 from unittest import mock
 
-from covalent.mcp.client import McpSdkClient
-from covalent.mcp.spec import McpServerConfig, McpToolReference
-from covalent.registry.registry import FrameworkRegistry
+from covalent_agent_kit.mcp.client import McpSdkClient
+from covalent_contracts.mcp import McpServerConfig, McpToolReference
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 
 
 def _streamable_server() -> McpServerConfig:

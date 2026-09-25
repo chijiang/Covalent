@@ -14,13 +14,13 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from covalent.application.services.delegate_service import (
+from covalent_enterprise.application.services.delegate_service import (
     DelegateService,
     register_ask_parent_tool,
     register_delegate_lifecycle_tools,
 )
-from covalent.core.agent import AgentSpec
-from covalent.core.types import (
+from covalent_contracts.agent import AgentSpec
+from covalent_runtime.domain.types import (
     DelegateRunResult,
     DelegateRunStatus,
     GenerationRequest,
@@ -33,20 +33,20 @@ from covalent.core.types import (
     UserInputRequest,
     UserQuestion,
 )
-from covalent.infra.delegate_repository import DelegateRunRecord, InMemoryDelegateRunStore
-from covalent.infra.memory import InMemorySessionStore
-from covalent.infra.settings import AppSettings
-from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.delegation import DelegateActor, DelegateTurnOutcome
-from covalent.runtime.memory_port import RuntimeMemoryAdapter
-from covalent.runtime import react as react_module
-from covalent.runtime.react import ReactAgentRuntime
-from covalent.skills.meta_tools import (
+from covalent_enterprise.infra.delegate_repository import DelegateRunRecord, InMemoryDelegateRunStore
+from covalent_enterprise.infra.memory import InMemorySessionStore
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_runtime.ports.delegation import DelegateActor, DelegateTurnOutcome
+from covalent_runtime.ports.memory import RuntimeMemoryAdapter
+from covalent_runtime.engine import react as react_module
+from covalent_runtime.engine.react import ReactAgentRuntime
+from covalent_agent_kit.skills.meta_tools import (
     READ_SKILL_INSTRUCTIONS_TOOL,
     READ_SKILL_RESOURCE_TOOL,
     register_skill_meta_tools,
 )
-from covalent.skills.spec import ManifestSkillSpec
+from covalent_contracts.skill import ManifestSkillSpec
 
 from tests.helpers import (
     _EnvelopeRunIdAdapter,
@@ -77,7 +77,7 @@ def _echo_handler(args, ctx):
     return json.dumps({"echo": args.get("msg", "")})
 
 
-#: Delegate lifecycle SSE event names (mirrors covalent.api.sse_events).
+#: Delegate lifecycle SSE event names (mirrors covalent_enterprise.api.sse_events).
 DELEGATE_LIFECYCLE_EVENT_NAMES = (
     "delegate_created",
     "delegate_running",
@@ -139,7 +139,7 @@ class ReactLoopTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_react_multiple_tool_calls_in_one_turn(self) -> None:
         """Model calls two tools in one response → both executed → model answers."""
-        from covalent.core.types import GenerationResponse, Message, TokenUsage, ToolCall
+        from covalent_runtime.domain.types import GenerationResponse, Message, TokenUsage, ToolCall
         import json
 
         raw_calls = [

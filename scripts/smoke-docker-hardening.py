@@ -18,8 +18,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from covalent.infra.settings import AppSettings
-from covalent.runtime.docker_backend import DockerBackend
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_execution_docker.backend import DockerBackend
 
 
 async def main() -> int:

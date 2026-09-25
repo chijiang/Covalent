@@ -18,17 +18,17 @@ from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
-from covalent.api.app import create_app
-from covalent.application.errors import ConflictError
-from covalent.application.services.delegate_service import DelegateService
-from covalent.core.types import DelegateRunStatus, Message
-from covalent.infra.delegate_repository import (
+from covalent_enterprise.api.app import create_app
+from covalent_enterprise.application.errors import ConflictError
+from covalent_enterprise.application.services.delegate_service import DelegateService
+from covalent_runtime.domain.types import DelegateRunStatus, Message
+from covalent_enterprise.infra.delegate_repository import (
     DelegateRunRecord,
     InMemoryDelegateRunStore,
 )
-from covalent.infra.memory import ChatSessionRecord, ChatTranscriptMessage, InMemorySessionStore
-from covalent.infra.settings import AppSettings
-from covalent.registry.registry import FrameworkRegistry
+from covalent_enterprise.infra.memory import ChatSessionRecord, ChatTranscriptMessage, InMemorySessionStore
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 from tests.helpers import make_test_agent
 
 
@@ -126,8 +126,8 @@ class _FakeDbSession:
 
 
 def _admin_cookie(settings: AppSettings) -> str:
-    from covalent.api._auth_helpers import _make_console_session_token
-    from covalent.api._shared import ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
     principal = ConsolePrincipalContext(
         user_id="admin", email="admin@test", display_name="Admin", role="admin",
         workspace_id="11111111-1111-1111-1111-111111111111",
@@ -254,7 +254,7 @@ class StatelessTeardownTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(app=SimpleNamespace(state=state))
 
     async def test_teardown_finalizes_after_binding_cleanup(self) -> None:
-        from covalent.api.routes.public import _teardown_stateless_run_scope
+        from covalent_enterprise.api.routes.public import _teardown_stateless_run_scope
 
         events: list[str] = []
         service, store = _delegate_service()
@@ -279,7 +279,7 @@ class StatelessTeardownTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await store.get_run("run-1"))
 
     async def test_teardown_marks_session_attached_released_and_deletes_stateless(self) -> None:
-        from covalent.api.routes.public import _teardown_stateless_run_scope
+        from covalent_enterprise.api.routes.public import _teardown_stateless_run_scope
 
         service, store = _delegate_service()
         await _seed_run(store, "run-stateless", session_id=None, execution_scope_id="scope-1")
@@ -294,7 +294,7 @@ class StatelessTeardownTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attached.release_reason, "stateless_run_finalized")
 
     async def test_teardown_runs_finalize_without_binding_service(self) -> None:
-        from covalent.api.routes.public import _teardown_stateless_run_scope
+        from covalent_enterprise.api.routes.public import _teardown_stateless_run_scope
 
         service, store = _delegate_service()
         await _seed_run(store, "run-1", session_id=None, execution_scope_id="run-1")
@@ -305,7 +305,7 @@ class StatelessTeardownTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await store.get_run("run-1"))
 
     async def test_teardown_survives_binding_failure_and_finalizes(self) -> None:
-        from covalent.api.routes.public import _teardown_stateless_run_scope
+        from covalent_enterprise.api.routes.public import _teardown_stateless_run_scope
 
         class _ExplodingBinding:
             async def cleanup_stateless_run(self, execution_scope_id: str) -> None:
@@ -324,7 +324,7 @@ class StatelessTeardownTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await store.get_run("run-1"))
 
     async def test_teardown_finalizes_with_no_delegate_service_and_no_crash(self) -> None:
-        from covalent.api.routes.public import _teardown_stateless_run_scope
+        from covalent_enterprise.api.routes.public import _teardown_stateless_run_scope
 
         events: list[str] = []
         binding = _RecordingBindingService(events)
@@ -335,7 +335,7 @@ class StatelessTeardownTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, ["binding-cleanup:run-1"])
 
     async def test_teardown_without_any_service_is_a_noop(self) -> None:
-        from covalent.api.routes.public import _teardown_stateless_run_scope
+        from covalent_enterprise.api.routes.public import _teardown_stateless_run_scope
 
         await _teardown_stateless_run_scope(self._request(_base_state()), "run-1")
 
@@ -345,7 +345,7 @@ class StatelessTeardownTests(unittest.IsolatedAsyncioTestCase):
 # ---------------------------------------------------------------------------
 class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
     async def test_removed_agent_with_active_runs_conflicts_listing_ids(self) -> None:
-        from covalent.application.services.management_service import enforce_agent_delegate_run_checks
+        from covalent_enterprise.application.services.management_service import enforce_agent_delegate_run_checks
 
         _, store = _delegate_service()
         # Non-admin-owned agent: run rows carry the registry-internal name.
@@ -372,7 +372,7 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("idle", str(ctx.exception))
 
     async def test_renamed_agent_with_active_runs_conflicts(self) -> None:
-        from covalent.application.services.management_service import enforce_agent_delegate_run_checks
+        from covalent_enterprise.application.services.management_service import enforce_agent_delegate_run_checks
 
         _, store = _delegate_service()
         await _seed_run(
@@ -390,7 +390,7 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_kept_agents_and_terminal_runs_pass(self) -> None:
-        from covalent.application.services.management_service import enforce_agent_delegate_run_checks
+        from covalent_enterprise.application.services.management_service import enforce_agent_delegate_run_checks
 
         _, store = _delegate_service()
         await _seed_run(
@@ -413,8 +413,8 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
     async def test_scoped_fallback_maps_public_to_user_suffixed_internal(self) -> None:
         """Document without internal_name + member principal → the scoped-name
         fallback must derive public__user_<suffix> exactly like the save path."""
-        from covalent.application.services.management_service import enforce_agent_delegate_run_checks
-        from covalent.infra.config_store import ConfigPrincipal
+        from covalent_enterprise.application.services.management_service import enforce_agent_delegate_run_checks
+        from covalent_enterprise.infra.config_store import ConfigPrincipal
 
         _, store = _delegate_service()
         await _seed_run(
@@ -433,7 +433,7 @@ class AgentManagementCheckTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_admin_document_without_internal_name_queries_public_name(self) -> None:
-        from covalent.application.services.management_service import enforce_agent_delegate_run_checks
+        from covalent_enterprise.application.services.management_service import enforce_agent_delegate_run_checks
 
         _, store = _delegate_service()
         await _seed_run(store, "run-1", session_id="sess-1", execution_scope_id="sess-1", agent_name="helper")

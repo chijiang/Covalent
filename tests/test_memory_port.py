@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import unittest
 
-from covalent.core.types import Message
-from covalent.infra.delegate_repository import InMemoryDelegateRunStore
-from covalent.infra.memory import InMemorySessionStore
+from covalent_runtime.domain.types import Message
+from covalent_enterprise.infra.delegate_repository import InMemoryDelegateRunStore
+from covalent_enterprise.infra.memory import InMemorySessionStore
 
-from covalent.runtime.memory_port import RuntimeMemoryAdapter
+from covalent_runtime.ports.memory import RuntimeMemoryAdapter
 
 
 def _message(role: str, content: str) -> Message:

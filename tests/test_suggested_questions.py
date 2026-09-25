@@ -14,16 +14,16 @@ from typing import Any
 
 import pytest
 
-from covalent.core.agent import AgentSpec
-from covalent.core.types import (
+from covalent_contracts.agent import AgentSpec
+from covalent_runtime.domain.types import (
     Capability,
     GenerationResponse,
     Message,
     RunContext,
 )
-from covalent.model.base import ModelAdapter, ProviderConfig
-from covalent.registry.registry import FrameworkRegistry
-from covalent.runtime.react import (
+from covalent_runtime.ports.model import ModelAdapter, ProviderConfig
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_runtime.engine.react import (
     SUGGESTED_QUESTIONS_POLICY,
     ReactAgentRuntime,
     SuggestedQuestionsSplitter,
