@@ -1,1 +1,0 @@
-../../../../../packages/python/agent-kit/src/covalent_agent_kit/skills/sdk/nodejs/skill_sdk.js

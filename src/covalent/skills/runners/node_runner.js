@@ -1,1 +1,0 @@
-../../../../packages/python/execution-native/src/covalent_execution_native/runners/node_runner.js
