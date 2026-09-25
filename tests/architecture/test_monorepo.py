@@ -9,6 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGES = {
+    'covalent_lite': ('products/lite/service/src/covalent_lite', {'covalent_contracts', 'covalent_runtime', 'covalent_agent_kit', 'covalent_execution_native', 'covalent_execution_docker'}),
     'covalent_contracts': ('packages/python/contracts/src/covalent_contracts', set()),
     'covalent_runtime': ('packages/python/runtime/src/covalent_runtime', {'covalent_contracts'}),
     'covalent_execution_native': ('packages/python/execution-native/src/covalent_execution_native', {'covalent_runtime'}),

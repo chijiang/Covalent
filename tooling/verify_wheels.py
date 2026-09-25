@@ -31,6 +31,13 @@ def check(names: list[str], source: str) -> None:
 
 if __name__ == '__main__':
     common = ['covalent_contracts', 'covalent_runtime']
+    check(common + ['covalent_lite'], '''
+import importlib.util
+import covalent_lite.api, covalent_lite.cli, covalent_lite.application, covalent_lite.config
+for name in ('covalent', 'covalent_enterprise', 'fastapi', 'sqlalchemy', 'docker'):
+    assert importlib.util.find_spec(name) is None, name
+print('Isolated Lite scaffold import passed (CLI/API not yet implemented)')
+''')
     check(common, '''
 import asyncio, importlib.util
 from covalent_contracts.agent import AgentSpec

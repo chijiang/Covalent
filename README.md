@@ -62,6 +62,9 @@ Much like atoms sharing electrons in a covalent bond, Covalent binds autonomous 
 
 ## Monorepo
 
+开发导航：[Monorepo 开发指南](docs/development.md) · [Lite 开发指南](docs/products/lite/development.md) · [Lite 接口约定](docs/products/lite/contracts.md)。Lite 目前为包骨架，CLI/API 尚未实现。
+
+
 The full product now lives in [`products/enterprise`](products/enterprise/README.md).
 Shared Python packages live in `packages/python/{contracts,runtime,agent-kit,execution-native,execution-docker}`.
 They use separate distribution/import names and a root uv workspace. The frontend

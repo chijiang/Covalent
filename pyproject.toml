@@ -9,7 +9,7 @@ dependencies = ["covalent-enterprise==0.1.0"]
 dev = ["pytest>=8", "pytest-asyncio>=1.4", "ruff>=0.12"]
 
 [tool.uv.workspace]
-members = ["packages/python/*", "products/enterprise/backend"]
+members = ["packages/python/*", "products/enterprise/backend", "products/lite/service"]
 
 [tool.uv.sources]
 covalent-contracts = { workspace = true }
@@ -18,6 +18,7 @@ covalent-agent-kit = { workspace = true }
 covalent-execution-native = { workspace = true }
 covalent-execution-docker = { workspace = true }
 covalent-enterprise = { workspace = true }
+covalent-lite = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

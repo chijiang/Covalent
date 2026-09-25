@@ -1,7 +1,7 @@
 # Covalent Monorepo 产品与工程架构
 
-状态：设计提案，待评审；本文不代表目录迁移已经实施。  
-日期：2026-09-24
+状态：目标架构与分阶段实施计划；Enterprise/共享包已迁移，Lite 已建立包骨架，其余按阶段实施。
+更新日期：2026-09-25
 
 实施进展：Enterprise 及共享 Python 包的结构迁移见 [迁移记录](monorepo-migration.md)。本文其余产品与协议规划仍按阶段推进。
 
@@ -23,17 +23,17 @@
 | 产品 | 核心职责 | 默认运行与存储方案（目标） | 不承担 |
 | --- | --- | --- | --- |
 | Enterprise | 团队 Agent 开发、管理、运行和生产接入；身份、权限、审计 | 服务部署、PostgreSQL；按策略选择执行后端 | 其他产品的启动依赖 |
-| Lite | API-first Agent 服务，CLI 管理、配置导入、持久运行 | 单实例服务、SQLite；可选 PostgreSQL/容器后端 | 用户注册、组织管理、完整管理 UI |
+| Lite | CLI-first Agent 运行，提供最小 HTTP/SSE 接口 | 单进程、文件配置、请求级无状态执行；无数据库 | 用户/组织管理、完整 UI、会话持久化、后台恢复 |
 | Desktop | 个人 Agent 创建、调试、使用与本地资产管理 | 桌面壳 + Python sidecar、SQLite、本地执行 | 企业租户、常驻 Docker 的强制依赖 |
 | Monitor | Trace 接入、查询、评测、风险分析与治理控制 | 独立 API、处理进程、存储和 Web UI | Agent 编排引擎、业务会话的权威存储 |
 
 Lite/Desktop 没有用户管理，不等于关闭所有访问控制。Lite 默认本机监听；远端部署使用服务凭据或受信网关。Desktop sidecar 只接受桌面壳授权的本机访问。运行上下文使用通用 scope 标识，Enterprise 将用户/租户映射为 scope，不要求其他产品创建虚拟企业用户。
 
-SQLite 是待实现的本地存储选择，不是现有 PostgreSQL 表切换连接串即可获得的能力。首版 Lite 的边界是单服务进程；多副本执行需要另行实现共享任务队列、租约和 fencing，不由数据库替换隐式开启。
+Lite 首版配置以文件为唯一来源，启动时形成快照；CLI 与 API 共用执行用例，不依赖 SQLite 或持久运行服务。详细边界见 [Lite 开发指南](products/lite/development.md)。Desktop 的 SQLite 仍是待实现的选择，不是切换现有 PostgreSQL 连接串即可获得的能力。持久任务、多副本调度和恢复另行设计。
 
 ## 3. 目标目录
 
-下面是逐步到达的目标。目录只有在有实现、维护者和测试时才创建。
+下面是逐步到达的目标。仅为当前开发建立包骨架；其余目录在对应实现启动时创建，避免空应用堆积。
 
 ```text
 covalent/
@@ -136,8 +136,7 @@ flowchart TD
     L --> A
     D --> A
     A --> R
-    L --> S[storage-local]
-    D --> S
+    D --> S[storage-local]
     S --> R
     E --> T[telemetry]
     L --> T
@@ -150,7 +149,7 @@ flowchart TD
 
 包含可移植 Agent manifest、配置引用、消息、运行事件、错误码、执行能力声明与控制命令的线格式。允许轻量 schema 依赖；不引用 Runtime、FastAPI、SQLAlchemy、Docker、模型 SDK 和产品模块。
 
-Python 模型是这些公共数据结构的唯一源头，生成根目录 `contracts/generated/` 下的 JSON Schema；公共 HTTP OpenAPI 由 `runtime-http` 导出。产品私有管理 API 由产品后端导出到各自命名目录。TS 类型从对应产物生成，禁止维护第二份公共字段定义。
+Python 模型是这些公共数据结构的唯一源头，生成根目录 `contracts/generated/` 下的 JSON Schema；公共 HTTP OpenAPI 在共享适配器建成后由 `runtime-http` 导出；当前仍由产品 API 生成。产品私有管理 API 由产品后端导出到各自命名目录。TS 类型从对应产物生成，禁止维护第二份公共字段定义。
 
 数据库模型、Enterprise 管理 DTO、Python 执行对象和协议模型各有用途，不把整个 `application/schemas.py` 移入 contracts。
 
@@ -176,9 +175,9 @@ Runtime 不读取全局配置、不连接具体数据库、不自行发现产品
 ### 4.4 adapters、runtime-http 与产品装配
 
 - execution-native / execution-docker 实现相同执行端口；Docker SDK 只在 Docker 包中。
-- storage-local 由 Lite 与 Desktop 共用，负责自己的 SQLite 迁移与数据格式。Enterprise 保留当前 PostgreSQL 实现和迁移历史；第二个真实消费者需要 PostgreSQL 时再抽共享适配器。
+- storage-local 先服务 Desktop，负责自己的 SQLite 迁移与数据格式；Lite 首版不依赖它。Enterprise 保留当前 PostgreSQL 实现和迁移历史；第二个真实消费者需要 PostgreSQL 时再抽共享适配器。
 - runtime-http 仅负责公共执行 API 的参数、异常、SSE 转换；调用 Runtime 用例，身份/鉴权由宿主注入。不得因“共享路由”引入用户库和管理逻辑。
-- 产品 bootstrap 选择适配器、解析凭据与配置并装配运行服务。API → application → runtime/infra 的产品内部规则继续保留。
+- 产品 bootstrap 选择适配器、解析凭据与配置并装配运行服务。API/CLI → application → runtime/infra 的产品内部规则继续保留。
 - Enterprise 审计、权限、配额在产品用例层执行；Runtime 工具级策略通过通用 PolicyEvaluator 注入，避免绕过 API 后失去执行策略。
 
 禁止产品互相 import；Desktop 不启动 `covalent_lite`，两者复用相同包。禁止公共包出现 `if enterprise` 或读取产品 edition 的分支。
@@ -207,7 +206,7 @@ Desktop shell 的 Electron/Tauri 选型另立 ADR：先验证 Python sidecar 打
 - `covalent-config`：现有平台迁移包，保留 Enterprise 用户、workspace、配置和现有版本行为。
 - `covalent-agent`：新建可移植资产包，包含 manifest、固定版本/摘要的技能文件、依赖引用、模型要求、执行能力要求、所需凭据名称。默认不含密钥、用户、成员关系或数据库主键。
 
-Lite/Desktop 导入 Enterprise 导出的可移植包。兼容历史整站包时，使用显式转换命令提取 Agent 子集，报告无法迁移的用户/租户/审核字段；不在 Lite 加入企业用户表来兼容导入。
+Desktop 及后续 Lite 资产工具可导入 Enterprise 导出的可移植包；Lite 首版先支持已部署的配置文件，ZIP 导入不作为交付前提。兼容历史整站包时，使用显式转换命令提取 Agent 子集，报告无法迁移的用户/租户/审核字段；不在 Lite 加入企业用户表来兼容导入。
 
 导入流程为：校验格式与路径 → 解析依赖 → 检查能力与版本 → 绑定本地凭据 → 展示差异/验证 → 原子提交。要求 Docker 的资产在 native-only 环境中明确报不支持，不能静默降级。ZIP 路径穿越和依赖缺失必须有失败用例。
 
@@ -215,14 +214,15 @@ Lite/Desktop 导入 Enterprise 导出的可移植包。兼容历史整站包时�
 
 ### 6.2 唯一配置来源与迁移所有者
 
-Enterprise 的数据库配置仍是唯一权威来源。Lite/Desktop 导入资产后存入自己的本地配置仓库；运行时获取不可变快照。CLI 与 API 调同一配置用例，不并行维护 YAML 与数据库两套可变权威。
+Enterprise 的数据库配置仍是唯一权威来源。Lite 首版使用文件配置，加载凭据引用后形成不可变快照，修改后重启；Desktop 使用自己的本地配置仓库。各产品 CLI 与 API 调同一用例，不并行维护文件与数据库两套可变权威。
 
 环境变量用于部署选项、凭据绑定或兼容 seed，不作为新的资产持久化方式。保留 `AGENT_FRAMEWORK_*`，未来改名需明确兼容期和冲突优先级。
 
 | 数据 | 权威所有者 | 迁移所有者 |
 | --- | --- | --- |
 | Enterprise 用户、workspace、配置、会话、运行 | Enterprise DB | Enterprise backend |
-| Lite/Desktop 本地配置、会话、运行 | 各实例本地 DB，互不共享文件 | storage-local |
+| Lite 首版配置 | 部署配置文件；请求状态仅内存 | Lite 配置格式版本 |
+| Desktop 本地配置、会话、运行 | 各实例本地 DB，互不共享文件 | storage-local |
 | Monitor Trace、评测、治理记录 | Monitor DB | Monitor backend |
 | Agent 可移植文件 | 版本化资产包 | contracts 格式转换器 |
 
@@ -234,7 +234,7 @@ Enterprise 的现有 Alembic revision、表名、主键保持连续，不为搬�
 
 ### 7.1 执行事件与遥测分开
 
-执行事件用于 UI 重放、恢复与状态一致性，由运行产品持久化。Telemetry 是执行事件的可过滤、可采样投影。Monitor 不在线时，执行与重放仍正常；丢失遥测不等于丢失任务状态。
+支持持久运行的产品将执行事件用于 UI 重放、恢复与状态一致性并负责持久化；Lite 首版事件只在请求内流转，不承诺重放或恢复。Telemetry 是执行事件的可过滤、可采样投影。Monitor 不在线时，执行与重放仍正常；丢失遥测不等于丢失任务状态。
 
 建议事件信封包含 `schema_version`、`event_id`、`source_id`、`run_id`、`parent_run_id`、`sequence`、`timestamp`、`event_type`、`payload`。Trace/span 与租户关联按字段扩展；Monitor 以接入凭据确定租户，不信任客户端自报租户作为鉴权依据。
 
@@ -278,7 +278,7 @@ CI 按改动包和反向依赖闭包运行，不能只按产品目录判断。�
 | --- | --- |
 | contracts / Runtime | 自身测试、三产品运行契约、Monitor 协议、生成差异 |
 | agent-kit / execution adapter | 受影响能力测试、实际使用该能力的产品 |
-| storage-local | SQLite 迁移、Lite/Desktop 数据与生命周期测试 |
+| storage-local | SQLite 迁移、Desktop 数据与生命周期测试 |
 | runtime-http / SDK | API/SSE 契约、消费者与断线重连用例 |
 | UI / workbench | 类型、lint、共享组件及消费者构建 |
 | 产品私有代码 | 产品测试、构建和相应跨产品契约 |
@@ -289,7 +289,7 @@ CI 按改动包和反向依赖闭包运行，不能只按产品目录判断。�
 1. Python AST 和 TS import 规则：产品禁止互引，公共包禁止导入产品，Runtime 禁止导入具体 infra/API；涵盖 TYPE_CHECKING。动态插件只能通过明确的注册接口。
 2. 包安装隔离：从 wheel 安装 runtime 与最小 Lite，在干净环境执行 smoke test；没有 FastAPI/SQLAlchemy/Docker SDK 的环境中可导入 Runtime。
 3. 资产流转：Enterprise 导出后，Lite/Desktop 执行同一 fixture；覆盖缺凭据、能力不支持、禁用 Skill、历史版本。
-4. 运行语义：流式事件、断线重放、取消、等待输入、委派、终态一致性；重复控制命令和并发状态变化。
+4. 运行语义：按产品能力验证；Lite 验证流式事件、断连取消、超时与清理，持久产品另测重放、等待输入、恢复、重复控制命令和状态竞争。
 5. 迁移：现有 Enterprise 数据升级；SQLite 创建与升级；Monitor 自己的数据升级。
 6. Monitor 隔离：不可达、重试、重复事件、乱序，不损害执行事件持久化；第三方不安装 Runtime 也能接入。
 7. 发行环境：发布前跑目标 OS 的 Desktop 安装/升级/sidecar 清理，容器产品跑启动与健康检查。
@@ -339,9 +339,9 @@ CI 按改动包和反向依赖闭包运行，不能只按产品目录判断。�
 
 ### M3：Lite 验证完整复用链
 
-实现 storage-local、runtime-http、可移植资产导入和 Lite CLI/API。SQLite 单进程运行，不依赖企业身份或 PostgreSQL。用 Enterprise 导出的资产跑通一个含工具/Skill 的完整任务，并验证会话持久化、事件重放与失败处理。
+先实现文件配置、validate/agents/run CLI，再接入最小 HTTP/SSE 接口。单进程无状态，不依赖企业身份或数据库。复用 contracts/runtime/agent-kit，验证一个含工具的完整任务以及限额、断连、超时和资源清理。公共 DTO 按实际需要抽取；runtime-http、资产 ZIP 导入与持久化不作为首版前提。
 
-退出条件：Enterprise 与 Lite 共享同一执行引擎和资产格式；没有复制企业业务代码；最小依赖安装通过。
+退出条件：Enterprise 与 Lite 共享同一执行引擎和公共调用契约子集；没有复制企业业务代码；最小依赖安装通过。CLI/API 功能开发顺序见 [Lite 开发指南](products/lite/development.md)。
 
 ### M4：Desktop 与 Monitor 分别迭代
 

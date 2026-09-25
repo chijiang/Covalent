@@ -14,6 +14,7 @@ members = [
     "covalent-enterprise",
     "covalent-execution-docker",
     "covalent-execution-native",
+    "covalent-lite",
     "covalent-runtime",
 ]
 
@@ -510,6 +511,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "covalent-runtime", editable = "packages/python/runtime" }]
+
+[[package]]
+name = "covalent-lite"
+version = "0.1.0"
+source = { editable = "products/lite/service" }
+dependencies = [
+    { name = "covalent-contracts" },
+    { name = "covalent-runtime" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "covalent-contracts", editable = "packages/python/contracts" },
+    { name = "covalent-runtime", editable = "packages/python/runtime" },
+]
 
 [[package]]
 name = "covalent-runtime"

@@ -5,6 +5,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY packages/python ./packages/python
 COPY products/enterprise/backend ./products/enterprise/backend
+# uv discovers every workspace member; only Enterprise is installed below.
+COPY products/lite/service/pyproject.toml ./products/lite/service/pyproject.toml
 COPY src ./src
 RUN uv sync --frozen --package covalent-enterprise --no-dev --no-editable
 COPY skills/built_in ./skills/built_in
