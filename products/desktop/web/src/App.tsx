@@ -4,16 +4,27 @@ import {
   Bot,
   Cable,
   MessageSquare,
+  Monitor,
+  Moon,
   PanelLeft,
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
+  Sun,
 } from "lucide-react";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { AgentWorkspace } from "./AgentWorkspace";
 import { ProviderSettings } from "./ProviderSettings";
 import { McpSettings } from "./McpSettings";
 import { SkillSettings } from "./SkillSettings";
+import {
+  applyTheme,
+  nextTheme,
+  saveTheme,
+  storedTheme,
+  watchSystemTheme,
+  type Theme,
+} from "./theme";
 
 type Page = "chat" | "agents" | "resources" | "runtime";
 const initialStatus: DesktopServiceStatus = {
@@ -156,6 +167,21 @@ export function App() {
   >("providers");
   const [status, setStatus] = useState(initialStatus);
   const [restarting, setRestarting] = useState(false);
+  const [theme, setTheme] = useState<Theme>(() => storedTheme());
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
+  useEffect(() => watchSystemTheme(theme), [theme]);
+  const next = nextTheme(theme);
+  const themeLabels: Record<Theme, string> = {
+    light: "Light",
+    dark: "Dark",
+    system: "System",
+  };
+  function cycleTheme() {
+    saveTheme(next);
+    setTheme(next);
+  }
   useEffect(() => {
     let mounted = true;
     window.covalentDesktop
@@ -287,6 +313,21 @@ export function App() {
           </span>
           <h1>{meta.title}</h1>
           <p>{meta.subtitle}</p>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={`Theme: ${themeLabels[theme]} (switch to ${themeLabels[next]})`}
+            title={`Theme: ${themeLabels[theme]} (switch to ${themeLabels[next]})`}
+            onClick={cycleTheme}
+          >
+            {theme === "light" ? (
+              <Sun size={16} />
+            ) : theme === "dark" ? (
+              <Moon size={16} />
+            ) : (
+              <Monitor size={16} />
+            )}
+          </button>
           <span className="desktop-pill">DESKTOP</span>
         </header>
         <main

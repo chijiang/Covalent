@@ -14,7 +14,8 @@ manages stdio/SSE/Streamable HTTP MCP services and authored, ZIP, Git and local
 Skills. Enabled executable Skills run through the native host backend, which
 does not provide OS isolation; imported Skills start disabled. Workspace, PDF,
 browser and `ask_user` tools are available through per-Agent routing. Custom
-sandbox profiles remain unsupported. Chat replies render Markdown (code blocks, tables,
+sandbox profiles remain unsupported. The UI has a light/dark/system theme, chat
+replies render Markdown (code blocks, tables,
 charts when the Agent enables the chart capability), Agent thinking streams into the
 conversation while a turn runs, conversations are auto-titled and renameable, messages
 carry timestamps with copy and edit-and-resend
