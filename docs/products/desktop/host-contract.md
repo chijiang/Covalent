@@ -11,7 +11,7 @@ main 代理固定的本地 HTTP 路径，使 token 和 sidecar 地址不进入 r
 
 Python sidecar 仅绑定 `127.0.0.1` 的系统分配端口。main 生成每次启动 256-bit 随机 token，通过只传给子进程的环境变量传入，
 不通过命令行参数、日志、renderer 或固定配置文件暴露。sidecar 在 stdout 写一条 JSON ready 消息，业务日志写 stderr。
-握手上限 16 KiB、启动超时 15 秒、健康检查超时 3 秒；当前协议版本为 1，报告 service 版本、PID 与能力。
+握手上限 16 KiB、启动超时 15 秒、健康检查超时 3 秒；当前协议版本为 2，报告 service 版本、PID 与能力。
 
 启动状态：stopped → starting → ready → stopping → stopped；异常进入 failed。
 main 在握手成功、版本兼容和就绪探测完成前不开放业务请求。握手超时清理整个子进程树并展示可诊断错误。
@@ -19,7 +19,7 @@ main 在握手成功、版本兼容和就绪探测完成前不开放业务请求
 
 ## Bridge 能力范围
 
-当前提供查询 service 状态、订阅状态变化、重启、列举/保存 Agent、读取会话、发送消息及加密保存模型密钥。订阅执行事件、取消和选择文件仍待实现。
+当前提供查询 service 状态、订阅状态变化、重启、列举/保存 Agent、列举/保存/删除 Provider、读取 Provider 模型目录、查询本地可用 Skills/Tools/Capabilities、读取会话、发送消息及逐 Provider 加密保存模型密钥。订阅执行事件、取消和选择文件仍待实现。
 不提供任意 fetch URL、任意 IPC channel、任意进程执行方法。每条订阅绑定窗口与 run_id，窗口销毁后清理订阅。
 采用 contextIsolation、renderer sandbox、关闭 nodeIntegration，并验证 IPC sender 和导航来源。
 不在有宿主权限的窗口加载任意远程网页；外部链接经允许的系统浏览器路径打开。

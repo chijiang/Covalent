@@ -36,7 +36,7 @@ products/desktop/
 service 已提供 bootstrap、`__main__` 和鉴权 health API；shell 已提供安全窗口、preload 与 sidecar supervisor；web 已提供运行状态页。
 先执行 `uv sync --locked --all-packages` 和 `pnpm install --frozen-lockfile`。`pnpm dev:desktop` 启动 Vite 和 Electron，
 `pnpm smoke:desktop` 构建后验证 renderer/service 闭环并自动退出。开发态 main 直接启动 `.venv` 中的 Python，避免启动应用时隐式修改依赖环境。
-基础 Agent/会话路由和本地 SQLite 存储已经加入；发行打包仍待实现。
+Agent/Provider/会话路由和本地 SQLite 存储已经加入。Provider 配置保存 OpenAI-compatible 地址、API 样式、默认模型和模型目录，API key 逐 Provider 保存在 Electron 系统加密存储中；Agent 只引用 Provider 名称并选择模型。旧版 Agent 的 endpoint 自动迁移成 imported Provider，旧版单一 API key 可供这些 imported Provider 继续使用。Agent 配置支持 Enterprise 对应的提示词、推理、限额、能力、委派、远程 MCP 路由和本地说明型 Skill；不包含用户、可见性与 Public API 设置。可执行 Skill、进程型 MCP 与自定义沙箱配置仍未接入；发行打包仍待实现。
 
 ## 模块职责
 

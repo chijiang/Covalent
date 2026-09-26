@@ -15,7 +15,8 @@ from typing import TextIO
 from covalent_desktop.api.server import create_server
 from covalent_desktop.application.workspace import DesktopWorkspace
 from covalent_desktop.infra.local_store import LocalStore
-from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_desktop.infra.agent_registry import DesktopRegistryFactory
+from covalent_desktop.infra.provider_catalog import DesktopProviderCatalog
 
 LOGGER = logging.getLogger(__name__)
 TOKEN_ENV = "COVALENT_DESKTOP_SERVICE_TOKEN"
@@ -30,10 +31,27 @@ def run_service(
 ) -> int:
     token = os.environ.get(TOKEN_ENV, "")
     if len(token) < MIN_TOKEN_LENGTH:
-        raise RuntimeError(f"{TOKEN_ENV} must contain at least {MIN_TOKEN_LENGTH} characters")
+        raise RuntimeError(
+            f"{TOKEN_ENV} must contain at least {MIN_TOKEN_LENGTH} characters"
+        )
 
-    data_dir = Path(os.environ.get("COVALENT_DESKTOP_DATA_DIR", Path.home() / ".covalent" / "desktop"))
-    server = create_server(host, port, token, DesktopWorkspace(LocalStore(data_dir / "desktop.sqlite3"), FrameworkRegistry))
+    data_dir = Path(
+        os.environ.get(
+            "COVALENT_DESKTOP_DATA_DIR", Path.home() / ".covalent" / "desktop"
+        )
+    )
+    registry_factory = DesktopRegistryFactory(data_dir)
+    server = create_server(
+        host,
+        port,
+        token,
+        DesktopWorkspace(
+            LocalStore(data_dir / "desktop.sqlite3"),
+            registry_factory,
+            registry_factory.available_skills,
+            DesktopProviderCatalog(),
+        ),
+    )
     status = server.service_status
     ready = {
         "type": "ready",
@@ -51,7 +69,9 @@ def run_service(
 
     def request_shutdown(_signum: int, _frame: object) -> None:
         # BaseServer.shutdown must be called from a different thread.
-        threading.Thread(target=server.shutdown, name="desktop-shutdown", daemon=True).start()
+        threading.Thread(
+            target=server.shutdown, name="desktop-shutdown", daemon=True
+        ).start()
 
     for name in ("SIGINT", "SIGTERM"):
         signum = getattr(signal, name, None)
@@ -70,5 +90,7 @@ def run_service(
         LOGGER.info("Desktop service stopped")
 
 
-def cast_signal_handler(handler: signal.Handlers) -> Callable[[int, object], None] | int | None:
+def cast_signal_handler(
+    handler: signal.Handlers,
+) -> Callable[[int, object], None] | int | None:
     return handler

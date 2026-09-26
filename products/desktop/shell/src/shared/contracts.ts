@@ -1,6 +1,11 @@
-export const DESKTOP_PROTOCOL_VERSION = 1;
+export const DESKTOP_PROTOCOL_VERSION = 2;
 
-export type ServicePhase = "stopped" | "starting" | "ready" | "stopping" | "failed";
+export type ServicePhase =
+  | "stopped"
+  | "starting"
+  | "ready"
+  | "stopping"
+  | "failed";
 
 export interface ServiceStatus {
   phase: ServicePhase;
@@ -15,14 +20,76 @@ export interface AgentDefinition {
   name: string;
   description: string;
   system_prompt: string;
+  reasoning_prompt: string;
+  reasoning_level: "none" | "low" | "medium" | "high" | "max";
+  explicit_thinking: boolean;
+  enabled: boolean;
+  provider_name: string;
   model: string;
-  base_url: string;
+  timeout_seconds: number;
+  max_iterations: number;
+  context_window: number | null;
+  skills: string[];
+  local_tools: string[];
+  allowed_outbound: string[];
+  sandbox_profile_id: string | null;
+  delegate_agents: string[];
+  mcp_servers: McpServerDefinition[];
+  mcp_tools: McpToolReference[];
+  capabilities: string[];
 }
 
-export interface ConversationMessage { role: string; content: unknown }
-export interface ConversationSummary { id: string; agent_name: string; title: string; created_at: string }
-export interface Conversation extends ConversationSummary { messages: ConversationMessage[] }
-export interface ChatResult { session_id: string; output_text: string; messages: ConversationMessage[] }
+export interface ProviderDefinition {
+  name: string;
+  provider_type: "openai_compatible";
+  base_url: string;
+  api_style: "chat_completions" | "responses";
+  default_model: string;
+  models: string[];
+  is_default: boolean;
+  legacy_credential: boolean;
+  has_api_key?: boolean;
+  api_key?: string;
+}
+
+export interface McpServerDefinition {
+  name: string;
+  transport: "sse" | "streamable_http";
+  url: string;
+  command?: string | null;
+  args?: string[];
+  env?: Record<string, string>;
+}
+export interface McpToolReference {
+  server_name: string;
+  tool_name: string;
+  description?: string | null;
+  input_schema?: Record<string, unknown>;
+}
+export interface AgentOptions {
+  skills: string[];
+  local_tools: string[];
+  capabilities: string[];
+}
+
+export interface ConversationMessage {
+  role: string;
+  content: unknown;
+}
+export interface ConversationSummary {
+  id: string;
+  agent_name: string;
+  title: string;
+  created_at: string;
+}
+export interface Conversation extends ConversationSummary {
+  messages: ConversationMessage[];
+}
+export interface ChatResult {
+  session_id: string;
+  output_text: string;
+  messages: ConversationMessage[];
+}
 
 export interface ReadyMessage {
   type: "ready";
@@ -36,7 +103,8 @@ export interface ReadyMessage {
 
 export function parseReadyMessage(line: string): ReadyMessage {
   const value: unknown = JSON.parse(line);
-  if (!isRecord(value)) throw new Error("Sidecar handshake must be a JSON object");
+  if (!isRecord(value))
+    throw new Error("Sidecar handshake must be a JSON object");
   if (
     value.type !== "ready" ||
     value.host !== "127.0.0.1" ||

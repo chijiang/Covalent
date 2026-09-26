@@ -6,9 +6,11 @@ Next.js server.
 
 **Status:** the renderer has Chat, Agent, resource, and runtime workspaces styled
 to match the Enterprise control plane. Users can create local Agents, save a model
-API key through the host, and continue locally persisted conversations. Runtime
-status and restart controls are connected. MCP, Skills, streamed execution traces,
-and template exchange remain in development.
+API keys per Provider through the host, choose a Provider and model for each Agent,
+and continue locally persisted conversations. Runtime
+status and restart controls are connected. Agent settings cover runtime limits,
+prompts, reasoning, delegation, local instruction skills and remote MCP servers.
+Streamed execution traces and template exchange remain in development.
 
 [Desktop README](../README.md) · [Development guide](../../../docs/products/desktop/development.md)
 

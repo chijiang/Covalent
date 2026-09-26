@@ -24,11 +24,12 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
     ])
       .then(([agentResult, sessionResult]) => {
         if (!active) return;
-        setAgents(agentResult.items);
-        setSessions(sessionResult.items);
-        setAgentName(
-          (previous) => previous || agentResult.items[0]?.name || "",
+        const chatAgents = agentResult.items.filter(
+          (agent) => agent.enabled && agent.capabilities.includes("chat"),
         );
+        setAgents(chatAgents);
+        setSessions(sessionResult.items);
+        setAgentName((previous) => previous || chatAgents[0]?.name || "");
         setLoaded(true);
       })
       .catch((cause) => active && setError(String(cause)));
@@ -50,7 +51,13 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
 
   async function send() {
     const message = draft.trim();
-    if (!message || !agentName || busy) return;
+    if (
+      !message ||
+      !agentName ||
+      !agents.some((agent) => agent.name === agentName) ||
+      busy
+    )
+      return;
     setBusy(true);
     setError("");
     setDraft("");
@@ -181,12 +188,12 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
               <h3>
                 {agents.length
                   ? "Start a new conversation"
-                  : "Create an agent first"}
+                  : "Create or activate a chat agent first"}
               </h3>
               <p>
                 {agents.length
                   ? "Select an agent and send a message. Conversations are saved locally."
-                  : "Open Agent settings to set a model endpoint and system prompt."}
+                  : "Open Agent settings to configure an active agent with chat capability."}
               </p>
             </div>
           )}
@@ -201,7 +208,9 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
           <textarea
             aria-label="Message"
             placeholder={
-              agents.length ? "Message your agent…" : "Create an agent first"
+              agents.length
+                ? "Message your agent…"
+                : "Create or activate a chat agent first"
             }
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -211,14 +220,18 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
                 void send();
               }
             }}
-            disabled={!agents.length || status.phase !== "ready" || busy}
+            disabled={
+              !agents.some((agent) => agent.name === agentName) ||
+              status.phase !== "ready" ||
+              busy
+            }
           />
           <button
             type="button"
             onClick={() => void send()}
             disabled={
               !draft.trim() ||
-              !agents.length ||
+              !agents.some((agent) => agent.name === agentName) ||
               status.phase !== "ready" ||
               busy
             }

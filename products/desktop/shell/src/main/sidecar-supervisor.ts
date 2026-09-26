@@ -27,21 +27,39 @@ export class SidecarSupervisor {
     return { ...this.status, capabilities: [...this.status.capabilities] };
   }
 
-  async request(pathname: string, method: "GET" | "POST" = "GET", body?: object, modelKey?: string): Promise<unknown> {
-    if (this.status.phase !== "ready" || !this.endpoint) throw new Error("Desktop service is not ready");
+  async request(
+    pathname: string,
+    method: "GET" | "POST" | "DELETE" = "GET",
+    body?: object,
+  ): Promise<unknown> {
+    if (this.status.phase !== "ready" || !this.endpoint)
+      throw new Error("Desktop service is not ready");
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), method === "POST" && pathname === "/messages" ? 120_000 : 10_000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      method === "POST" && pathname === "/messages" ? 120_000 : 10_000,
+    );
     try {
       const response = await fetch(`${this.endpoint.baseUrl}${pathname}`, {
         method,
-        headers: { Authorization: `Bearer ${this.endpoint.token}`, ...(body ? { "Content-Type": "application/json" } : {}), ...(modelKey ? { "X-Model-Key": modelKey } : {}) },
+        headers: {
+          Authorization: `Bearer ${this.endpoint.token}`,
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        },
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });
-      const result = await response.json() as Record<string, unknown>;
-      if (!response.ok) throw new Error(typeof result.message === "string" ? result.message : `Desktop service returned ${response.status}`);
+      const result = (await response.json()) as Record<string, unknown>;
+      if (!response.ok)
+        throw new Error(
+          typeof result.message === "string"
+            ? result.message
+            : `Desktop service returned ${response.status}`,
+        );
       return result;
-    } finally { clearTimeout(timeout); }
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   subscribe(listener: StatusListener): () => void {
@@ -69,7 +87,9 @@ export class SidecarSupervisor {
     });
     this.child = child;
     child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => process.stderr.write(`[desktop-service] ${chunk}`));
+    child.stderr.on("data", (chunk: string) =>
+      process.stderr.write(`[desktop-service] ${chunk}`),
+    );
     child.once("exit", (code, signal) => {
       this.child = null;
       this.endpoint = null;
@@ -103,7 +123,10 @@ export class SidecarSupervisor {
       });
       return this.getStatus();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Desktop service failed to start";
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Desktop service failed to start";
       this.expectedExit = true;
       await this.terminateChild();
       this.update({ ...emptyStatus("failed"), error: message });
@@ -143,20 +166,39 @@ export class SidecarSupervisor {
   }
 }
 
-function resolveServiceCommand(): { executable: string; args: string[]; cwd: string } {
+function resolveServiceCommand(): {
+  executable: string;
+  args: string[];
+  cwd: string;
+} {
   const override = process.env.COVALENT_DESKTOP_SERVICE_EXECUTABLE;
-  if (override) return { executable: override, args: ["serve", "--port", "0"], cwd: path.dirname(override) };
+  if (override)
+    return {
+      executable: override,
+      args: ["serve", "--port", "0"],
+      cwd: path.dirname(override),
+    };
   if (app.isPackaged) {
     const suffix = process.platform === "win32" ? ".exe" : "";
-    const executable = path.join(process.resourcesPath, "service", `covalent-desktop-service${suffix}`);
-    return { executable, args: ["serve", "--port", "0"], cwd: path.dirname(executable) };
+    const executable = path.join(
+      process.resourcesPath,
+      "service",
+      `covalent-desktop-service${suffix}`,
+    );
+    return {
+      executable,
+      args: ["serve", "--port", "0"],
+      cwd: path.dirname(executable),
+    };
   }
   const repositoryRoot = path.resolve(__dirname, "../../../../..");
-  const python = process.env.COVALENT_DESKTOP_PYTHON ?? path.join(
-    repositoryRoot,
-    ".venv",
-    process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
-  );
+  const python =
+    process.env.COVALENT_DESKTOP_PYTHON ??
+    path.join(
+      repositoryRoot,
+      ".venv",
+      process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
+    );
   return {
     executable: python,
     args: ["-m", "covalent_desktop", "serve", "--port", "0"],
@@ -164,10 +206,19 @@ function resolveServiceCommand(): { executable: string; args: string[]; cwd: str
   };
 }
 
-function readHandshake(child: ChildProcessWithoutNullStreams): Promise<ReadyMessage> {
+function readHandshake(
+  child: ChildProcessWithoutNullStreams,
+): Promise<ReadyMessage> {
   return new Promise((resolve, reject) => {
-    const reader = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
-    const timeout = setTimeout(() => finish(new Error("Timed out waiting for Desktop service handshake")), START_TIMEOUT_MS);
+    const reader = readline.createInterface({
+      input: child.stdout,
+      crlfDelay: Infinity,
+    });
+    const timeout = setTimeout(
+      () =>
+        finish(new Error("Timed out waiting for Desktop service handshake")),
+      START_TIMEOUT_MS,
+    );
     const finish = (error?: Error, ready?: ReadyMessage) => {
       clearTimeout(timeout);
       reader.close();
@@ -178,7 +229,11 @@ function readHandshake(child: ChildProcessWithoutNullStreams): Promise<ReadyMess
     };
     const onError = (error: Error) => finish(error);
     const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
-      finish(new Error(`Desktop service exited before handshake (${signal ?? code ?? "unknown"})`));
+      finish(
+        new Error(
+          `Desktop service exited before handshake (${signal ?? code ?? "unknown"})`,
+        ),
+      );
     child.once("error", onError);
     child.once("exit", onExit);
     reader.once("line", (line) => {
@@ -189,7 +244,11 @@ function readHandshake(child: ChildProcessWithoutNullStreams): Promise<ReadyMess
       try {
         finish(undefined, parseReadyMessage(line));
       } catch (error) {
-        finish(error instanceof Error ? error : new Error("Invalid Desktop service handshake"));
+        finish(
+          error instanceof Error
+            ? error
+            : new Error("Invalid Desktop service handshake"),
+        );
       }
     });
   });
@@ -206,18 +265,30 @@ async function verifyHealth(
       headers: { Authorization: `Bearer ${endpoint.token}` },
       signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`Desktop service health check returned ${response.status}`);
+    if (!response.ok)
+      throw new Error(
+        `Desktop service health check returned ${response.status}`,
+      );
     const value = (await response.json()) as Record<string, unknown>;
-    if (value.protocol_version !== ready.protocol_version || value.service_version !== ready.service_version) {
-      throw new Error("Desktop service health response does not match handshake");
+    if (
+      value.protocol_version !== ready.protocol_version ||
+      value.service_version !== ready.service_version
+    ) {
+      throw new Error(
+        "Desktop service health response does not match handshake",
+      );
     }
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+function waitForExit(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null)
+    return Promise.resolve(true);
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
       child.off("exit", onExit);

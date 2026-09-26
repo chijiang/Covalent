@@ -1,14 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   Activity,
   Bot,
   Cable,
-  ChevronRight,
-  Cpu,
   MessageSquare,
   PanelLeft,
   RefreshCw,
-  Sparkles,
 } from "lucide-react";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { AgentWorkspace } from "./AgentWorkspace";
@@ -60,86 +57,6 @@ function StatusBadge({ status }: { status: DesktopServiceStatus }) {
       <span className={`status-dot ${status.phase}`} />
       {phaseLabels[status.phase]}
     </span>
-  );
-}
-
-function EmptyState({
-  icon,
-  title,
-  description,
-}: {
-  icon: ReactNode;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="empty-state">
-      <span className="empty-icon">{icon}</span>
-      <h3>{title}</h3>
-      <p>{description}</p>
-      <span className="coming-badge">Coming soon</span>
-    </div>
-  );
-}
-
-function ManagementWorkspace() {
-  const items = ["Provider settings", "MCP services", "Skill settings"];
-  const [selected, setSelected] = useState(items[0]);
-  const current = items.includes(selected) ? selected : items[0];
-  return (
-    <div className="management-layout">
-      <aside className="surface management-rail">
-        <div className="surface-heading">Service Console</div>
-        <nav aria-label="Service settings">
-          {items.map((item) => (
-            <button
-              key={item}
-              type="button"
-              className={`rail-item ${current === item ? "selected" : ""}`}
-              onClick={() => setSelected(item)}
-            >
-              {item === "Provider settings" ? (
-                <Cpu size={16} />
-              ) : item === "MCP services" ? (
-                <Cable size={16} />
-              ) : (
-                <Sparkles size={16} />
-              )}
-              {item}
-              <ChevronRight className="rail-chevron" size={14} />
-            </button>
-          ))}
-        </nav>
-      </aside>
-      <section className="surface inventory-panel">
-        <div className="surface-heading">
-          {current}
-          <span className="count-pill">0</span>
-        </div>
-        <div className="inventory-empty">No configured items yet</div>
-      </section>
-      <section className="surface detail-panel">
-        <div className="surface-heading">
-          {current}
-          <span className="subtle-tag">LOCAL</span>
-        </div>
-        {current === "Provider settings" ? (
-          <ProviderSettings />
-        ) : (
-          <EmptyState
-            icon={
-              current === "MCP services" ? (
-                <Cable size={22} />
-              ) : (
-                <Sparkles size={22} />
-              )
-            }
-            title={`${current} workspace`}
-            description="Local MCP and skill management is in development."
-          />
-        )}
-      </section>
-    </div>
   );
 }
 
@@ -354,7 +271,7 @@ export function App() {
           ) : page === "agents" ? (
             <AgentWorkspace status={status} />
           ) : page === "resources" ? (
-            <ManagementWorkspace />
+            <ProviderSettings />
           ) : (
             <RuntimeWorkspace
               status={status}

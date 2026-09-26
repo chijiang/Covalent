@@ -26,7 +26,7 @@ def test_status_contract() -> None:
         "status": "ok",
         "service_version": "0.1.0",
         "protocol_version": PROTOCOL_VERSION,
-        "capabilities": ["health", "agents", "chat"],
+        "capabilities": ["health", "agents", "providers", "chat"],
     }
 
 
@@ -44,7 +44,9 @@ def test_sidecar_handshake_auth_and_shutdown() -> None:
     )
     assert process.stdout is not None
     lines: queue.Queue[str] = queue.Queue()
-    threading.Thread(target=_readline, args=(process.stdout, lines), daemon=True).start()
+    threading.Thread(
+        target=_readline, args=(process.stdout, lines), daemon=True
+    ).start()
     try:
         handshake_line = lines.get(timeout=10)
         handshake = json.loads(handshake_line)
