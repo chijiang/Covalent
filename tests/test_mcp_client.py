@@ -10,6 +10,7 @@ unpack ``ValueError`` surfaces as an opaque
 from __future__ import annotations
 
 import unittest
+from datetime import timedelta
 from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 from unittest import mock
@@ -103,6 +104,12 @@ class StreamableHttpYieldShapeTests(unittest.IsolatedAsyncioTestCase):
         session = _FakeClientSession.instances[-1]
         self.assertTrue(session.initialized)
         self.assertEqual((session.read, session.write), ("READ", "WRITE"))
+        self.assertIsInstance(session.kwargs["read_timeout_seconds"], float)
+
+    async def test_sdk1_timeout_uses_timedelta(self) -> None:
+        with mock.patch("covalent_agent_kit.mcp.client.version", return_value="1.15.0"), _patch_transports(yield_shape=3):
+            await McpSdkClient().list_tools(_streamable_server())
+        self.assertIsInstance(_FakeClientSession.instances[-1].kwargs["read_timeout_seconds"], timedelta)
 
     async def test_streamable_http_works_with_sdk1_three_tuple(self) -> None:
         with _patch_transports(yield_shape=3):

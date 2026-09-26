@@ -17,6 +17,8 @@ from covalent_desktop.application.workspace import DesktopWorkspace
 from covalent_desktop.infra.local_store import LocalStore
 from covalent_desktop.infra.agent_registry import DesktopRegistryFactory
 from covalent_desktop.infra.provider_catalog import DesktopProviderCatalog
+from covalent_desktop.infra.skill_manager import DesktopSkillManager
+from covalent_desktop.infra.mcp_inspector import DesktopMcpInspector
 
 LOGGER = logging.getLogger(__name__)
 TOKEN_ENV = "COVALENT_DESKTOP_SERVICE_TOKEN"
@@ -40,16 +42,20 @@ def run_service(
             "COVALENT_DESKTOP_DATA_DIR", Path.home() / ".covalent" / "desktop"
         )
     )
-    registry_factory = DesktopRegistryFactory(data_dir)
+    store = LocalStore(data_dir / "desktop.sqlite3")
+    registry_factory = DesktopRegistryFactory(data_dir, store)
     server = create_server(
         host,
         port,
         token,
         DesktopWorkspace(
-            LocalStore(data_dir / "desktop.sqlite3"),
+            store,
             registry_factory,
             registry_factory.available_skills,
             DesktopProviderCatalog(),
+            registry_factory.available_local_tools,
+            DesktopSkillManager(registry_factory.skill_loader, data_dir / "skills"),
+            DesktopMcpInspector(),
         ),
     )
     status = server.service_status

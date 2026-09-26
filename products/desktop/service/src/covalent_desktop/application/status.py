@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from covalent_desktop import __version__
 
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,5 +28,13 @@ def get_service_status() -> ServiceStatus:
         status="ok",
         service_version=__version__,
         protocol_version=PROTOCOL_VERSION,
-        capabilities=("health", "agents", "providers", "chat"),
+        capabilities=(
+            "health",
+            "agents",
+            "providers",
+            "mcp",
+            "skills",
+            "local_tools",
+            "chat",
+        ),
     )

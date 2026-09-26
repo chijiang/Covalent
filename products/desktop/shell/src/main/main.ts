@@ -1,12 +1,26 @@
-import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  type IpcMainInvokeEvent,
+} from "electron";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { SidecarSupervisor } from "./sidecar-supervisor";
 import {
   deleteProviderKey,
   getProviderKey,
   saveProviderKey,
+  getMcpEnv,
+  saveMcpEnv,
+  deleteMcpEnv,
 } from "./credentials";
-import type { AgentDefinition, ProviderDefinition } from "../shared/contracts";
+import type {
+  AgentDefinition,
+  ProviderDefinition,
+  McpServerDefinition,
+} from "../shared/contracts";
 
 app.setName("Covalent Desktop");
 const supervisor = new SidecarSupervisor();
@@ -29,8 +43,62 @@ async function completeSmoke(
       check();
     })
   `);
+  const resourcesReady = await mainWindow.webContents.executeJavaScript(`
+    new Promise((resolve, reject) => {
+      const resources = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('Resources & connections'));
+      if (!resources) return reject(new Error('Resources navigation missing'));
+      resources.click();
+      const deadline = Date.now() + 5000;
+      const inspect = () => {
+        const mcp = [...document.querySelectorAll('.resource-tabs button')].find((button) => button.textContent?.trim() === 'MCP services');
+        const skills = [...document.querySelectorAll('.resource-tabs button')].find((button) => button.textContent?.trim() === 'Skills');
+        if (mcp && skills) {
+          mcp.click();
+          setTimeout(() => {
+            skills.click();
+            const waitForSkill = () => {
+              if (document.querySelector('.detail-panel')?.textContent?.includes('Create skill')) resolve(true);
+              else if (Date.now() >= deadline) reject(new Error('Skill settings did not render'));
+              else setTimeout(waitForSkill, 50);
+            };
+            waitForSkill();
+          }, 50);
+        }
+        else if (Date.now() >= deadline) reject(new Error('Resource settings did not render'));
+        else setTimeout(inspect, 50);
+      };
+      inspect();
+    })
+  `);
+  const agentLayoutReady = await mainWindow.webContents.executeJavaScript(`
+    new Promise((resolve, reject) => {
+      const agents = [...document.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Agent settings');
+      if (!agents) return reject(new Error('Agent settings navigation missing'));
+      agents.click();
+      const deadline = Date.now() + 5000;
+      const inspect = () => {
+        const provider = document.querySelector('button[aria-label="Provider"]');
+        const model = document.querySelector('button[aria-label="Model"], input[aria-label="Model"]');
+        if (provider && model) {
+          const p = provider.getBoundingClientRect();
+          const m = model.getBoundingClientRect();
+          if (Math.abs(p.top - m.top) > 2 || Math.abs(p.height - m.height) > 2)
+            return reject(new Error('Provider and Model controls are misaligned'));
+          provider.click();
+          setTimeout(() => {
+            const popup = document.querySelector('.agent-select-menu')?.getBoundingClientRect();
+            if (!popup || Math.abs(p.left - popup.left) > 2 || Math.abs(p.width - popup.width) > 2)
+              reject(new Error('Agent dropdown is misaligned'));
+            else resolve(true);
+          }, 50);
+        } else if (Date.now() >= deadline) reject(new Error('Agent settings did not render'));
+        else setTimeout(inspect, 50);
+      };
+      inspect();
+    })
+  `);
   console.log(
-    `DESKTOP_SMOKE_READY ${JSON.stringify({ ...status, rendererStatus })}`,
+    `DESKTOP_SMOKE_READY ${JSON.stringify({ ...status, rendererStatus, resourcesReady, agentLayoutReady })}`,
   );
   app.quit();
 }
@@ -138,6 +206,148 @@ function registerIpc(): void {
     if (!isAgentDefinition(value)) throw new Error("Invalid Agent definition");
     return supervisor.request("/agents", "POST", value);
   });
+  ipcMain.handle("desktop:list-mcp-services", async (event) => {
+    if (!isTrustedSender(event))
+      throw new Error("Untrusted Desktop IPC sender");
+    const result = (await supervisor.request("/mcp-services")) as {
+      items: McpServerDefinition[];
+    };
+    return {
+      items: await Promise.all(
+        result.items.map(async (item) => ({
+          ...item,
+          has_env: Boolean(await getMcpEnv(item.name)),
+        })),
+      ),
+    };
+  });
+  ipcMain.handle("desktop:save-mcp-service", async (event, value: unknown) => {
+    if (!isTrustedSender(event))
+      throw new Error("Untrusted Desktop IPC sender");
+    if (!isMcpDefinition(value))
+      throw new Error("Invalid MCP service definition");
+    const { env, has_env: _hasEnv, ...definition } = value;
+    const result = (await supervisor.request(
+      "/mcp-services",
+      "POST",
+      definition,
+    )) as McpServerDefinition;
+    if (env && Object.keys(env).length) await saveMcpEnv(result.name, env);
+    return { ...result, has_env: Boolean(await getMcpEnv(result.name)) };
+  });
+  ipcMain.handle("desktop:delete-mcp-service", async (event, name: unknown) => {
+    if (!isTrustedSender(event))
+      throw new Error("Untrusted Desktop IPC sender");
+    if (!isResourceName(name)) throw new Error("Invalid MCP service name");
+    await supervisor.request(`/mcp-services/${name}`, "DELETE");
+    await deleteMcpEnv(name);
+  });
+  ipcMain.handle("desktop:clear-mcp-env", async (event, name: unknown) => {
+    if (!isTrustedSender(event))
+      throw new Error("Untrusted Desktop IPC sender");
+    if (!isResourceName(name)) throw new Error("Invalid MCP service name");
+    await deleteMcpEnv(name);
+  });
+  ipcMain.handle(
+    "desktop:inspect-mcp-service",
+    async (event, name: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (!isResourceName(name)) throw new Error("Invalid MCP service name");
+      return supervisor.request("/mcp-inspect", "POST", {
+        name,
+        env: (await getMcpEnv(name)) ?? {},
+      });
+    },
+  );
+  ipcMain.handle("desktop:list-skills", (event) => {
+    if (!isTrustedSender(event))
+      throw new Error("Untrusted Desktop IPC sender");
+    return supervisor.request("/skills");
+  });
+  ipcMain.handle(
+    "desktop:create-skill",
+    (event, name: unknown, content: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (
+        !isResourceName(name) ||
+        typeof content !== "string" ||
+        content.length > 200000
+      )
+        throw new Error("Invalid skill");
+      return supervisor.request("/skills", "POST", { name, content });
+    },
+  );
+  ipcMain.handle(
+    "desktop:update-skill",
+    (event, name: unknown, content: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (
+        !isResourceName(name) ||
+        typeof content !== "string" ||
+        content.length > 200000
+      )
+        throw new Error("Invalid skill");
+      return supervisor.request("/skill-update", "POST", { name, content });
+    },
+  );
+  ipcMain.handle("desktop:upload-skill", async (event, name: unknown) => {
+    if (!isTrustedSender(event))
+      throw new Error("Untrusted Desktop IPC sender");
+    if (!isResourceName(name)) throw new Error("Invalid skill name");
+    const selection = await dialog.showOpenDialog(mainWindow!, {
+      properties: ["openFile"],
+      filters: [{ name: "Skill ZIP", extensions: ["zip"] }],
+    });
+    if (selection.canceled || !selection.filePaths.length) return;
+    const stat = await fs.stat(selection.filePaths[0]);
+    if (stat.size > 10_000_000) throw new Error("Skill archive exceeds 10 MB");
+    const archive = (await fs.readFile(selection.filePaths[0])).toString(
+      "base64",
+    );
+    return supervisor.request("/skill-upload", "POST", { name, archive });
+  });
+  ipcMain.handle(
+    "desktop:sync-git-skills",
+    (event, name: unknown, url: unknown, ref: unknown, subdir: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (
+        !isResourceName(name) ||
+        typeof url !== "string" ||
+        !url.startsWith("https://") ||
+        url.length > 2048 ||
+        (ref !== undefined && (typeof ref !== "string" || ref.length > 255)) ||
+        (subdir !== undefined &&
+          (typeof subdir !== "string" || subdir.length > 255))
+      )
+        throw new Error("Invalid Git skill source");
+      return supervisor.request("/skill-git", "POST", {
+        name,
+        url,
+        ref,
+        subdir,
+      });
+    },
+  );
+  ipcMain.handle(
+    "desktop:set-skill-enabled",
+    (event, name: unknown, enabled: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (!isResourceName(name) || typeof enabled !== "boolean")
+        throw new Error("Invalid skill state");
+      return supervisor.request("/skill-state", "POST", { name, enabled });
+    },
+  );
+  ipcMain.handle("desktop:delete-skill", (event, name: unknown) => {
+    if (!isTrustedSender(event))
+      throw new Error("Untrusted Desktop IPC sender");
+    if (!isResourceName(name)) throw new Error("Invalid skill name");
+    return supervisor.request(`/skills/${name}`, "DELETE");
+  });
   ipcMain.handle("desktop:list-sessions", (event) => {
     if (!isTrustedSender(event))
       throw new Error("Untrusted Desktop IPC sender");
@@ -150,6 +360,37 @@ function registerIpc(): void {
       throw new Error("Invalid conversation ID");
     return supervisor.request(`/sessions/${id}`);
   });
+  ipcMain.handle(
+    "desktop:save-download",
+    async (event, sessionId: unknown, name: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (
+        typeof sessionId !== "string" ||
+        !/^[a-f0-9]{32}$/.test(sessionId) ||
+        typeof name !== "string" ||
+        !/^[A-Za-z0-9_.-]{1,255}$/.test(name) ||
+        name === "." ||
+        name === ".."
+      )
+        throw new Error("Invalid download");
+      const root = path.join(
+        app.getPath("userData"),
+        "workspaces",
+        ".covalent",
+        "downloads",
+        sessionId,
+      );
+      const source = await fs.realpath(path.join(root, name));
+      if (path.dirname(source) !== (await fs.realpath(root)))
+        throw new Error("Download path escapes session");
+      const selection = await dialog.showSaveDialog(mainWindow!, {
+        defaultPath: name,
+      });
+      if (selection.canceled || !selection.filePath) return;
+      await fs.copyFile(source, selection.filePath);
+    },
+  );
   ipcMain.handle("desktop:send-message", async (event, value: unknown) => {
     if (!isTrustedSender(event))
       throw new Error("Untrusted Desktop IPC sender");
@@ -164,6 +405,7 @@ function registerIpc(): void {
       agents.items.map((agent) => [agent.name, agent]),
     );
     const providerNames = new Set<string>();
+    const mcpNames = new Set<string>();
     const visited = new Set<string>();
     const pending = [value.agent_name];
     while (pending.length) {
@@ -173,9 +415,15 @@ function registerIpc(): void {
       const agent = agentsByName.get(name);
       if (!agent) continue;
       providerNames.add(agent.provider_name);
+      agent.mcp_servers.forEach((item) => mcpNames.add(item));
       pending.push(...agent.delegate_agents);
     }
     const providerKeys: Record<string, string> = {};
+    const mcpEnv: Record<string, Record<string, string>> = {};
+    for (const name of mcpNames) {
+      const env = await getMcpEnv(name);
+      if (env) mcpEnv[name] = env;
+    }
     for (const provider of providers.items) {
       if (!providerNames.has(provider.name)) continue;
       const key = await getProviderKey(
@@ -187,8 +435,28 @@ function registerIpc(): void {
     return supervisor.request("/messages", "POST", {
       ...value,
       provider_keys: providerKeys,
+      mcp_env: mcpEnv,
     });
   });
+}
+
+function isResourceName(value: unknown): value is string {
+  return (
+    typeof value === "string" && /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(value)
+  );
+}
+
+function isMcpDefinition(value: unknown): value is McpServerDefinition {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return (
+    isResourceName(item.name) &&
+    ["stdio", "sse", "streamable_http"].includes(String(item.transport)) &&
+    (item.env === undefined ||
+      (typeof item.env === "object" &&
+        item.env !== null &&
+        !Array.isArray(item.env)))
+  );
 }
 
 function isAgentDefinition(value: unknown): value is Record<string, string> {
@@ -221,9 +489,12 @@ function isProviderDefinition(
   );
 }
 
-function isChatRequest(
-  value: unknown,
-): value is { agent_name: string; message: string; session_id?: string } {
+function isChatRequest(value: unknown): value is {
+  agent_name: string;
+  message: string;
+  session_id?: string;
+  resume_answers?: Record<string, string>;
+} {
   if (!value || typeof value !== "object") return false;
   const item = value as Record<string, unknown>;
   return (
@@ -231,6 +502,11 @@ function isChatRequest(
     item.agent_name.length <= 64 &&
     typeof item.message === "string" &&
     item.message.length <= 100_000 &&
+    (item.resume_answers === undefined ||
+      (typeof item.resume_answers === "object" &&
+        item.resume_answers !== null &&
+        !Array.isArray(item.resume_answers) &&
+        JSON.stringify(item.resume_answers).length <= 10000)) &&
     (item.session_id === undefined ||
       (typeof item.session_id === "string" &&
         /^[a-f0-9]{32}$/.test(item.session_id)))

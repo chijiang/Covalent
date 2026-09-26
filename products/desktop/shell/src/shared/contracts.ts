@@ -1,4 +1,4 @@
-export const DESKTOP_PROTOCOL_VERSION = 2;
+export const DESKTOP_PROTOCOL_VERSION = 3;
 
 export type ServicePhase =
   | "stopped"
@@ -34,7 +34,7 @@ export interface AgentDefinition {
   allowed_outbound: string[];
   sandbox_profile_id: string | null;
   delegate_agents: string[];
-  mcp_servers: McpServerDefinition[];
+  mcp_servers: string[];
   mcp_tools: McpToolReference[];
   capabilities: string[];
 }
@@ -54,11 +54,22 @@ export interface ProviderDefinition {
 
 export interface McpServerDefinition {
   name: string;
-  transport: "sse" | "streamable_http";
-  url: string;
+  transport: "stdio" | "sse" | "streamable_http";
+  url?: string | null;
   command?: string | null;
   args?: string[];
   env?: Record<string, string>;
+  enabled: boolean;
+  has_env?: boolean;
+}
+export interface SkillDefinition {
+  name: string;
+  description: string;
+  enabled: boolean;
+  executable: boolean;
+  source_type: string;
+  source_category: string;
+  instructions: string;
 }
 export interface McpToolReference {
   server_name: string;
@@ -84,11 +95,27 @@ export interface ConversationSummary {
 }
 export interface Conversation extends ConversationSummary {
   messages: ConversationMessage[];
+  input_request?: UserInputRequest | null;
+  suggestions?: string[];
+}
+export interface UserInputRequest {
+  id: string;
+  tool_call_id?: string | null;
+  tool_name: string;
+  title: string;
+  questions: {
+    header: string;
+    question: string;
+    message?: string | null;
+    options: { label: string; description?: string | null }[];
+  }[];
 }
 export interface ChatResult {
   session_id: string;
   output_text: string;
   messages: ConversationMessage[];
+  input_request?: UserInputRequest | null;
+  suggestions?: string[];
 }
 
 export interface ReadyMessage {

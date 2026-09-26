@@ -9,9 +9,12 @@ sidecar authentication, protocol handshake, health checks, restart and shutdown
 cleanup are implemented. The local workflow supports Provider setup, Agent
 creation, per-Provider encrypted credentials, and persisted conversations through
 the shared Runtime. Agent settings include prompts, reasoning, limits, capabilities,
-delegation, local instruction skills and remote MCP server routing. Skills can
-be discovered from the local Desktop data directory; executable skills and
-custom sandbox profiles are not yet supported. Streaming traces, template
+delegation, managed Skills and MCP service references. The Service Console now
+manages stdio/SSE/Streamable HTTP MCP services and authored, ZIP, Git and local
+Skills. Enabled executable Skills run through the native host backend, which
+does not provide OS isolation; imported Skills start disabled. Workspace, PDF,
+browser and `ask_user` tools are available through per-Agent routing. Custom
+sandbox profiles remain unsupported. Streaming traces, template
 exchange, frozen sidecars and signed installers remain in development.
 
 [Repository overview](../../README.md) · [Development guide](../../docs/products/desktop/development.md) · [Host contract](../../docs/products/desktop/host-contract.md)

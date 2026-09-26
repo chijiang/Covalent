@@ -10,6 +10,8 @@ import {
 import { ChatWorkspace } from "./ChatWorkspace";
 import { AgentWorkspace } from "./AgentWorkspace";
 import { ProviderSettings } from "./ProviderSettings";
+import { McpSettings } from "./McpSettings";
+import { SkillSettings } from "./SkillSettings";
 
 type Page = "chat" | "agents" | "resources" | "runtime";
 const initialStatus: DesktopServiceStatus = {
@@ -144,6 +146,9 @@ function RuntimeWorkspace({
 
 export function App() {
   const [page, setPage] = useState<Page>("chat");
+  const [resourceTab, setResourceTab] = useState<
+    "providers" | "mcp" | "skills"
+  >("providers");
   const [status, setStatus] = useState(initialStatus);
   const [restarting, setRestarting] = useState(false);
   useEffect(() => {
@@ -271,7 +276,38 @@ export function App() {
           ) : page === "agents" ? (
             <AgentWorkspace status={status} />
           ) : page === "resources" ? (
-            <ProviderSettings />
+            <div className="resource-workspace">
+              <div
+                className="resource-tabs"
+                role="tablist"
+                aria-label="Resource settings"
+              >
+                <button
+                  type="button"
+                  className={resourceTab === "providers" ? "active" : ""}
+                  onClick={() => setResourceTab("providers")}
+                >
+                  Providers
+                </button>
+                <button
+                  type="button"
+                  className={resourceTab === "mcp" ? "active" : ""}
+                  onClick={() => setResourceTab("mcp")}
+                >
+                  MCP services
+                </button>
+                <button
+                  type="button"
+                  className={resourceTab === "skills" ? "active" : ""}
+                  onClick={() => setResourceTab("skills")}
+                >
+                  Skills
+                </button>
+              </div>
+              {resourceTab === "providers" && <ProviderSettings />}
+              {resourceTab === "mcp" && <McpSettings />}
+              {resourceTab === "skills" && <SkillSettings />}
+            </div>
           ) : (
             <RuntimeWorkspace
               status={status}

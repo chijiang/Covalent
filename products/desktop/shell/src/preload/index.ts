@@ -3,6 +3,9 @@ import type {
   AgentDefinition,
   AgentOptions,
   ProviderDefinition,
+  McpServerDefinition,
+  McpToolReference,
+  SkillDefinition,
   ChatResult,
   Conversation,
   ConversationSummary,
@@ -28,14 +31,46 @@ contextBridge.exposeInMainWorld("covalentDesktop", {
     ipcRenderer.invoke("desktop:delete-provider", name),
   loadProviderModels: (name: string): Promise<{ items: string[] }> =>
     ipcRenderer.invoke("desktop:load-provider-models", name),
+  listMcpServices: (): Promise<{ items: McpServerDefinition[] }> =>
+    ipcRenderer.invoke("desktop:list-mcp-services"),
+  saveMcpService: (value: McpServerDefinition): Promise<McpServerDefinition> =>
+    ipcRenderer.invoke("desktop:save-mcp-service", value),
+  deleteMcpService: (name: string): Promise<void> =>
+    ipcRenderer.invoke("desktop:delete-mcp-service", name),
+  clearMcpEnv: (name: string): Promise<void> =>
+    ipcRenderer.invoke("desktop:clear-mcp-env", name),
+  inspectMcpService: (name: string): Promise<{ items: McpToolReference[] }> =>
+    ipcRenderer.invoke("desktop:inspect-mcp-service", name),
+  listSkills: (): Promise<{ items: SkillDefinition[] }> =>
+    ipcRenderer.invoke("desktop:list-skills"),
+  createSkill: (name: string, content: string): Promise<void> =>
+    ipcRenderer.invoke("desktop:create-skill", name, content),
+  updateSkill: (name: string, content: string): Promise<void> =>
+    ipcRenderer.invoke("desktop:update-skill", name, content),
+  uploadSkill: (name: string): Promise<void> =>
+    ipcRenderer.invoke("desktop:upload-skill", name),
+  syncGitSkills: (
+    name: string,
+    url: string,
+    ref?: string,
+    subdir?: string,
+  ): Promise<{ items: string[] }> =>
+    ipcRenderer.invoke("desktop:sync-git-skills", name, url, ref, subdir),
+  setSkillEnabled: (name: string, enabled: boolean): Promise<void> =>
+    ipcRenderer.invoke("desktop:set-skill-enabled", name, enabled),
+  deleteSkill: (name: string): Promise<void> =>
+    ipcRenderer.invoke("desktop:delete-skill", name),
   listSessions: (): Promise<{ items: ConversationSummary[] }> =>
     ipcRenderer.invoke("desktop:list-sessions"),
   getSession: (id: string): Promise<Conversation> =>
     ipcRenderer.invoke("desktop:get-session", id),
+  saveDownload: (sessionId: string, name: string): Promise<void> =>
+    ipcRenderer.invoke("desktop:save-download", sessionId, name),
   sendMessage: (value: {
     agent_name: string;
     message: string;
     session_id?: string;
+    resume_answers?: Record<string, string>;
   }): Promise<ChatResult> => ipcRenderer.invoke("desktop:send-message", value),
   onServiceStatus: (
     listener: (status: ServiceStatus) => void,

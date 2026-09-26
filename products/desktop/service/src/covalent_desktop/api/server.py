@@ -53,6 +53,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             payload = server.workspace.agent_options()
         elif self.path == "/providers":
             payload = {"items": server.workspace.list_providers()}
+        elif self.path == "/mcp-services":
+            payload = {"items": server.workspace.list_mcp_services()}
+        elif self.path == "/skills":
+            payload = {"items": server.workspace.list_skills()}
         elif self.path == "/sessions":
             payload = {"items": server.workspace.list_sessions()}
         elif self.path.startswith("/sessions/") and self.path.count("/") == 2:
@@ -78,14 +82,28 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 {"code": "unauthorized", "message": "Invalid service credential"},
             )
             return
-        if self.path not in ("/agents", "/messages", "/providers", "/provider-models"):
+        if self.path not in (
+            "/agents",
+            "/messages",
+            "/providers",
+            "/provider-models",
+            "/mcp-services",
+            "/mcp-inspect",
+            "/skills",
+            "/skill-update",
+            "/skill-upload",
+            "/skill-state",
+            "/skill-git",
+        ):
             self._write_json(
                 HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
             )
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if length < 1 or length > 120000:
+            if length < 1 or length > (
+                14_000_000 if self.path == "/skill-upload" else 120000
+            ):
                 raise ValueError("Invalid request size")
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
@@ -95,6 +113,41 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 payload = workspace.save_agent(data)
             elif self.path == "/providers":
                 payload = workspace.save_provider(data)
+            elif self.path == "/mcp-services":
+                payload = workspace.save_mcp_service(data)
+            elif self.path == "/mcp-inspect":
+                payload = {
+                    "items": asyncio.run(
+                        workspace.inspect_mcp_service(
+                            str(data.get("name", "")), data.get("env")
+                        )
+                    )
+                }
+            elif self.path == "/skills":
+                payload = workspace.create_skill(
+                    str(data.get("name", "")), str(data.get("content", ""))
+                )
+            elif self.path == "/skill-update":
+                payload = workspace.update_skill(
+                    str(data.get("name", "")), str(data.get("content", ""))
+                )
+            elif self.path == "/skill-upload":
+                payload = workspace.install_skill(
+                    str(data.get("name", "")), str(data.get("archive", ""))
+                )
+            elif self.path == "/skill-state":
+                payload = workspace.set_skill_enabled(
+                    str(data.get("name", "")), data.get("enabled") is True
+                )
+            elif self.path == "/skill-git":
+                payload = asyncio.run(
+                    workspace.sync_git_skills(
+                        str(data.get("name", "")),
+                        str(data.get("url", "")),
+                        str(data["ref"]) if data.get("ref") else None,
+                        str(data["subdir"]) if data.get("subdir") else None,
+                    )
+                )
             elif self.path == "/provider-models":
                 payload = {
                     "items": workspace.load_provider_models(
@@ -111,12 +164,19 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     )
                 ):
                     raise ValueError("Invalid provider credentials")
+                answers = data.get("resume_answers")
+                if answers is not None and (
+                    not isinstance(answers, dict) or len(json.dumps(answers)) > 10000
+                ):
+                    raise ValueError("Invalid Agent question answers")
                 payload = asyncio.run(
                     workspace.send_message(
                         str(data.get("agent_name", "")),
                         str(data.get("message", "")),
                         str(data["session_id"]) if data.get("session_id") else None,
                         provider_keys=keys,
+                        mcp_env=data.get("mcp_env"),
+                        resume_answers=answers,
                     )
                 )
         except (ValueError, json.JSONDecodeError) as error:
@@ -132,16 +192,34 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             return
         except Exception:
             LOGGER.exception("Desktop request failed")
+            if self.path == "/provider-models":
+                code, message = (
+                    "provider_models_failed",
+                    "Could not load models; check the Provider endpoint and API key",
+                )
+            elif self.path == "/mcp-inspect":
+                code, message = (
+                    "mcp_inspect_failed",
+                    "Could not connect to the MCP service; check its transport and credentials",
+                )
+            elif self.path == "/skill-git":
+                code, message = (
+                    "skill_sync_failed",
+                    "Could not sync the Git skill source",
+                )
+            elif self.path == "/skill-upload":
+                code, message = (
+                    "skill_upload_failed",
+                    "Could not import the skill archive",
+                )
+            else:
+                code, message = (
+                    "invoke_failed",
+                    "Agent call failed; check the model endpoint and credentials",
+                )
             self._write_json(
                 HTTPStatus.BAD_GATEWAY,
-                {
-                    "code": "provider_models_failed"
-                    if self.path == "/provider-models"
-                    else "invoke_failed",
-                    "message": "Could not load models; check the Provider endpoint and API key"
-                    if self.path == "/provider-models"
-                    else "Agent call failed; check the model endpoint and credentials",
-                },
+                {"code": code, "message": message},
             )
             return
         self._write_json(HTTPStatus.OK, payload)
@@ -153,15 +231,24 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                 {"code": "unauthorized", "message": "Invalid service credential"},
             )
             return
-        if not self.path.startswith("/providers/") or self.path.count("/") != 2:
+        if self.path.count("/") != 2 or not (
+            self.path.startswith("/providers/")
+            or self.path.startswith("/mcp-services/")
+            or self.path.startswith("/skills/")
+        ):
             self._write_json(
                 HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
             )
             return
         try:
-            cast(DesktopHTTPServer, self.server).workspace.delete_provider(
-                self.path.split("/")[2]
-            )
+            workspace = cast(DesktopHTTPServer, self.server).workspace
+            name = self.path.split("/")[2]
+            if self.path.startswith("/providers/"):
+                workspace.delete_provider(name)
+            elif self.path.startswith("/mcp-services/"):
+                workspace.delete_mcp_service(name)
+            else:
+                workspace.delete_skill(name)
         except WorkspaceError as error:
             self._write_json(
                 HTTPStatus(error.status), {"code": error.code, "message": error.message}

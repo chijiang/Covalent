@@ -37,7 +37,12 @@ export class SidecarSupervisor {
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
-      method === "POST" && pathname === "/messages" ? 120_000 : 10_000,
+      method === "POST" && pathname === "/messages"
+        ? 120_000
+        : method === "POST" &&
+            ["/mcp-inspect", "/skill-git", "/skill-upload"].includes(pathname)
+          ? 90_000
+          : 10_000,
     );
     try {
       const response = await fetch(`${this.endpoint.baseUrl}${pathname}`, {

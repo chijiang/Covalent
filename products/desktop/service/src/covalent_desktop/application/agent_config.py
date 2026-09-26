@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from typing import Literal
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -14,12 +13,7 @@ from covalent_contracts.messages import Capability
 from covalent_contracts.model import ProviderConfig
 from covalent_desktop.application.provider_config import DesktopProviderConfig
 
-DESKTOP_CAPABILITIES = {
-    Capability.CHAT,
-    Capability.REACT,
-    Capability.TOOL_CALLING,
-    Capability.MCP,
-}
+DESKTOP_CAPABILITIES = set(Capability)
 
 
 class DesktopAgentConfig(BaseModel):
@@ -44,10 +38,15 @@ class DesktopAgentConfig(BaseModel):
     allowed_outbound: list[str] = Field(default_factory=list)
     sandbox_profile_id: str | None = None
     delegate_agents: list[str] = Field(default_factory=list)
-    mcp_servers: list[McpServerConfig] = Field(default_factory=list)
+    mcp_servers: list[str] = Field(default_factory=list)
     mcp_tools: list[McpToolReference] = Field(default_factory=list)
     capabilities: list[Capability] = Field(
-        default_factory=lambda: [Capability.CHAT, Capability.REACT]
+        default_factory=lambda: [
+            Capability.CHAT,
+            Capability.REACT,
+            Capability.STREAMING,
+            Capability.TOOL_CALLING,
+        ]
     )
 
     @field_validator("name")
@@ -68,7 +67,9 @@ class DesktopAgentConfig(BaseModel):
             raise ValueError("This field is required")
         return value
 
-    @field_validator("skills", "local_tools", "delegate_agents", "allowed_outbound")
+    @field_validator(
+        "skills", "local_tools", "delegate_agents", "allowed_outbound", "mcp_servers"
+    )
     @classmethod
     def normalize_names(cls, values: list[str]) -> list[str]:
         return list(dict.fromkeys(value.strip() for value in values if value.strip()))
@@ -86,42 +87,16 @@ class DesktopAgentConfig(BaseModel):
             raise ValueError("This capability is not available in Desktop yet")
         if self.sandbox_profile_id is not None:
             raise ValueError("Sandbox profiles are not available in Desktop yet")
-        if any(server.env for server in self.mcp_servers):
-            raise ValueError(
-                "MCP credentials must not be stored in Agent configuration"
-            )
-        if any(server.transport == "stdio" for server in self.mcp_servers):
-            raise ValueError(
-                "Desktop MCP currently supports SSE and streamable HTTP transports"
-            )
-        for server in self.mcp_servers:
-            if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]{0,63}", server.name):
-                raise ValueError(
-                    "MCP server names must start with a letter and contain only letters, numbers, _ or -"
-                )
-            if server.command or server.args:
-                raise ValueError(
-                    "Desktop remote MCP servers cannot use commands or arguments"
-                )
-            address = urlparse(server.url or "")
-            if not address.hostname or not (
-                address.scheme == "https"
-                or (
-                    address.scheme == "http"
-                    and address.hostname in {"localhost", "127.0.0.1"}
-                )
-            ):
-                raise ValueError(
-                    "MCP servers require an HTTPS URL or HTTP loopback URL"
-                )
-        names = [server.name for server in self.mcp_servers]
-        if len(names) != len(set(names)):
-            raise ValueError("MCP server names must be unique")
-        if any(ref.server_name not in names for ref in self.mcp_tools):
+        if any(ref.server_name not in self.mcp_servers for ref in self.mcp_tools):
             raise ValueError("Each MCP tool must reference a configured MCP server")
         return self
 
-    def to_spec(self, provider: DesktopProviderConfig, api_key: str) -> AgentSpec:
+    def to_spec(
+        self,
+        provider: DesktopProviderConfig,
+        api_key: str,
+        mcp_servers: list[McpServerConfig] | None = None,
+    ) -> AgentSpec:
         return AgentSpec(
             name=self.name,
             description=self.description,
@@ -140,7 +115,7 @@ class DesktopAgentConfig(BaseModel):
             local_tools=self.local_tools,
             allowed_outbound=self.allowed_outbound,
             delegate_agents=self.delegate_agents,
-            mcp_servers=self.mcp_servers,
+            mcp_servers=mcp_servers or [],
             mcp_tools=self.mcp_tools,
             capabilities=self.capabilities,
             max_iterations=self.max_iterations,

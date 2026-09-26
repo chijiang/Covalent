@@ -11,11 +11,22 @@ interface DesktopServiceStatus {
 
 interface DesktopMcpServer {
   name: string;
-  transport: "sse" | "streamable_http";
-  url: string;
+  transport: "stdio" | "sse" | "streamable_http";
+  url?: string | null;
   command?: string | null;
   args?: string[];
   env?: Record<string, string>;
+  enabled: boolean;
+  has_env?: boolean;
+}
+interface DesktopSkill {
+  name: string;
+  description: string;
+  enabled: boolean;
+  executable: boolean;
+  source_type: string;
+  source_category: string;
+  instructions: string;
 }
 interface DesktopMcpTool {
   server_name: string;
@@ -41,7 +52,7 @@ interface DesktopAgent {
   allowed_outbound: string[];
   sandbox_profile_id: string | null;
   delegate_agents: string[];
-  mcp_servers: DesktopMcpServer[];
+  mcp_servers: string[];
   mcp_tools: DesktopMcpTool[];
   capabilities: string[];
 }
@@ -74,11 +85,27 @@ interface DesktopSessionSummary {
 }
 interface DesktopSession extends DesktopSessionSummary {
   messages: DesktopMessage[];
+  input_request?: DesktopInputRequest | null;
+  suggestions?: string[];
+}
+interface DesktopInputRequest {
+  id: string;
+  tool_call_id?: string | null;
+  tool_name: string;
+  title: string;
+  questions: {
+    header: string;
+    question: string;
+    message?: string | null;
+    options: { label: string; description?: string | null }[];
+  }[];
 }
 interface DesktopChatResult {
   session_id: string;
   output_text: string;
   messages: DesktopMessage[];
+  input_request?: DesktopInputRequest | null;
+  suggestions?: string[];
 }
 
 interface Window {
@@ -92,12 +119,31 @@ interface Window {
     saveProvider(value: DesktopProvider): Promise<DesktopProvider>;
     deleteProvider(name: string): Promise<void>;
     loadProviderModels(name: string): Promise<{ items: string[] }>;
+    listMcpServices(): Promise<{ items: DesktopMcpServer[] }>;
+    saveMcpService(value: DesktopMcpServer): Promise<DesktopMcpServer>;
+    deleteMcpService(name: string): Promise<void>;
+    clearMcpEnv(name: string): Promise<void>;
+    inspectMcpService(name: string): Promise<{ items: DesktopMcpTool[] }>;
+    listSkills(): Promise<{ items: DesktopSkill[] }>;
+    createSkill(name: string, content: string): Promise<void>;
+    updateSkill(name: string, content: string): Promise<void>;
+    uploadSkill(name: string): Promise<void>;
+    syncGitSkills(
+      name: string,
+      url: string,
+      ref?: string,
+      subdir?: string,
+    ): Promise<{ items: string[] }>;
+    setSkillEnabled(name: string, enabled: boolean): Promise<void>;
+    deleteSkill(name: string): Promise<void>;
     listSessions(): Promise<{ items: DesktopSessionSummary[] }>;
     getSession(id: string): Promise<DesktopSession>;
+    saveDownload(sessionId: string, name: string): Promise<void>;
     sendMessage(value: {
       agent_name: string;
       message: string;
       session_id?: string;
+      resume_answers?: Record<string, string>;
     }): Promise<DesktopChatResult>;
     onServiceStatus(
       listener: (status: DesktopServiceStatus) => void,

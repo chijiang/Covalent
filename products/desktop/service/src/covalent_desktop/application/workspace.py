@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Protocol
@@ -16,7 +17,8 @@ from covalent_desktop.application.agent_config import (
     DesktopAgentConfig,
 )
 from covalent_desktop.application.provider_config import DesktopProviderConfig
-from covalent_runtime.domain.types import Message, RunContext
+from covalent_desktop.application.mcp_config import DesktopMcpService
+from covalent_runtime.domain.types import Message, RunContext, GenerationResponse
 from covalent_runtime.engine.react import ReactAgentRuntime
 from covalent_runtime.ports.registry import RuntimeRegistry
 
@@ -26,6 +28,12 @@ class WorkspaceStore(Protocol):
     def get_provider(self, name: str) -> dict[str, object] | None: ...
     def save_provider(self, definition: dict[str, object]) -> None: ...
     def delete_provider(self, name: str) -> None: ...
+    def list_mcp_services(self) -> list[dict[str, object]]: ...
+    def get_mcp_service(self, name: str) -> dict[str, object] | None: ...
+    def save_mcp_service(self, definition: dict[str, object]) -> None: ...
+    def delete_mcp_service(self, name: str) -> None: ...
+    def skill_states(self) -> dict[str, bool]: ...
+    def set_skill_enabled(self, name: str, enabled: bool) -> None: ...
     def list_agents(self) -> list[dict[str, object]]: ...
     def get_agent(self, name: str) -> dict[str, object] | None: ...
     def save_agent(self, definition: dict[str, object]) -> None: ...
@@ -33,6 +41,10 @@ class WorkspaceStore(Protocol):
     def create_session(self, agent_name: str, title: str) -> str: ...
     def delete_session(self, session_id: str) -> None: ...
     def get_session(self, session_id: str) -> dict[str, object] | None: ...
+    def set_pending_input(
+        self, session_id: str, request: dict[str, object] | None
+    ) -> None: ...
+    def set_suggestions(self, session_id: str, suggestions: list[str]) -> None: ...
     async def load_messages(self, scope_id: str) -> list[Message]: ...
     async def save_messages(self, scope_id: str, messages: list[Message]) -> None: ...
 
@@ -41,6 +53,19 @@ class ProviderCatalog(Protocol):
     def list_models(
         self, provider: DesktopProviderConfig, api_key: str
     ) -> list[str]: ...
+
+
+class SkillManager(Protocol):
+    def create_authored(self, name: str, content: str) -> str: ...
+    def install_zip(self, name: str, encoded: str) -> str: ...
+    def delete(self, name: str) -> None: ...
+    async def sync_git(
+        self, name: str, url: str, ref: str | None = None, subdir: str | None = None
+    ) -> list[str]: ...
+
+
+class McpInspector(Protocol):
+    async def list_tools(self, server: McpServerConfig) -> list[dict[str, object]]: ...
 
 
 class DesktopRegistry(RuntimeRegistry, Protocol):
@@ -63,11 +88,19 @@ class DesktopWorkspace:
         registry_factory: Callable[[], DesktopRegistry],
         available_skills: Callable[[], list[str]] | None = None,
         provider_catalog: ProviderCatalog | None = None,
+        available_local_tools: Callable[[], list[str]] | None = None,
+        skill_manager: SkillManager | None = None,
+        mcp_inspector: McpInspector | None = None,
     ) -> None:
         self.store = store
         self.registry_factory = registry_factory
         self.available_skills = available_skills or (lambda: [])
         self.provider_catalog = provider_catalog
+        self.available_local_tools = available_local_tools or (
+            lambda: ["get_current_time"]
+        )
+        self.skill_manager = skill_manager
+        self.mcp_inspector = mcp_inspector
         # A single local run at a time keeps session history ordered without
         # coupling asyncio locks to the HTTP server's per-request event loops.
         self._run_lock = threading.Lock()
@@ -125,13 +158,147 @@ class DesktopWorkspace:
     def agent_options(self) -> dict[str, object]:
         return {
             "skills": self.available_skills(),
-            "local_tools": ["get_current_time"],
+            "local_tools": self.available_local_tools(),
             "capabilities": [
                 capability.value
                 for capability in Capability
                 if capability in DESKTOP_CAPABILITIES
             ],
         }
+
+    def list_mcp_services(self) -> list[dict[str, object]]:
+        return self.store.list_mcp_services()
+
+    def save_mcp_service(self, value: dict[str, object]) -> dict[str, object]:
+        try:
+            service = DesktopMcpService.model_validate(value)
+        except ValidationError as error:
+            raise WorkspaceError("invalid_mcp", error.errors()[0]["msg"]) from error
+        definition = service.model_dump(mode="json")
+        self.store.save_mcp_service(definition)
+        return definition
+
+    def delete_mcp_service(self, name: str) -> None:
+        if self.store.get_mcp_service(name) is None:
+            raise WorkspaceError("mcp_not_found", "MCP service not found", 404)
+        if any(
+            name in self._parse_agent(raw).mcp_servers
+            for raw in self.store.list_agents()
+        ):
+            raise WorkspaceError("mcp_in_use", "MCP service is used by an Agent", 409)
+        self.store.delete_mcp_service(name)
+
+    def list_skills(self) -> list[dict[str, object]]:
+        registry = self.registry_factory()
+        states = self.store.skill_states()
+        return [
+            {
+                "name": spec.name,
+                "description": spec.description,
+                "enabled": states.get(spec.name, True),
+                "executable": spec.is_executable,
+                "source_type": "git"
+                if spec.source_dir and "github_synced" in Path(spec.source_dir).parts
+                else spec.source_type,
+                "source_category": next(
+                    (
+                        part
+                        for part in Path(spec.source_dir or "").parts
+                        if part in {"built_in", "uploaded", "authored", "github_synced"}
+                    ),
+                    "external",
+                ),
+                "instructions": spec.instructions or "",
+            }
+            for spec in registry.manifest_skills.values()
+        ]
+
+    def set_skill_enabled(self, name: str, enabled: bool) -> dict[str, object]:
+        if name not in {item["name"] for item in self.list_skills()}:
+            raise WorkspaceError("skill_not_found", "Skill not found", 404)
+        self.store.set_skill_enabled(name, enabled)
+        return {"name": name, "enabled": enabled}
+
+    def create_skill(self, name: str, content: str) -> dict[str, object]:
+        if self.skill_manager is None:
+            raise WorkspaceError(
+                "skills_unavailable", "Skill management unavailable", 503
+            )
+        if name in {item["name"] for item in self.list_skills()}:
+            raise WorkspaceError("skill_exists", "Skill already exists", 409)
+        try:
+            skill_name = self.skill_manager.create_authored(name, content)
+        except (ValueError, OSError) as error:
+            raise WorkspaceError("invalid_skill", str(error)) from error
+        return {"name": skill_name}
+
+    def update_skill(self, name: str, content: str) -> dict[str, object]:
+        skill = next(
+            (item for item in self.list_skills() if item["name"] == name), None
+        )
+        if not skill or skill["source_category"] != "authored":
+            raise WorkspaceError(
+                "skill_read_only", "Only authored skills can be edited", 409
+            )
+        try:
+            skill_name = self.skill_manager.create_authored(name, content)
+        except (ValueError, OSError) as error:
+            raise WorkspaceError("invalid_skill", str(error)) from error
+        return {"name": skill_name}
+
+    def install_skill(self, name: str, archive: str) -> dict[str, object]:
+        if self.skill_manager is None:
+            raise WorkspaceError(
+                "skills_unavailable", "Skill management unavailable", 503
+            )
+        try:
+            skill_name = self.skill_manager.install_zip(name, archive)
+        except (ValueError, OSError) as error:
+            raise WorkspaceError("invalid_skill", str(error)) from error
+        self.store.set_skill_enabled(skill_name, False)
+        return {"name": skill_name, "enabled": False}
+
+    def delete_skill(self, name: str) -> None:
+        if any(
+            name in self._parse_agent(raw).skills for raw in self.store.list_agents()
+        ):
+            raise WorkspaceError("skill_in_use", "Skill is used by an Agent", 409)
+        if self.skill_manager is None:
+            raise WorkspaceError(
+                "skills_unavailable", "Skill management unavailable", 503
+            )
+        try:
+            self.skill_manager.delete(name)
+        except ValueError as error:
+            raise WorkspaceError("invalid_skill", str(error)) from error
+
+    async def sync_git_skills(
+        self, name: str, url: str, ref: str | None = None, subdir: str | None = None
+    ) -> dict[str, object]:
+        if self.skill_manager is None:
+            raise WorkspaceError(
+                "skills_unavailable", "Skill management unavailable", 503
+            )
+        try:
+            names = await self.skill_manager.sync_git(name, url, ref, subdir)
+        except (ValueError, OSError) as error:
+            raise WorkspaceError("invalid_skill_source", str(error)) from error
+        existing_states = self.store.skill_states()
+        for skill_name in names:
+            if skill_name not in existing_states:
+                self.store.set_skill_enabled(skill_name, False)
+        return {"items": names}
+
+    async def inspect_mcp_service(
+        self, name: str, env: dict[str, str] | None = None
+    ) -> list[dict[str, object]]:
+        raw = self.store.get_mcp_service(name)
+        if not raw:
+            raise WorkspaceError("mcp_not_found", "MCP service not found", 404)
+        service = DesktopMcpService.model_validate(raw)
+        if self.mcp_inspector is None:
+            raise WorkspaceError("mcp_unavailable", "MCP inspector unavailable", 503)
+        return await self.mcp_inspector.list_tools(service.to_contract(env))
 
     def _parse_agent(self, value: dict[str, object]) -> DesktopAgentConfig:
         try:
@@ -151,11 +318,22 @@ class DesktopWorkspace:
                 "missing_skill",
                 f"Skill is not available: {', '.join(sorted(missing_skills))}",
             )
-        unsupported_tools = set(config.local_tools) - {"get_current_time"}
+        unsupported_tools = set(config.local_tools) - set(self.available_local_tools())
         if unsupported_tools:
             raise WorkspaceError(
                 "unknown_tool",
                 f"Local tool is not available: {', '.join(sorted(unsupported_tools))}",
+            )
+        missing_mcp = {
+            name
+            for name in config.mcp_servers
+            if not (raw := self.store.get_mcp_service(name))
+            or not raw.get("enabled", True)
+        }
+        if missing_mcp:
+            raise WorkspaceError(
+                "missing_mcp",
+                f"MCP service is not available: {', '.join(sorted(missing_mcp))}",
             )
         available_agents = {
             item.name
@@ -188,6 +366,8 @@ class DesktopWorkspace:
         session_id: str | None = None,
         *,
         provider_keys: dict[str, str] | None = None,
+        mcp_env: dict[str, dict[str, str]] | None = None,
+        resume_answers: dict[str, object] | None = None,
     ) -> dict[str, object]:
         raw_definition = self.store.get_agent(agent_name)
         if raw_definition is None:
@@ -198,11 +378,12 @@ class DesktopWorkspace:
                 "agent_disabled", "Agent is not available for chat", 409
             )
         message = message.strip()
-        if not message or len(message) > 100000:
+        if (not message and resume_answers is None) or len(message) > 100000:
             raise WorkspaceError(
                 "invalid_message", "Message must contain 1–100000 characters"
             )
         provider_keys = provider_keys or {}
+        mcp_env = mcp_env or {}
         with self._run_lock:
             created = session_id is None
             if session_id:
@@ -211,6 +392,20 @@ class DesktopWorkspace:
                     raise WorkspaceError(
                         "agent_mismatch", "Conversation belongs to another Agent"
                     )
+                if session["input_request"] and resume_answers is None:
+                    raise WorkspaceError(
+                        "input_required",
+                        "Answer the pending Agent question before sending another message",
+                        409,
+                    )
+                if resume_answers is not None and not session["input_request"]:
+                    raise WorkspaceError(
+                        "no_pending_input", "No pending Agent question", 409
+                    )
+            elif resume_answers is not None:
+                raise WorkspaceError(
+                    "no_pending_input", "No pending Agent question", 409
+                )
             registry = self.registry_factory()
             try:
                 candidates = {
@@ -229,7 +424,12 @@ class DesktopWorkspace:
                         raise WorkspaceError(
                             "missing_delegate", f"Sub-agent is not available: {name}"
                         )
-                    missing_skills = set(candidate.skills) - set(registry.skills)
+                    missing_skills = {
+                        name
+                        for name in candidate.skills
+                        if name not in registry.skills
+                        or not registry.is_skill_enabled(name)
+                    }
                     if missing_skills:
                         raise WorkspaceError(
                             "missing_skill",
@@ -250,27 +450,57 @@ class DesktopWorkspace:
                         )
                     reachable[name] = candidate
                     pending.extend(candidate.delegate_agents)
-                    registry.register_agent(candidate.to_spec(provider, key))
-                agent = registry.agents[config.name]
-                servers: dict[str, McpServerConfig] = {}
-                for candidate in reachable.values():
-                    for server in candidate.mcp_servers:
-                        existing = servers.get(server.name)
-                        if existing and existing != server:
+                    server_configs: list[McpServerConfig] = []
+                    for server_name in candidate.mcp_servers:
+                        raw_server = self.store.get_mcp_service(server_name)
+                        if not raw_server or not raw_server.get("enabled", True):
                             raise WorkspaceError(
-                                "mcp_conflict",
-                                f"MCP server name has conflicting definitions: {server.name}",
+                                "missing_mcp",
+                                f"MCP service is not available: {server_name}",
                             )
-                        servers[server.name] = server
-                for server in servers.values():
-                    registry.register_mcp_server(server)
+                        server_configs.append(
+                            DesktopMcpService.model_validate(raw_server).to_contract(
+                                mcp_env.get(server_name)
+                            )
+                        )
+                    registry.register_agent(
+                        candidate.to_spec(provider, key, server_configs)
+                    )
+                agent = registry.agents[config.name]
+                for candidate in reachable.values():
+                    for server in registry.agents[candidate.name].mcp_servers:
+                        registry.register_mcp_server(server)
                 if session_id is None:
                     session_id = self.store.create_session(agent_name, message)
                 runtime = ReactAgentRuntime(registry, session_store=self.store)
-                response = await runtime.run(
+                metadata: dict[str, object] = {}
+                if resume_answers is not None:
+                    pending_input = self.get_session(session_id)["input_request"]
+                    metadata["resume_tool_result"] = {
+                        "tool_call_id": pending_input.get("tool_call_id"),
+                        "tool_name": pending_input["tool_name"],
+                        "request_id": pending_input["id"],
+                        "answers": resume_answers,
+                        "summary": "User answered the questions.",
+                    }
+                response: GenerationResponse | None = None
+                pending: dict[str, object] | None = None
+                async for event in runtime.stream_events(
                     agent,
-                    message,
-                    RunContext(agent_name=agent_name, session_id=session_id),
+                    "" if resume_answers is not None else message,
+                    RunContext(
+                        agent_name=agent_name, session_id=session_id, metadata=metadata
+                    ),
+                ):
+                    if event["event"] == "final":
+                        response = GenerationResponse.model_validate(event["payload"])
+                    elif event["event"] == "input_required":
+                        pending = event["payload"]
+                if response is None and pending is None:
+                    raise RuntimeError("Runtime completed without a final response")
+                self.store.set_pending_input(session_id, pending)
+                self.store.set_suggestions(
+                    session_id, response.suggestions if response else []
                 )
             except Exception:
                 if created and session_id is not None:
@@ -280,6 +510,8 @@ class DesktopWorkspace:
                 await registry.aclose()
             return {
                 "session_id": session_id,
-                "output_text": response.output_text,
+                "output_text": response.output_text if response else "",
                 "messages": self.get_session(session_id)["messages"],
+                "input_request": pending,
+                "suggestions": response.suggestions if response else [],
             }

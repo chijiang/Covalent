@@ -346,7 +346,7 @@ def test_legacy_agent_definition_gets_new_defaults(tmp_path: Path) -> None:
     agent = workspace.list_agents()[0]
     assert agent["enabled"] is True
     assert agent["max_iterations"] == 6
-    assert set(agent["capabilities"]) == {"chat", "react"}
+    assert set(agent["capabilities"]) == {"chat", "react", "streaming", "tool_calling"}
     provider = workspace.list_providers()[0]
     assert agent["provider_name"] == provider["name"]
     assert provider["base_url"] == "https://example.com/v1"

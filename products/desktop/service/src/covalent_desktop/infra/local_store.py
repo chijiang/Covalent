@@ -21,20 +21,95 @@ class LocalStore:
             )
             row = db.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
-                db.execute("INSERT INTO schema_version VALUES (2)")
+                db.execute("INSERT INTO schema_version VALUES (5)")
                 db.execute(
                     "CREATE TABLE agents (name TEXT PRIMARY KEY, definition TEXT NOT NULL)"
                 )
                 db.execute(
                     "CREATE TABLE providers (name TEXT PRIMARY KEY, definition TEXT NOT NULL)"
                 )
+                self._create_resources(db)
                 db.execute(
-                    "CREATE TABLE sessions (id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, title TEXT NOT NULL, messages TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                    "CREATE TABLE sessions (id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, title TEXT NOT NULL, messages TEXT NOT NULL DEFAULT '[]', pending_input TEXT, suggestions TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
                 )
             elif row[0] == 1:
                 self._migrate_providers(db)
-            elif row[0] != 2:
+                self._migrate_resources(db)
+                self._migrate_pending_input(db)
+                self._migrate_suggestions(db)
+            elif row[0] == 2:
+                self._migrate_resources(db)
+                self._migrate_pending_input(db)
+                self._migrate_suggestions(db)
+            elif row[0] == 3:
+                self._migrate_pending_input(db)
+                self._migrate_suggestions(db)
+            elif row[0] == 4:
+                self._migrate_suggestions(db)
+            elif row[0] != 5:
                 raise RuntimeError(f"Unsupported Desktop database schema: {row[0]}")
+
+    def _migrate_pending_input(self, db: sqlite3.Connection) -> None:
+        db.execute("ALTER TABLE sessions ADD COLUMN pending_input TEXT")
+        db.execute("UPDATE schema_version SET version=4")
+
+    def _migrate_suggestions(self, db: sqlite3.Connection) -> None:
+        db.execute(
+            "ALTER TABLE sessions ADD COLUMN suggestions TEXT NOT NULL DEFAULT '[]'"
+        )
+        db.execute("UPDATE schema_version SET version=5")
+
+    def _create_resources(self, db: sqlite3.Connection) -> None:
+        db.execute(
+            "CREATE TABLE mcp_services (name TEXT PRIMARY KEY, definition TEXT NOT NULL)"
+        )
+        db.execute(
+            "CREATE TABLE skill_states (name TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)"
+        )
+
+    def _migrate_resources(self, db: sqlite3.Connection) -> None:
+        self._create_resources(db)
+        for row in db.execute(
+            "SELECT name, definition FROM agents ORDER BY name"
+        ).fetchall():
+            agent = json.loads(row["definition"])
+            servers = agent.get("mcp_servers", [])
+            if (
+                not isinstance(servers, list)
+                or not servers
+                or isinstance(servers[0], str)
+            ):
+                continue
+            names: list[str] = []
+            replacements: dict[str, str] = {}
+            for definition in servers:
+                original = definition["name"]
+                name = original
+                existing = db.execute(
+                    "SELECT definition FROM mcp_services WHERE name=?", (name,)
+                ).fetchone()
+                if existing and {
+                    k: v
+                    for k, v in json.loads(existing["definition"]).items()
+                    if k != "enabled"
+                } != {k: v for k, v in definition.items() if k != "enabled"}:
+                    name = f"{original[:48]}-{hashlib.sha256(json.dumps(definition, sort_keys=True).encode()).hexdigest()[:10]}"
+                db.execute(
+                    "INSERT OR IGNORE INTO mcp_services(name, definition) VALUES (?, ?)",
+                    (name, json.dumps({**definition, "name": name, "enabled": True})),
+                )
+                names.append(name)
+                replacements[original] = name
+            agent["mcp_servers"] = names
+            for tool in agent.get("mcp_tools", []):
+                tool["server_name"] = replacements.get(
+                    tool["server_name"], tool["server_name"]
+                )
+            db.execute(
+                "UPDATE agents SET definition=? WHERE name=?",
+                (json.dumps(agent), row["name"]),
+            )
+        db.execute("UPDATE schema_version SET version=3")
 
     def _migrate_providers(self, db: sqlite3.Connection) -> None:
         db.execute(
@@ -141,6 +216,47 @@ class LocalStore:
         with self._connect() as db:
             db.execute("DELETE FROM providers WHERE name=?", (name,))
 
+    def list_mcp_services(self) -> list[dict[str, object]]:
+        with self._connect() as db:
+            return [
+                json.loads(row["definition"])
+                for row in db.execute(
+                    "SELECT definition FROM mcp_services ORDER BY name"
+                )
+            ]
+
+    def get_mcp_service(self, name: str) -> dict[str, object] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT definition FROM mcp_services WHERE name=?", (name,)
+            ).fetchone()
+            return json.loads(row["definition"]) if row else None
+
+    def save_mcp_service(self, definition: dict[str, object]) -> None:
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO mcp_services(name, definition) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET definition=excluded.definition",
+                (definition["name"], json.dumps(definition)),
+            )
+
+    def delete_mcp_service(self, name: str) -> None:
+        with self._connect() as db:
+            db.execute("DELETE FROM mcp_services WHERE name=?", (name,))
+
+    def skill_states(self) -> dict[str, bool]:
+        with self._connect() as db:
+            return {
+                row["name"]: bool(row["enabled"])
+                for row in db.execute("SELECT name, enabled FROM skill_states")
+            }
+
+    def set_skill_enabled(self, name: str, enabled: bool) -> None:
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO skill_states(name, enabled) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET enabled=excluded.enabled",
+                (name, int(enabled)),
+            )
+
     def list_sessions(self) -> list[dict[str, str]]:
         with self._connect() as db:
             return [
@@ -166,7 +282,7 @@ class LocalStore:
     def get_session(self, session_id: str) -> dict[str, object] | None:
         with self._connect() as db:
             row = db.execute(
-                "SELECT id, agent_name, title, messages FROM sessions WHERE id=?",
+                "SELECT id, agent_name, title, messages, pending_input, suggestions FROM sessions WHERE id=?",
                 (session_id,),
             ).fetchone()
             if row is None:
@@ -176,7 +292,27 @@ class LocalStore:
                 "agent_name": row["agent_name"],
                 "title": row["title"],
                 "messages": json.loads(row["messages"]),
+                "input_request": json.loads(row["pending_input"])
+                if row["pending_input"]
+                else None,
+                "suggestions": json.loads(row["suggestions"]),
             }
+
+    def set_pending_input(
+        self, session_id: str, request: dict[str, object] | None
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE sessions SET pending_input=? WHERE id=?",
+                (json.dumps(request) if request else None, session_id),
+            )
+
+    def set_suggestions(self, session_id: str, suggestions: list[str]) -> None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE sessions SET suggestions=? WHERE id=?",
+                (json.dumps(suggestions), session_id),
+            )
 
     async def load_messages(self, scope_id: str) -> list[Message]:
         session = self.get_session(scope_id)

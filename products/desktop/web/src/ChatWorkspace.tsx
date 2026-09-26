@@ -1,8 +1,59 @@
 import { useEffect, useState } from "react";
 import { Activity, MessageSquare, Plus, Send } from "lucide-react";
+import { ChartBlock } from "./ChartBlock";
 
 function contentText(content: unknown): string {
   return typeof content === "string" ? content : JSON.stringify(content);
+}
+
+function MessageContent({ content }: { content: unknown }) {
+  const text = contentText(content);
+  const chunks = text.split(/(```echarts\s*\n[\s\S]*?```)/g);
+  return (
+    <>
+      {chunks.map((chunk, index) =>
+        chunk.startsWith("```echarts") ? (
+          <ChartBlock
+            key={index}
+            source={chunk
+              .replace(/^```echarts\s*\n/, "")
+              .replace(/```$/, "")
+              .trim()}
+          />
+        ) : (
+          <span key={index} className="chat-text-chunk">
+            {chunk}
+          </span>
+        ),
+      )}
+    </>
+  );
+}
+
+function publishedDownloads(
+  messages: DesktopMessage[],
+): { name: string; summary: string }[] {
+  const found = new Map<string, { name: string; summary: string }>();
+  for (const item of messages) {
+    if (item.role !== "tool" || typeof item.content !== "string") continue;
+    try {
+      const payload = JSON.parse(item.content) as Record<string, unknown>;
+      if (
+        typeof payload.name === "string" &&
+        typeof payload.download_url === "string"
+      )
+        found.set(payload.name, {
+          name: payload.name,
+          summary:
+            typeof payload.summary === "string"
+              ? payload.summary
+              : "Generated file",
+        });
+    } catch {
+      /* Other tool results are plain text. */
+    }
+  }
+  return [...found.values()];
 }
 
 export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
@@ -11,6 +62,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
   const [agentName, setAgentName] = useState("");
   const [session, setSession] = useState<DesktopSession | null>(null);
   const [draft, setDraft] = useState("");
+  const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
@@ -43,6 +95,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
       setError("");
       const value = await window.covalentDesktop.getSession(id);
       setSession(value);
+      setAnswers({});
       setAgentName(value.agent_name);
     } catch (cause) {
       setError(String(cause));
@@ -89,6 +142,34 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
       setError(String(cause));
       setSession(previous);
       setDraft(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resume() {
+    if (!session?.input_request || busy) return;
+    if (
+      session.input_request.questions.some(
+        (question) => !answers[question.header]?.trim(),
+      )
+    ) {
+      setError("Answer each question before continuing.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const result = await window.covalentDesktop.sendMessage({
+        agent_name: session.agent_name,
+        session_id: session.id,
+        message: "",
+        resume_answers: answers,
+      });
+      setSession(await window.covalentDesktop.getSession(result.session_id));
+      setAnswers({});
+    } catch (cause) {
+      setError(String(cause));
     } finally {
       setBusy(false);
     }
@@ -177,7 +258,9 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
                   <span className="message-role">
                     {item.role === "user" ? "You" : agentName}
                   </span>
-                  <div>{contentText(item.content)}</div>
+                  <div>
+                    <MessageContent content={item.content} />
+                  </div>
                 </div>
               ))
           ) : (
@@ -199,6 +282,85 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
           )}
           {busy && <p className="response-pending">Agent is responding…</p>}
         </div>
+        {session && publishedDownloads(session.messages).length > 0 && (
+          <div className="published-downloads">
+            {publishedDownloads(session.messages).map((file) => (
+              <button
+                key={file.name}
+                type="button"
+                className="secondary-button"
+                onClick={() =>
+                  void window.covalentDesktop
+                    .saveDownload(session.id, file.name)
+                    .catch((cause) => setError(String(cause)))
+                }
+              >
+                Download {file.name}
+              </button>
+            ))}
+          </div>
+        )}
+        {!!session?.suggestions?.length && (
+          <div className="suggested-questions">
+            {session.suggestions.map((question) => (
+              <button
+                key={question}
+                type="button"
+                className="secondary-button"
+                onClick={() => setDraft(question)}
+              >
+                {question}
+              </button>
+            ))}
+          </div>
+        )}
+        {session?.input_request && (
+          <div className="input-request">
+            <h3>{session.input_request.title}</h3>
+            {session.input_request.questions.map((question) => (
+              <label key={question.header}>
+                {question.question}
+                {question.options.length ? (
+                  <select
+                    value={answers[question.header] ?? ""}
+                    onChange={(event) =>
+                      setAnswers((current) => ({
+                        ...current,
+                        [question.header]: event.target.value,
+                      }))
+                    }
+                  >
+                    <option value="">Choose an answer...</option>
+                    {question.options.map((option) => (
+                      <option key={option.label} value={option.label}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={answers[question.header] ?? ""}
+                    onChange={(event) =>
+                      setAnswers((current) => ({
+                        ...current,
+                        [question.header]: event.target.value,
+                      }))
+                    }
+                    placeholder="Your answer"
+                  />
+                )}
+              </label>
+            ))}
+            <button
+              type="button"
+              className="primary-button"
+              disabled={busy}
+              onClick={() => void resume()}
+            >
+              Continue Agent
+            </button>
+          </div>
+        )}
         {error && (
           <p className="chat-error" role="alert">
             {error}
@@ -223,6 +385,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
             disabled={
               !agents.some((agent) => agent.name === agentName) ||
               status.phase !== "ready" ||
+              Boolean(session?.input_request) ||
               busy
             }
           />
@@ -233,6 +396,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
               !draft.trim() ||
               !agents.some((agent) => agent.name === agentName) ||
               status.phase !== "ready" ||
+              Boolean(session?.input_request) ||
               busy
             }
             aria-label="Send message"

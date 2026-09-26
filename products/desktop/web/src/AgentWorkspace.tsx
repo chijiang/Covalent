@@ -1,11 +1,20 @@
 import { useEffect, useState } from "react";
-import { Bot, Plus, Trash2 } from "lucide-react";
+import { Bot, Plus } from "lucide-react";
+import {
+  AgentMultiSelectField as MultiChecks,
+  AgentSelectField,
+} from "./AgentSelectField";
+
+const enterpriseSystemPrompt =
+  "You are a general-purpose ReAct assistant. Understand the user's goal, use available tools or delegates only when they improve accuracy or reduce uncertainty, and provide clear, grounded final answers.";
+const enterpriseReasoningPrompt =
+  "Use a ReAct loop when it helps: understand the task, decide whether the current context is sufficient, use the most relevant tool or delegate only when it reduces uncertainty, incorporate observations, repeat only as needed, and stop once you can answer confidently. Keep the final response clear, direct, and grounded in the evidence you observed.";
 
 const emptyAgent: DesktopAgent = {
   name: "",
   description: "",
-  system_prompt: "You are a helpful assistant.",
-  reasoning_prompt: "",
+  system_prompt: enterpriseSystemPrompt,
+  reasoning_prompt: enterpriseReasoningPrompt,
   reasoning_level: "none",
   explicit_thinking: true,
   enabled: true,
@@ -21,56 +30,15 @@ const emptyAgent: DesktopAgent = {
   delegate_agents: [],
   mcp_servers: [],
   mcp_tools: [],
-  capabilities: ["chat", "react"],
+  capabilities: ["chat", "react", "streaming", "tool_calling"],
 };
 
 const reasoningLevels = ["none", "low", "medium", "high", "max"] as const;
 
-function toggle(values: string[], value: string): string[] {
-  return values.includes(value)
-    ? values.filter((item) => item !== value)
-    : [...values, value];
-}
-
-function MultiChecks({
-  label,
-  options,
-  value,
-  onChange,
-  empty,
-}: {
-  label: string;
-  options: string[];
-  value: string[];
-  onChange: (value: string[]) => void;
-  empty: string;
-}) {
-  return (
-    <div className="config-field">
-      <span className="config-label">{label}</span>
-      {options.length ? (
-        <div className="config-checks">
-          {options.map((option) => (
-            <label key={option} className="config-check">
-              <input
-                type="checkbox"
-                checked={value.includes(option)}
-                onChange={() => onChange(toggle(value, option))}
-              />
-              <span>{option}</span>
-            </label>
-          ))}
-        </div>
-      ) : (
-        <p className="config-help">{empty}</p>
-      )}
-    </div>
-  );
-}
-
 export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
   const [agents, setAgents] = useState<DesktopAgent[]>([]);
   const [providers, setProviders] = useState<DesktopProvider[]>([]);
+  const [mcpServices, setMcpServices] = useState<DesktopMcpServer[]>([]);
   const [options, setOptions] = useState<DesktopAgentOptions>({
     skills: [],
     local_tools: [],
@@ -78,6 +46,7 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
   });
   const [form, setForm] = useState<DesktopAgent>({ ...emptyAgent });
   const [mcpToolText, setMcpToolText] = useState("");
+  const [inspectedTools, setInspectedTools] = useState<DesktopMcpTool[]>([]);
   const [isNew, setIsNew] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -85,6 +54,7 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
 
   function selectAgent(agent: DesktopAgent) {
     setForm(agent);
+    setInspectedTools([]);
     setMcpToolText(
       agent.mcp_tools
         .map((tool) => `${tool.server_name}:${tool.tool_name}`)
@@ -102,12 +72,14 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
       window.covalentDesktop.listAgents(),
       window.covalentDesktop.getAgentOptions(),
       window.covalentDesktop.listProviders(),
+      window.covalentDesktop.listMcpServices(),
     ])
-      .then(([agentResult, optionResult, providerResult]) => {
+      .then(([agentResult, optionResult, providerResult, mcpResult]) => {
         if (!active) return;
         setAgents(agentResult.items);
         setOptions(optionResult);
         setProviders(providerResult.items);
+        setMcpServices(mcpResult.items);
         if (agentResult.items.length) selectAgent(agentResult.items[0]);
         else {
           const provider =
@@ -170,6 +142,20 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
     }
   }
 
+  async function inspectSelectedMcp() {
+    setError("");
+    try {
+      const responses = await Promise.all(
+        form.mcp_servers.map((name) =>
+          window.covalentDesktop.inspectMcpService(name),
+        ),
+      );
+      setInspectedTools(responses.flatMap((response) => response.items));
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
   const delegateOptions = agents
     .filter((agent) => agent.enabled && agent.name !== form.name)
     .map((agent) => agent.name);
@@ -205,6 +191,7 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
                 model: provider?.default_model || provider?.models[0] || "",
               });
               setMcpToolText("");
+              setInspectedTools([]);
               setIsNew(true);
               setError("");
               setSaved("");
@@ -261,18 +248,16 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
                   placeholder="my-agent"
                 />
               </label>
-              <label>
-                Runtime
-                <select
-                  value={form.enabled ? "active" : "inactive"}
-                  onChange={(event) =>
-                    change("enabled", event.target.value === "active")
-                  }
-                >
-                  <option value="active">Active</option>
-                  <option value="inactive">Inactive</option>
-                </select>
-              </label>
+              <AgentSelectField
+                label="Runtime"
+                value={form.enabled ? "active" : "inactive"}
+                onChange={(value) => change("enabled", value === "active")}
+                options={[
+                  { value: "active", label: "Active" },
+                  { value: "inactive", label: "Inactive" },
+                ]}
+                placeholder="Select status"
+              />
               <label className="full-width">
                 Description
                 <textarea
@@ -284,65 +269,56 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
                   placeholder="What this agent does"
                 />
               </label>
-              <label>
-                Provider
-                <select
-                  value={form.provider_name}
-                  onChange={(event) => {
-                    const provider = providers.find(
-                      (item) => item.name === event.target.value,
-                    );
-                    setForm((previous) => ({
-                      ...previous,
-                      provider_name: provider?.name ?? "",
-                      model:
-                        provider?.default_model || provider?.models[0] || "",
-                    }));
-                    setSaved("");
-                  }}
-                >
-                  <option value="">Select a provider...</option>
-                  {providers.map((provider) => (
-                    <option key={provider.name} value={provider.name}>
-                      {provider.name}
-                      {provider.is_default ? " (default)" : ""}
-                    </option>
-                  ))}
-                </select>
-                {!providers.length && (
-                  <small>
-                    Configure a Provider in Resources & connections first.
-                  </small>
-                )}
-              </label>
-              <label>
-                Model
+              <AgentSelectField
+                label="Provider"
+                value={form.provider_name}
+                onChange={(value) => {
+                  const provider = providers.find(
+                    (item) => item.name === value,
+                  );
+                  setForm((previous) => ({
+                    ...previous,
+                    provider_name: provider?.name ?? "",
+                    model: provider?.default_model || provider?.models[0] || "",
+                  }));
+                  setSaved("");
+                }}
+                options={providers.map((provider) => ({
+                  value: provider.name,
+                  label: `${provider.name}${provider.is_default ? " (default)" : ""}`,
+                }))}
+                placeholder="Select a provider..."
+                helper={
+                  !providers.length
+                    ? "Configure a Provider in Resources & connections first."
+                    : undefined
+                }
+              />
+              <div className="agent-select-field">
                 {selectedProvider?.models.length ? (
                   <>
-                    <select
+                    <AgentSelectField
+                      label="Model"
                       value={
                         selectedProvider.models.includes(form.model)
                           ? form.model
                           : "__custom__"
                       }
-                      onChange={(event) =>
-                        change(
-                          "model",
-                          event.target.value === "__custom__"
-                            ? ""
-                            : event.target.value,
-                        )
+                      onChange={(value) =>
+                        change("model", value === "__custom__" ? "" : value)
                       }
-                    >
-                      {selectedProvider.models.map((model) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
-                      <option value="__custom__">Custom model...</option>
-                    </select>
+                      options={[
+                        ...selectedProvider.models.map((model) => ({
+                          value: model,
+                          label: model,
+                        })),
+                        { value: "__custom__", label: "Custom model..." },
+                      ]}
+                      placeholder="Select a model..."
+                    />
                     {!selectedProvider.models.includes(form.model) && (
                       <input
+                        aria-label="Custom model name"
                         value={form.model}
                         onChange={(event) =>
                           change("model", event.target.value)
@@ -352,48 +328,49 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
                     )}
                   </>
                 ) : (
-                  <input
-                    value={form.model}
-                    onChange={(event) => change("model", event.target.value)}
-                    placeholder={
-                      selectedProvider
-                        ? "Enter model name"
-                        : "Select a provider first"
-                    }
-                    disabled={!selectedProvider}
-                  />
+                  <>
+                    <span className="config-label">Model</span>
+                    <input
+                      aria-label="Model"
+                      value={form.model}
+                      onChange={(event) => change("model", event.target.value)}
+                      placeholder={
+                        selectedProvider
+                          ? "Enter model name"
+                          : "Select a provider first"
+                      }
+                      disabled={!selectedProvider}
+                    />
+                  </>
                 )}
-              </label>
-              <label>
-                Reasoning level
-                <select
-                  value={form.reasoning_level}
-                  onChange={(event) =>
-                    change(
-                      "reasoning_level",
-                      event.target.value as DesktopAgent["reasoning_level"],
-                    )
-                  }
-                >
-                  {reasoningLevels.map((level) => (
-                    <option key={level} value={level}>
-                      {level}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Explicit thinking
-                <select
-                  value={form.explicit_thinking ? "on" : "off"}
-                  onChange={(event) =>
-                    change("explicit_thinking", event.target.value === "on")
-                  }
-                >
-                  <option value="on">On</option>
-                  <option value="off">Off</option>
-                </select>
-              </label>
+              </div>
+              <AgentSelectField
+                label="Reasoning level"
+                value={form.reasoning_level}
+                onChange={(value) =>
+                  change(
+                    "reasoning_level",
+                    value as DesktopAgent["reasoning_level"],
+                  )
+                }
+                options={reasoningLevels.map((level) => ({
+                  value: level,
+                  label: level,
+                }))}
+                placeholder="Select reasoning level"
+              />
+              <AgentSelectField
+                label="Explicit thinking"
+                value={form.explicit_thinking ? "on" : "off"}
+                onChange={(value) =>
+                  change("explicit_thinking", value === "on")
+                }
+                options={[
+                  { value: "on", label: "On" },
+                  { value: "off", label: "Off" },
+                ]}
+                placeholder="Select setting"
+              />
             </div>
           </section>
 
@@ -451,6 +428,7 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
                 <textarea
                   rows={7}
                   value={form.system_prompt}
+                  placeholder={enterpriseSystemPrompt}
                   onChange={(event) =>
                     change("system_prompt", event.target.value)
                   }
@@ -464,7 +442,7 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
                   onChange={(event) =>
                     change("reasoning_prompt", event.target.value)
                   }
-                  placeholder="How this agent should plan and use tools"
+                  placeholder={enterpriseReasoningPrompt}
                 />
               </label>
             </div>
@@ -532,118 +510,56 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
               </label>
             </div>
             <div className="mcp-editor">
-              <div className="mcp-editor-header">
-                <strong>MCP servers</strong>
+              <MultiChecks
+                label="MCP services"
+                options={mcpServices
+                  .filter((service) => service.enabled)
+                  .map((service) => service.name)}
+                value={form.mcp_servers}
+                onChange={(value) => {
+                  change("mcp_servers", value);
+                  setInspectedTools((current) =>
+                    current.filter((tool) => value.includes(tool.server_name)),
+                  );
+                  setMcpToolText((current) =>
+                    current
+                      .split(/\r?\n/)
+                      .map((line) => line.trim())
+                      .filter((line) =>
+                        value.some((name) => line.startsWith(`${name}:`)),
+                      )
+                      .join("\n"),
+                  );
+                }}
+                empty="Configure an MCP service in Resources & connections first."
+              />
+              {!!form.mcp_servers.length && (
                 <button
                   type="button"
                   className="secondary-button"
-                  onClick={() =>
-                    change("mcp_servers", [
-                      ...form.mcp_servers,
-                      { name: "", transport: "streamable_http", url: "" },
-                    ])
-                  }
+                  onClick={() => void inspectSelectedMcp()}
                 >
-                  <Plus size={14} />
-                  Add server
+                  Inspect selected tools
                 </button>
-              </div>
-              {form.mcp_servers.map((server, index) => (
-                <div className="mcp-server-row" key={index}>
-                  <label>
-                    Name
-                    <input
-                      value={server.name}
-                      onChange={(event) =>
-                        change(
-                          "mcp_servers",
-                          form.mcp_servers.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? { ...item, name: event.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                      placeholder="my-server"
-                    />
-                  </label>
-                  <label>
-                    Transport
-                    <select
-                      value={server.transport}
-                      onChange={(event) =>
-                        change(
-                          "mcp_servers",
-                          form.mcp_servers.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? {
-                                  ...item,
-                                  transport: event.target
-                                    .value as DesktopMcpServer["transport"],
-                                }
-                              : item,
-                          ),
-                        )
-                      }
-                    >
-                      <option value="streamable_http">Streamable HTTP</option>
-                      <option value="sse">SSE</option>
-                    </select>
-                  </label>
-                  <label>
-                    URL
-                    <input
-                      value={server.url}
-                      onChange={(event) =>
-                        change(
-                          "mcp_servers",
-                          form.mcp_servers.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? { ...item, url: event.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                      placeholder="https://example.com/mcp"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="icon-button remove-server"
-                    aria-label={`Remove ${server.name || "MCP server"}`}
-                    onClick={() =>
-                      change(
-                        "mcp_servers",
-                        form.mcp_servers.filter(
-                          (_, itemIndex) => itemIndex !== index,
-                        ),
-                      )
-                    }
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              ))}
-              {!form.mcp_servers.length && (
-                <p className="config-help">
-                  No MCP servers attached. Remote SSE and Streamable HTTP are
-                  supported.
-                </p>
               )}
-              <label className="mcp-tools-field">
-                MCP tool filters
-                <textarea
-                  rows={3}
-                  value={mcpToolText}
-                  onChange={(event) => setMcpToolText(event.target.value)}
-                  placeholder={
-                    "server_name:tool_name\nOne tool per line; leave blank to allow all"
-                  }
-                />
-                <small>
-                  Optional. Restrict tools exposed by the attached MCP servers.
-                </small>
-              </label>
+              <MultiChecks
+                label="MCP tools"
+                options={inspectedTools.map(
+                  (tool) => `${tool.server_name}:${tool.tool_name}`,
+                )}
+                value={mcpToolText
+                  .split(/\r?\n/)
+                  .map((line) => line.trim())
+                  .filter(Boolean)}
+                onChange={(value) => setMcpToolText(value.join("\n"))}
+                placeholder={
+                  form.mcp_servers.length
+                    ? "Leave empty to allow all tools"
+                    : "Select MCP services first"
+                }
+                disabled={!form.mcp_servers.length}
+                empty="Inspect selected MCP services to load their tools."
+              />
             </div>
           </section>
 

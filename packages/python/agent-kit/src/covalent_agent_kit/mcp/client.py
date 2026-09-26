@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from importlib.metadata import version
 from typing import Any
 
 from covalent_runtime.domain.types import ToolResult
@@ -55,7 +56,13 @@ class McpSdkClient(McpClient):
 
         # The SDK ClientSession default (read_timeout_seconds=None) waits
         # forever for a JSONRPC response; bound it to the configured timeout.
-        mcp_read_timeout = timedelta(seconds=self.timeout_seconds)
+        # MCP SDK 1.x accepts timedelta; 2.x changed this to a float in
+        # seconds. Passing timedelta to 2.x fails inside AnyIO on every call.
+        mcp_read_timeout = (
+            self.timeout_seconds
+            if int(version("mcp").split(".", 1)[0]) >= 2
+            else timedelta(seconds=self.timeout_seconds)
+        )
 
         if server.transport == "stdio":
             if not server.command:
