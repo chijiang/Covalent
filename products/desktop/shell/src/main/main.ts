@@ -1,7 +1,9 @@
 import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import path from "node:path";
 import { SidecarSupervisor } from "./sidecar-supervisor";
+import { getModelKey, saveModelKey } from "./credentials";
 
+app.setName("Covalent Desktop");
 const supervisor = new SidecarSupervisor();
 let mainWindow: BrowserWindow | null = null;
 let smokeCompleted = false;
@@ -12,8 +14,8 @@ async function completeSmoke(status: ReturnType<SidecarSupervisor["getStatus"]>)
     new Promise((resolve, reject) => {
       const deadline = Date.now() + 5000;
       const check = () => {
-        const value = document.querySelector('.health-badge')?.textContent?.trim();
-        if (value === '运行正常') resolve(value);
+        const value = document.querySelector('.footer-copy small')?.textContent?.trim();
+        if (value === 'Running' && document.querySelector('.chat-layout')?.getAttribute('data-loaded') === 'true') resolve(value);
         else if (Date.now() >= deadline) reject(new Error('Renderer did not display ready status'));
         else setTimeout(check, 50);
       };
@@ -41,6 +43,50 @@ function registerIpc(): void {
     if (!isTrustedSender(event)) throw new Error("Untrusted Desktop IPC sender");
     return supervisor.restart();
   });
+  ipcMain.handle("desktop:list-agents", (event) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted Desktop IPC sender");
+    return supervisor.request("/agents");
+  });
+  ipcMain.handle("desktop:save-agent", (event, value: unknown) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted Desktop IPC sender");
+    if (!isAgentDefinition(value)) throw new Error("Invalid Agent definition");
+    return supervisor.request("/agents", "POST", value);
+  });
+  ipcMain.handle("desktop:list-sessions", (event) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted Desktop IPC sender");
+    return supervisor.request("/sessions");
+  });
+  ipcMain.handle("desktop:get-session", (event, id: unknown) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted Desktop IPC sender");
+    if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id)) throw new Error("Invalid conversation ID");
+    return supervisor.request(`/sessions/${id}`);
+  });
+  ipcMain.handle("desktop:send-message", async (event, value: unknown) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted Desktop IPC sender");
+    if (!isChatRequest(value)) throw new Error("Invalid message request");
+    return supervisor.request("/messages", "POST", value, (await getModelKey()) ?? undefined);
+  });
+  ipcMain.handle("desktop:has-model-key", async (event) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted Desktop IPC sender");
+    return Boolean(await getModelKey());
+  });
+  ipcMain.handle("desktop:save-model-key", async (event, value: unknown) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted Desktop IPC sender");
+    if (typeof value !== "string") throw new Error("Invalid model API key");
+    await saveModelKey(value);
+  });
+}
+
+function isAgentDefinition(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return ["name", "description", "system_prompt", "model", "base_url"].every((key) => typeof item[key] === "string" && (item[key] as string).length <= 20_000);
+}
+
+function isChatRequest(value: unknown): value is { agent_name: string; message: string; session_id?: string } {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.agent_name === "string" && item.agent_name.length <= 64 && typeof item.message === "string" && item.message.length <= 100_000 && (item.session_id === undefined || (typeof item.session_id === "string" && /^[a-f0-9]{32}$/.test(item.session_id)));
 }
 
 async function createWindow(): Promise<void> {

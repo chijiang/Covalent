@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 import signal
 import sys
 import threading
@@ -12,6 +13,9 @@ from collections.abc import Callable
 from typing import TextIO
 
 from covalent_desktop.api.server import create_server
+from covalent_desktop.application.workspace import DesktopWorkspace
+from covalent_desktop.infra.local_store import LocalStore
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 
 LOGGER = logging.getLogger(__name__)
 TOKEN_ENV = "COVALENT_DESKTOP_SERVICE_TOKEN"
@@ -28,7 +32,8 @@ def run_service(
     if len(token) < MIN_TOKEN_LENGTH:
         raise RuntimeError(f"{TOKEN_ENV} must contain at least {MIN_TOKEN_LENGTH} characters")
 
-    server = create_server(host, port, token)
+    data_dir = Path(os.environ.get("COVALENT_DESKTOP_DATA_DIR", Path.home() / ".covalent" / "desktop"))
+    server = create_server(host, port, token, DesktopWorkspace(LocalStore(data_dir / "desktop.sqlite3"), FrameworkRegistry))
     status = server.service_status
     ready = {
         "type": "ready",

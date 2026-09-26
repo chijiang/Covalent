@@ -26,7 +26,7 @@ def test_status_contract() -> None:
         "status": "ok",
         "service_version": "0.1.0",
         "protocol_version": PROTOCOL_VERSION,
-        "capabilities": ["health"],
+        "capabilities": ["health", "agents", "chat"],
     }
 
 

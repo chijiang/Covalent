@@ -27,6 +27,23 @@ export class SidecarSupervisor {
     return { ...this.status, capabilities: [...this.status.capabilities] };
   }
 
+  async request(pathname: string, method: "GET" | "POST" = "GET", body?: object, modelKey?: string): Promise<unknown> {
+    if (this.status.phase !== "ready" || !this.endpoint) throw new Error("Desktop service is not ready");
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), method === "POST" && pathname === "/messages" ? 120_000 : 10_000);
+    try {
+      const response = await fetch(`${this.endpoint.baseUrl}${pathname}`, {
+        method,
+        headers: { Authorization: `Bearer ${this.endpoint.token}`, ...(body ? { "Content-Type": "application/json" } : {}), ...(modelKey ? { "X-Model-Key": modelKey } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+      const result = await response.json() as Record<string, unknown>;
+      if (!response.ok) throw new Error(typeof result.message === "string" ? result.message : `Desktop service returned ${response.status}`);
+      return result;
+    } finally { clearTimeout(timeout); }
+  }
+
   subscribe(listener: StatusListener): () => void {
     this.listeners.add(listener);
     listener(this.getStatus());
@@ -44,6 +61,7 @@ export class SidecarSupervisor {
       env: {
         ...process.env,
         COVALENT_DESKTOP_SERVICE_TOKEN: token,
+        COVALENT_DESKTOP_DATA_DIR: app.getPath("userData"),
         PYTHONUNBUFFERED: "1",
       },
       stdio: ["pipe", "pipe", "pipe"],

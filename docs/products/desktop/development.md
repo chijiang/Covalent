@@ -1,6 +1,6 @@
 # Desktop 开发指南
 
-状态：D1 的本地开发链路已跑通；冻结 sidecar、双平台安装与签名仍待实现。Agent 业务从 D2 开始。技术选择见 [ADR 0001](../../adr/0001-desktop-stack.md)。
+状态：D1 的本地开发链路已跑通；基础 Agent 创建、模型凭据与本地对话已接入共享 Runtime。流式事件、取消、冻结 sidecar、双平台安装与签名仍待实现。技术选择见 [ADR 0001](../../adr/0001-desktop-stack.md)。
 
 ## 产品与边界
 
@@ -36,16 +36,16 @@ products/desktop/
 service 已提供 bootstrap、`__main__` 和鉴权 health API；shell 已提供安全窗口、preload 与 sidecar supervisor；web 已提供运行状态页。
 先执行 `uv sync --locked --all-packages` 和 `pnpm install --frozen-lockfile`。`pnpm dev:desktop` 启动 Vite 和 Electron，
 `pnpm smoke:desktop` 构建后验证 renderer/service 闭环并自动退出。开发态 main 直接启动 `.venv` 中的 Python，避免启动应用时隐式修改依赖环境。
-Agent 路由、工作区、本地存储和发行打包将在后续切片加入。
+基础 Agent/会话路由和本地 SQLite 存储已经加入；发行打包仍待实现。
 
 ## 模块职责
 
 Electron main 负责窗口、系统对话框、凭据、更新与 sidecar 生命周期；preload 暴露有限且校验参数的 bridge。
 React renderer 通过 bridge adapter 请求能力，不拥有 Node 权限、长期密钥或任意系统命令能力。
-Python API 目前只做 health、鉴权与 JSON 映射；application 提供状态用例；bootstrap 管理进程生命周期。D2 开始注入 Runtime/Agent Kit。
+Python API 处理 health、鉴权、Agent/会话的 JSON 映射；application 提供配置和对话用例；bootstrap 管理进程生命周期并注入 Runtime/Agent Kit 注册表。
 应用层不读取 app.state，不依赖 FastAPI 或 Electron。
 
-本地配置、会话和执行记录计划存 SQLite，由 Desktop infra 拥有模型与迁移；首个持久化切片再加入依赖。
+本地 Agent 配置和会话已存 SQLite，由 Desktop infra 拥有版本表和初始 schema；执行记录存储仍待实现。
 共享 storage-local 暂不建立，第二个真实消费者出现时再提取。不要复用 Enterprise SQLAlchemy 表或迁移。
 本地数据库为唯一配置权威，模板导入通过同一个应用用例写入，不能另建可变 YAML 配置通道。
 运行获得不可变快照。密钥放系统凭据存储，数据库与模板只保存引用。
@@ -66,7 +66,7 @@ Python API 目前只做 health、鉴权与 JSON 映射；application 提供状�
 | D5 | 版本化模板、导入预检、环境绑定、导出 | Desktop → Lite/Enterprise 可验证转换；缺能力失败且不改现有配置 |
 | D6 | 签名、安装/升级、发布清单与兼容矩阵 | 完成 packaging/README 中两个平台的发行验收 |
 
-D1a 已加入 Electron/React/Vite 依赖和双平台源码 CI；D1b 才加入 Python/Electron 打包器。D2 装配时加入 agent-kit。
+D1a 已加入 Electron/React/Vite 依赖和双平台源码 CI；D1b 才加入 Python/Electron 打包器。基础对话已装配 agent-kit；D2 的 SSE/取消仍待实现。
 agent-kit 当前传递依赖 MCP/native execution；不要宣称这些已成为可选安装项。
 普通单测使用假模型/工具；真实模型 smoke 使用环境凭据，不成为离线测试前提。
 Desktop 已有独立 macOS/Windows CI job，运行 service/边界测试、TypeScript 检查和生产构建。打包测试仍必须跑实际目标 OS，不能用源码导入替代。

@@ -3,7 +3,7 @@ name = "covalent-desktop"
 version = "0.1.0"
 description = "Local sidecar service for Covalent Desktop."
 requires-python = ">=3.12"
-dependencies = ["covalent-contracts==0.1.0", "covalent-runtime==0.1.0"]
+dependencies = ["covalent-contracts==0.1.0", "covalent-runtime==0.1.0", "covalent-agent-kit==0.1.0"]
 
 [project.scripts]
 covalent-desktop-service = "covalent_desktop.__main__:main"

@@ -54,6 +54,18 @@ uv run --package covalent-enterprise covalent-enterprise serve --port 5170
 pnpm dev:enterprise
 ```
 
+If `./dev.sh` lacks execute permission (`chmod +x dev.sh` fixes it) or `uv` is
+unavailable, start the two processes manually in separate terminals:
+
+```bash
+# Terminal 1: backend (loads .env the same way dev.sh does)
+set -a; source .env; set +a
+.venv/bin/covalent-enterprise serve --host 0.0.0.0 --port 5170
+
+# Terminal 2: frontend
+pnpm --filter @covalent/enterprise-web dev --port 3100
+```
+
 The frontend proxies to `http://127.0.0.1:5170` by default. The control plane is
 served at `http://localhost:3100`.
 

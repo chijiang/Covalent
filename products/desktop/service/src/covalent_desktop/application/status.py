@@ -28,5 +28,5 @@ def get_service_status() -> ServiceStatus:
         status="ok",
         service_version=__version__,
         protocol_version=PROTOCOL_VERSION,
-        capabilities=("health",),
+        capabilities=("health", "agents", "chat"),
     )

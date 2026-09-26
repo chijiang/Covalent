@@ -4,8 +4,11 @@ The React/Vite renderer for Covalent Desktop. It receives a typed service state
 from Electron preload and presents the local workbench without requiring a
 Next.js server.
 
-**Status:** service status, version, protocol, process ID and restart controls
-are implemented. Agent, chat and resource workspaces are the next milestone.
+**Status:** the renderer has Chat, Agent, resource, and runtime workspaces styled
+to match the Enterprise control plane. Users can create local Agents, save a model
+API key through the host, and continue locally persisted conversations. Runtime
+status and restart controls are connected. MCP, Skills, streamed execution traces,
+and template exchange remain in development.
 
 [Desktop README](../README.md) · [Development guide](../../../docs/products/desktop/development.md)
 
@@ -13,7 +16,10 @@ are implemented. Agent, chat and resource workspaces are the next milestone.
 
 ```text
 web/src/
-├── App.tsx       # Current status application
+├── App.tsx       # Workspace shell and runtime status
+├── AgentWorkspace.tsx
+├── ChatWorkspace.tsx
+├── ProviderSettings.tsx
 ├── main.tsx      # Renderer entrypoint
 └── styles.css    # Desktop visual foundation
 ```

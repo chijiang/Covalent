@@ -416,6 +416,7 @@ name = "covalent-desktop"
 version = "0.1.0"
 source = { editable = "products/desktop/service" }
 dependencies = [
+    { name = "covalent-agent-kit" },
     { name = "covalent-contracts" },
     { name = "covalent-runtime" },
 ]
@@ -428,6 +429,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "covalent-agent-kit", editable = "packages/python/agent-kit" },
     { name = "covalent-contracts", editable = "packages/python/contracts" },
     { name = "covalent-runtime", editable = "packages/python/runtime" },
 ]

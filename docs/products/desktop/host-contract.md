@@ -1,12 +1,12 @@
 # Desktop 宿主与服务契约
 
-状态：D1 状态/重启 bridge、握手和 health API 已实现；Agent 调用、流式事件与文件能力仍是后续约定。
+状态：状态/重启、Agent 定义、会话和单次对话 bridge 已实现；流式事件、取消与文件能力仍是后续约定。
 
 ## 调用路径
 
 React → preload 的有限 typed bridge → Electron main → 本地 Python API → application → Runtime。
 窗口生命周期、文件选择和系统凭据等 OS 操作在 main 完成；Agent 执行在 Python 完成。
-main 将代理本地 HTTP/SSE，使 token 和 sidecar 地址不进入 renderer；当前只代理状态与重启，后续保持公共事件 payload 语义。
+main 代理固定的本地 HTTP 路径，使 token 和 sidecar 地址不进入 renderer；当前提供状态、Agent 定义、会话与非流式对话，后续保持公共事件 payload 语义。
 握手已有运行时校验；后续每个业务 bridge 也要校验参数，不能仅依赖 TypeScript。
 
 Python sidecar 仅绑定 `127.0.0.1` 的系统分配端口。main 生成每次启动 256-bit 随机 token，通过只传给子进程的环境变量传入，
@@ -19,7 +19,7 @@ main 在握手成功、版本兼容和就绪探测完成前不开放业务请求
 
 ## Bridge 能力范围
 
-当前只提供查询 service 状态、订阅状态变化与重启。后续按具体用例增加列举 Agent、发起调用、订阅事件、取消和选择文件。
+当前提供查询 service 状态、订阅状态变化、重启、列举/保存 Agent、读取会话、发送消息及加密保存模型密钥。订阅执行事件、取消和选择文件仍待实现。
 不提供任意 fetch URL、任意 IPC channel、任意进程执行方法。每条订阅绑定窗口与 run_id，窗口销毁后清理订阅。
 采用 contextIsolation、renderer sandbox、关闭 nodeIntegration，并验证 IPC sender 和导航来源。
 不在有宿主权限的窗口加载任意远程网页；外部链接经允许的系统浏览器路径打开。

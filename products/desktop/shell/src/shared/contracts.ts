@@ -11,6 +11,19 @@ export interface ServiceStatus {
   error: string | null;
 }
 
+export interface AgentDefinition {
+  name: string;
+  description: string;
+  system_prompt: string;
+  model: string;
+  base_url: string;
+}
+
+export interface ConversationMessage { role: string; content: unknown }
+export interface ConversationSummary { id: string; agent_name: string; title: string; created_at: string }
+export interface Conversation extends ConversationSummary { messages: ConversationMessage[] }
+export interface ChatResult { session_id: string; output_text: string; messages: ConversationMessage[] }
+
 export interface ReadyMessage {
   type: "ready";
   host: "127.0.0.1";

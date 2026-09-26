@@ -6,8 +6,10 @@ the same contracts and execution runtime as Enterprise and Lite.
 
 **Status:** the local host/service foundation is runnable. Window startup,
 sidecar authentication, protocol handshake, health checks, restart and shutdown
-cleanup are implemented. Agent workspaces, local persistence, template exchange,
-frozen sidecars and signed installers remain in development.
+cleanup are implemented. The first local workflow supports Agent creation,
+encrypted model credentials, and persisted conversations through the shared
+Runtime. MCP/Skills, streaming traces, template exchange, frozen sidecars and
+signed installers remain in development.
 
 [Repository overview](../../README.md) · [Development guide](../../docs/products/desktop/development.md) · [Host contract](../../docs/products/desktop/host-contract.md)
 
