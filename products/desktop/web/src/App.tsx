@@ -5,6 +5,8 @@ import {
   Cable,
   MessageSquare,
   PanelLeft,
+  PanelLeftClose,
+  PanelLeftOpen,
   RefreshCw,
 } from "lucide-react";
 import { ChatWorkspace } from "./ChatWorkspace";
@@ -146,6 +148,7 @@ function RuntimeWorkspace({
 
 export function App() {
   const [page, setPage] = useState<Page>("chat");
+  const [sidebarVisible, setSidebarVisible] = useState(true);
   const [resourceTab, setResourceTab] = useState<
     "providers" | "mcp" | "skills"
   >("providers");
@@ -185,74 +188,90 @@ export function App() {
   }
   const meta = pages.find((item) => item.id === page)!;
   return (
-    <div className="desktop-shell">
-      <aside className="app-sidebar">
-        <div className="sidebar-brand">
-          <img src="./logos/covalent-logo-horizontal.png" alt="Covalent" />
-        </div>
-        <div className="sidebar-content">
-          <div className="sidebar-group">
-            <div className="sidebar-label">WORKSPACE</div>
-            <nav aria-label="Workspace">
-              <button
-                type="button"
-                className={`nav-item ${page === "chat" ? "active" : ""}`}
-                onClick={() => setPage("chat")}
-              >
-                <MessageSquare size={17} />
-                Chat
-              </button>
-            </nav>
+    <div className={`desktop-shell ${sidebarVisible ? "" : "sidebar-hidden"}`}>
+      {sidebarVisible && (
+        <aside className="app-sidebar">
+          <div className="sidebar-brand">
+            <img src="./logos/covalent-logo-horizontal.png" alt="Covalent" />
           </div>
-          <div className="sidebar-group">
-            <div className="sidebar-label">SERVICE CONSOLE</div>
-            <nav aria-label="Service Console">
-              {pages.slice(1, 3).map((item) => (
+          <div className="sidebar-content">
+            <div className="sidebar-group">
+              <div className="sidebar-label">WORKSPACE</div>
+              <nav aria-label="Workspace">
                 <button
-                  key={item.id}
                   type="button"
-                  className={`nav-item ${page === item.id ? "active" : ""}`}
-                  onClick={() => setPage(item.id)}
+                  className={`nav-item ${page === "chat" ? "active" : ""}`}
+                  onClick={() => setPage("chat")}
                 >
-                  {item.id === "agents" ? (
-                    <Bot size={17} />
-                  ) : (
-                    <Cable size={17} />
-                  )}
-                  {item.title}
+                  <MessageSquare size={17} />
+                  Chat
                 </button>
-              ))}
-            </nav>
+              </nav>
+            </div>
+            <div className="sidebar-group">
+              <div className="sidebar-label">SERVICE CONSOLE</div>
+              <nav aria-label="Service Console">
+                {pages.slice(1, 3).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`nav-item ${page === item.id ? "active" : ""}`}
+                    onClick={() => setPage(item.id)}
+                  >
+                    {item.id === "agents" ? (
+                      <Bot size={17} />
+                    ) : (
+                      <Cable size={17} />
+                    )}
+                    {item.title}
+                  </button>
+                ))}
+              </nav>
+            </div>
+            <div className="sidebar-group">
+              <div className="sidebar-label">DESKTOP</div>
+              <nav aria-label="Desktop settings">
+                <button
+                  type="button"
+                  className={`nav-item ${page === "runtime" ? "active" : ""}`}
+                  onClick={() => setPage("runtime")}
+                >
+                  <Activity size={17} />
+                  Desktop runtime
+                </button>
+              </nav>
+            </div>
           </div>
-          <div className="sidebar-group">
-            <div className="sidebar-label">DESKTOP</div>
-            <nav aria-label="Desktop settings">
-              <button
-                type="button"
-                className={`nav-item ${page === "runtime" ? "active" : ""}`}
-                onClick={() => setPage("runtime")}
-              >
-                <Activity size={17} />
-                Desktop runtime
-              </button>
-            </nav>
+          <div className="sidebar-footer">
+            <span className="desktop-avatar">
+              <img src="./logos/covalent-mark.png" alt="" />
+            </span>
+            <span className="footer-copy">
+              <strong>Local workspace</strong>
+              <small>
+                <span className={`status-dot ${status.phase}`} />
+                {phaseLabels[status.phase]}
+              </small>
+            </span>
           </div>
-        </div>
-        <div className="sidebar-footer">
-          <span className="desktop-avatar">
-            <img src="./logos/covalent-mark.png" alt="" />
-          </span>
-          <span className="footer-copy">
-            <strong>Local workspace</strong>
-            <small>
-              <span className={`status-dot ${status.phase}`} />
-              {phaseLabels[status.phase]}
-            </small>
-          </span>
-        </div>
-      </aside>
+        </aside>
+      )}
       <div className="main-column">
         <header className="app-top-bar">
+          <button
+            className="icon-button shell-toggle"
+            type="button"
+            aria-label={sidebarVisible ? "Hide sidebar" : "Show sidebar"}
+            title={sidebarVisible ? "Hide sidebar" : "Show sidebar"}
+            aria-expanded={sidebarVisible}
+            onClick={() => setSidebarVisible((visible) => !visible)}
+          >
+            {sidebarVisible ? (
+              <PanelLeftClose size={17} />
+            ) : (
+              <PanelLeftOpen size={17} />
+            )}
+          </button>
           <span className="topbar-icon">
             {page === "chat" ? (
               <MessageSquare size={17} />

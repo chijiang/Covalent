@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { Activity, MessageSquare, Plus, Send } from "lucide-react";
+import {
+  Activity,
+  MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
+  Send,
+} from "lucide-react";
 import { ChartBlock } from "./ChartBlock";
 
 function contentText(content: unknown): string {
@@ -66,6 +75,8 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
+  const [conversationsVisible, setConversationsVisible] = useState(true);
+  const [traceVisible, setTraceVisible] = useState(false);
 
   useEffect(() => {
     if (status.phase !== "ready") return;
@@ -176,73 +187,122 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
   }
 
   return (
-    <div className="chat-layout" data-loaded={loaded}>
-      <section className="surface conversation-list">
-        <div className="surface-heading">
-          Recent conversations{" "}
-          <button
-            className="icon-button"
-            type="button"
-            aria-label="New conversation"
-            title="New conversation"
-            onClick={() => {
-              setSession(null);
-              setError("");
-            }}
-          >
-            <Plus size={15} />
-          </button>
-        </div>
-        <div className="session-list">
-          {sessions.length ? (
-            sessions.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                className={`session-item ${session?.id === item.id ? "selected" : ""}`}
-                onClick={() => openSession(item.id)}
-              >
-                <MessageSquare size={15} />
-                <span>
-                  <strong>{item.title}</strong>
-                  <small>{item.agent_name}</small>
-                </span>
-              </button>
-            ))
-          ) : (
-            <div className="list-empty">
-              <MessageSquare size={22} />
-              <strong>No conversations yet</strong>
-              <p>
-                Your conversation will be saved locally after the first message.
-              </p>
-            </div>
-          )}
-        </div>
-      </section>
-      <section className="surface conversation-panel">
-        <div className="surface-heading">
-          <span>Conversation</span>
-          <select
-            className="agent-picker"
-            aria-label="Select agent"
-            value={agentName}
-            onChange={(event) => {
-              setAgentName(event.target.value);
-              setSession(null);
-            }}
-            disabled={!agents.length || busy}
-          >
-            {agents.length ? (
-              agents.map((agent) => (
-                <option key={agent.name} value={agent.name}>
-                  {agent.name}
-                </option>
+    <div
+      className={`chat-layout ${conversationsVisible ? "" : "conversations-hidden"} ${traceVisible ? "" : "trace-hidden"}`}
+      data-loaded={loaded}
+    >
+      {conversationsVisible && (
+        <section className="surface conversation-list">
+          <div className="surface-heading">Recent conversations</div>
+          <div className="session-list">
+            {sessions.length ? (
+              sessions.map((item) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  className={`session-item ${session?.id === item.id ? "selected" : ""}`}
+                  onClick={() => openSession(item.id)}
+                >
+                  <MessageSquare size={15} />
+                  <span>
+                    <strong>{item.title}</strong>
+                    <small>{item.agent_name}</small>
+                  </span>
+                </button>
               ))
             ) : (
-              <option value="">No agents</option>
+              <div className="list-empty">
+                <MessageSquare size={22} />
+                <strong>No conversations yet</strong>
+                <p>
+                  Your conversation will be saved locally after the first
+                  message.
+                </p>
+              </div>
             )}
-          </select>
+          </div>
+        </section>
+      )}
+      <section className="surface conversation-panel">
+        <div className="surface-heading">
+          <div className="chat-heading-group">
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={
+                conversationsVisible
+                  ? "Hide conversations"
+                  : "Show conversations"
+              }
+              title={
+                conversationsVisible
+                  ? "Hide conversations"
+                  : "Show conversations"
+              }
+              aria-expanded={conversationsVisible}
+              onClick={() => setConversationsVisible((visible) => !visible)}
+            >
+              {conversationsVisible ? (
+                <PanelLeftClose size={16} />
+              ) : (
+                <PanelLeftOpen size={16} />
+              )}
+            </button>
+            <span className="chat-heading-title">Conversation</span>
+          </div>
+          <div className="chat-heading-group chat-heading-actions">
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="New conversation"
+              title="New conversation"
+              onClick={() => {
+                setSession(null);
+                setAnswers({});
+                setError("");
+              }}
+            >
+              <Plus size={16} />
+            </button>
+            <select
+              className="agent-picker"
+              aria-label="Select agent"
+              value={agentName}
+              onChange={(event) => {
+                setAgentName(event.target.value);
+                setSession(null);
+              }}
+              disabled={!agents.length || busy}
+            >
+              {agents.length ? (
+                agents.map((agent) => (
+                  <option key={agent.name} value={agent.name}>
+                    {agent.name}
+                  </option>
+                ))
+              ) : (
+                <option value="">No agents</option>
+              )}
+            </select>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={
+                traceVisible ? "Hide execution trace" : "Show execution trace"
+              }
+              title={
+                traceVisible ? "Hide execution trace" : "Show execution trace"
+              }
+              aria-expanded={traceVisible}
+              onClick={() => setTraceVisible((visible) => !visible)}
+            >
+              {traceVisible ? (
+                <PanelRightClose size={16} />
+              ) : (
+                <PanelRightOpen size={16} />
+              )}
+            </button>
+          </div>
         </div>
         <div className="message-list">
           {session?.messages.length ? (
@@ -405,19 +465,19 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
           </button>
         </div>
       </section>
-      <section className="surface trace-panel">
-        <div className="surface-heading">
-          Execution trace <span className="subtle-tag">LOCAL</span>
-        </div>
-        <div className="list-empty">
-          <Activity size={22} />
-          <strong>Execution traces are coming soon</strong>
-          <p>
-            Local chat is available. Streaming events and execution traces are
-            in development.
-          </p>
-        </div>
-      </section>
+      {traceVisible && (
+        <section className="surface trace-panel">
+          <div className="surface-heading">Execution trace</div>
+          <div className="list-empty">
+            <Activity size={22} />
+            <strong>Execution traces are coming soon</strong>
+            <p>
+              Local chat is available. Streaming events and execution traces are
+              in development.
+            </p>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

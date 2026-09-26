@@ -46,6 +46,9 @@ button:disabled {
   height: 100vh;
   overflow: hidden;
 }
+.desktop-shell.sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
 .app-sidebar {
   display: flex;
   flex-direction: column;
@@ -188,6 +191,10 @@ button:disabled {
   border-bottom: 1px solid var(--border-soft);
   background: #fff;
 }
+.shell-toggle {
+  flex: none;
+  color: #666;
+}
 .topbar-icon {
   color: #737373;
   font-size: 17px;
@@ -283,6 +290,32 @@ button:disabled {
       290px
     );
   gap: 12px;
+}
+.chat-layout.trace-hidden:not(.conversations-hidden) {
+  grid-template-columns: minmax(205px, 248px) minmax(0, 1fr);
+}
+.chat-layout.conversations-hidden:not(.trace-hidden) {
+  grid-template-columns: minmax(0, 1fr) minmax(235px, 290px);
+}
+.chat-layout.conversations-hidden.trace-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+.chat-heading-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.chat-heading-actions {
+  flex: 0 1 245px;
+  justify-content: flex-end;
+}
+.chat-heading-actions .agent-picker {
+  min-width: 0;
+  flex: 1;
+}
+.chat-heading-title {
+  white-space: nowrap;
 }
 .conversation-list,
 .conversation-panel,
@@ -640,6 +673,16 @@ button:disabled {
 @media (max-width: 1120px) {
   .chat-layout {
     grid-template-columns: 205px minmax(310px, 1fr) 235px;
+  }
+  .chat-layout.trace-hidden:not(.conversations-hidden) {
+    grid-template-columns: minmax(170px, 205px) minmax(0, 1fr);
+  }
+  .chat-layout.conversations-hidden:not(.trace-hidden) {
+    grid-template-columns: minmax(0, 1fr) minmax(175px, 205px);
+  }
+  .chat-layout:not(.conversations-hidden):not(.trace-hidden)
+    .chat-heading-title {
+    display: none;
   }
   .management-layout:not(.resource-management-layout) {
     grid-template-columns: 155px 210px minmax(310px, 1fr);
