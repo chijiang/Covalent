@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { cp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const scriptDir = path.dirname(new URL(import.meta.url).pathname);
@@ -25,7 +25,7 @@ function run(command, args, opts = {}) {
 
 async function pathExists(target) {
   try {
-    await readdir(target);
+    await stat(target);
     return true;
   } catch {
     return false;
@@ -132,12 +132,22 @@ async function assembleApp() {
     await plistSet(plist, key, value);
   }
 
-  const logo = path.join(repoRoot, "products", "desktop", "web", "public", "logos", "covalent-mark.png");
-  if (await pathExists(logo)) {
+  const logoCandidates = [
+    path.join(repoRoot, "products", "enterprise", "web", "public", "logos", "covalent-mark-512.png"),
+    path.join(repoRoot, "products", "desktop", "web", "public", "logos", "covalent-mark.png"),
+  ];
+  let logo = null;
+  for (const candidate of logoCandidates) {
+    if (await pathExists(candidate)) {
+      logo = candidate;
+      break;
+    }
+  }
+  if (logo) {
     const icns = await makeIcon(logo, contents);
     if (icns) {
       await plistSet(plist, ":CFBundleIconFile", "covalent");
-      console.log("Applied application icon from covalent-mark.png.");
+      console.log(`Applied application icon from ${path.relative(repoRoot, logo)}.`);
     }
   }
 
