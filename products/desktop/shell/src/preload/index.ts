@@ -86,6 +86,10 @@ contextBridge.exposeInMainWorld("covalentDesktop", {
     title: string,
   ): Promise<{ id: string; title: string }> =>
     ipcRenderer.invoke("desktop:rename-session", id, title),
+  deleteSession: (id: string): Promise<void> =>
+    ipcRenderer.invoke("desktop:delete-session", id),
+  pinSession: (id: string, pinned: boolean): Promise<{ id: string; pinned: boolean }> =>
+    ipcRenderer.invoke("desktop:pin-session", id, pinned),
   sendMessage: (value: {
     agent_name: string;
     message: string;

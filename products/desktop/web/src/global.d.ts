@@ -97,6 +97,7 @@ interface DesktopSessionSummary {
   agent_name: string;
   title: string;
   created_at: string;
+  pinned: boolean;
 }
 interface DesktopSession extends DesktopSessionSummary {
   messages: DesktopMessage[];
@@ -171,6 +172,11 @@ interface Window {
       id: string,
       title: string,
     ): Promise<{ id: string; title: string }>;
+    deleteSession(id: string): Promise<void>;
+    pinSession(
+      id: string,
+      pinned: boolean,
+    ): Promise<{ id: string; pinned: boolean }>;
     sendMessage(value: {
       agent_name: string;
       message: string;

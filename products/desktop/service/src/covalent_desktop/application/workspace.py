@@ -85,6 +85,7 @@ class WorkspaceStore(Protocol):
     def set_suggestions(self, session_id: str, suggestions: list[str]) -> None: ...
     def set_live_reasoning(self, session_id: str, reasoning: str | None) -> None: ...
     def set_title(self, session_id: str, title: str) -> None: ...
+    def set_pinned(self, session_id: str, pinned: bool) -> None: ...
     async def load_messages(self, scope_id: str) -> list[Message]: ...
     async def save_messages(self, scope_id: str, messages: list[Message]) -> None: ...
 
@@ -429,6 +430,17 @@ class DesktopWorkspace:
         return {
             "session_id": self.store.create_session(agent_name, fallback_title(title))
         }
+
+    def delete_session(self, session_id: str) -> None:
+        if self.store.get_session(session_id) is None:
+            raise WorkspaceError("session_not_found", "Conversation not found", 404)
+        self.store.delete_session(session_id)
+
+    def set_session_pinned(self, session_id: str, pinned: bool) -> dict[str, object]:
+        if self.store.get_session(session_id) is None:
+            raise WorkspaceError("session_not_found", "Conversation not found", 404)
+        self.store.set_pinned(session_id, pinned)
+        return {"id": session_id, "pinned": pinned}
 
     def rename_session(self, session_id: str, title: str) -> dict[str, object]:
         cleaned = " ".join(title.split())

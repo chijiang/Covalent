@@ -92,6 +92,7 @@ export interface ConversationSummary {
   agent_name: string;
   title: string;
   created_at: string;
+  pinned: boolean;
 }
 export interface ConversationActivity {
   id: string;

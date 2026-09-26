@@ -446,6 +446,38 @@ function registerIpc(): void {
       return supervisor.request(`/sessions/${id}`, "PATCH", { title });
     },
   );
+  ipcMain.handle(
+    "desktop:delete-session",
+    async (event, id: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id))
+        throw new Error("Invalid conversation ID");
+      await supervisor.request(`/sessions/${id}`, "DELETE");
+      // Published files belong to the conversation; drop them with it.
+      await fs.rm(
+        path.join(
+          app.getPath("userData"),
+          "workspaces",
+          ".covalent",
+          "downloads",
+          id,
+        ),
+        { recursive: true, force: true },
+      );
+    },
+  );
+  ipcMain.handle(
+    "desktop:pin-session",
+    (event, id: unknown, pinned: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id))
+        throw new Error("Invalid conversation ID");
+      if (typeof pinned !== "boolean") throw new Error("Invalid pinned flag");
+      return supervisor.request(`/sessions/${id}`, "PATCH", { pinned });
+    },
+  );
   ipcMain.handle("desktop:send-message", async (event, value: unknown) => {
     if (!isTrustedSender(event))
       throw new Error("Untrusted Desktop IPC sender");

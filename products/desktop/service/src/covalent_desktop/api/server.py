@@ -260,7 +260,8 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if self.path.count("/") != 2 or not (
-            self.path.startswith("/providers/")
+            self.path.startswith("/sessions/")
+            or self.path.startswith("/providers/")
             or self.path.startswith("/mcp-services/")
             or self.path.startswith("/skills/")
         ):
@@ -271,6 +272,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         try:
             workspace = cast(DesktopHTTPServer, self.server).workspace
             name = self.path.split("/")[2]
+            if self.path.startswith("/sessions/"):
+                workspace.delete_session(name)
+                self._write_json(HTTPStatus.OK, {"deleted": True})
+                return
             if self.path.startswith("/providers/"):
                 workspace.delete_provider(name)
             elif self.path.startswith("/mcp-services/"):
@@ -303,12 +308,20 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
                 raise ValueError("Expected JSON object")
+            session_id = self.path.split("/")[2]
             title = data.get("title")
-            if not isinstance(title, str):
+            pinned = data.get("pinned")
+            if title is None and pinned is None:
+                raise ValueError("Nothing to update")
+            if title is not None and not isinstance(title, str):
                 raise ValueError("Invalid title")
-            payload = cast(DesktopHTTPServer, self.server).workspace.rename_session(
-                self.path.split("/")[2], title
-            )
+            if pinned is not None and not isinstance(pinned, bool):
+                raise ValueError("Invalid pinned flag")
+            workspace = cast(DesktopHTTPServer, self.server).workspace
+            if title is not None:
+                payload = workspace.rename_session(session_id, title)
+            else:
+                payload = workspace.set_session_pinned(session_id, pinned)
         except (ValueError, json.JSONDecodeError) as error:
             self._write_json(
                 HTTPStatus.BAD_REQUEST,

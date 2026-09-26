@@ -597,7 +597,7 @@ def test_activity_column_migration_from_v5_keeps_sessions(tmp_path: Path) -> Non
     )
     assert store.get_session("a" * 32)["activity"][0]["turn"] == 1
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+        assert db.execute("SELECT version FROM schema_version").fetchone()[0] == 9
 
 
 def test_authenticated_http_trace_routes(tmp_path: Path) -> None:
@@ -807,7 +807,7 @@ def test_live_reasoning_column_migration_from_v6(tmp_path: Path) -> None:
     assert session["live_reasoning"] is None
     assert session["activity"][0]["title"] == "iteration"
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+        assert db.execute("SELECT version FROM schema_version").fetchone()[0] == 9
 
 
 def test_turn_meta_column_migration_from_v7(tmp_path: Path) -> None:
@@ -845,7 +845,7 @@ def test_turn_meta_column_migration_from_v7(tmp_path: Path) -> None:
     assert session["messages"] == [{"role": "user", "content": "old"}]
     assert session["turn_meta"] == []
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+        assert db.execute("SELECT version FROM schema_version").fetchone()[0] == 9
 
 
 def test_record_turn_numbers_turns_and_user_ordinals(tmp_path: Path) -> None:
@@ -1169,6 +1169,103 @@ def test_rename_session_validates_and_persists(tmp_path: Path) -> None:
     with pytest.raises(WorkspaceError) as error:
         workspace.rename_session("f" * 32, "anything")
     assert (error.value.code, error.value.status) == ("session_not_found", 404)
+
+
+def test_pin_moves_session_to_top_and_unpins(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path / "desktop.sqlite3", FakeModel())
+    workspace.save_agent(
+        {"name": "helper", "model": "fake", "provider_name": "test-provider"}
+    )
+    first = workspace.create_chat_session("helper", "one")["session_id"]
+    second = workspace.create_chat_session("helper", "two")["session_id"]
+    assert [item["id"] for item in workspace.list_sessions()] == [second, first]
+
+    workspace.set_session_pinned(first, True)
+    listing = workspace.list_sessions()
+    assert listing[0]["id"] == first
+    assert listing[0]["pinned"] is True
+    assert [item["pinned"] for item in listing] == [True, False]
+
+    workspace.set_session_pinned(first, False)
+    listing = workspace.list_sessions()
+    assert listing[0]["id"] == second
+    assert listing[0]["pinned"] is False
+
+
+def test_delete_session_requires_existing_session(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path / "desktop.sqlite3", FakeModel())
+    workspace.save_agent(
+        {"name": "helper", "model": "fake", "provider_name": "test-provider"}
+    )
+    created = workspace.create_chat_session("helper", "bye")["session_id"]
+    with pytest.raises(WorkspaceError) as error:
+        workspace.delete_session("f" * 32)
+    assert (error.value.code, error.value.status) == ("session_not_found", 404)
+    workspace.delete_session(created)
+    with pytest.raises(WorkspaceError) as error:
+        workspace.get_session(created)
+    assert error.value.code == "session_not_found"
+    assert workspace.list_sessions() == []
+
+
+def test_authenticated_http_pin_and_delete_round_trip(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path / "desktop.sqlite3", FakeModel())
+    server = create_server("127.0.0.1", 0, "test-token", workspace)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    headers = {
+        "Authorization": "Bearer test-token",
+        "Content-Type": "application/json",
+    }
+    try:
+        request = Request(
+            base + "/agents",
+            data=json.dumps(
+                {"name": "helper", "model": "fake", "provider_name": "test-provider"}
+            ).encode(),
+            headers=headers,
+        )
+        with urlopen(request, timeout=5):
+            pass
+        request = Request(
+            base + "/sessions",
+            data=json.dumps({"agent_name": "helper", "title": "pin me"}).encode(),
+            headers=headers,
+        )
+        with urlopen(request, timeout=5) as response:
+            session_id = json.load(response)["session_id"]
+
+        request = Request(
+            base + f"/sessions/{session_id}",
+            data=json.dumps({"pinned": True}).encode(),
+            method="PATCH",
+            headers=headers,
+        )
+        with urlopen(request, timeout=5) as response:
+            assert json.load(response) == {"id": session_id, "pinned": True}
+        request = Request(base + "/sessions", headers=headers)
+        with urlopen(request, timeout=5) as response:
+            assert json.load(response)["items"][0]["pinned"] is True
+
+        request = Request(
+            base + f"/sessions/{session_id}", method="DELETE", headers=headers
+        )
+        with urlopen(request, timeout=5) as response:
+            assert json.load(response) == {"deleted": True}
+        request = Request(base + "/sessions", headers=headers)
+        with urlopen(request, timeout=5) as response:
+            assert json.load(response)["items"] == []
+        request = Request(
+            base + f"/sessions/{session_id}", method="DELETE", headers=headers
+        )
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+        assert error.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_authenticated_http_rename_round_trip(tmp_path: Path) -> None:

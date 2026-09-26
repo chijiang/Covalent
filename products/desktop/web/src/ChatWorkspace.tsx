@@ -1,13 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Check,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
+  Search,
   Send,
+  Trash2,
+  X,
 } from "lucide-react";
 import { AgentSelectField } from "./AgentSelectField";
 import { ImageAttachment } from "./ImageAttachment";
@@ -93,6 +99,11 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
   const [editingDraft, setEditingDraft] = useState("");
   const [renamingTitle, setRenamingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [renamingItemKey, setRenamingItemKey] = useState<string | null>(null);
+  const [itemRenameDraft, setItemRenameDraft] = useState("");
+  const [deleteArmKey, setDeleteArmKey] = useState<string | null>(null);
+  const deleteArmTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (status.phase !== "ready") return;
@@ -157,6 +168,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
         agent_name: agentName,
         title,
         created_at: previous?.created_at || "",
+        pinned: false,
         messages: [
           ...(previous?.messages || []),
           { role: "user", content: message },
@@ -378,6 +390,88 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
     }
   }
 
+  const visibleSessions = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return sessions;
+    return sessions.filter(
+      (item) =>
+        item.title.toLowerCase().includes(query) ||
+        item.agent_name.toLowerCase().includes(query),
+    );
+  }, [sessions, searchQuery]);
+
+  function startItemRename(item: DesktopSessionSummary) {
+    disarmSessionDelete();
+    setRenamingItemKey(item.id);
+    setItemRenameDraft(item.title);
+    setError("");
+  }
+
+  function cancelItemRename() {
+    setRenamingItemKey(null);
+    setItemRenameDraft("");
+  }
+
+  async function saveItemRename(item: DesktopSessionSummary) {
+    const title = itemRenameDraft.trim();
+    if (!title || busy) return;
+    try {
+      await window.covalentDesktop.renameSession(item.id, title);
+      setSessions((current) =>
+        current.map((entry) =>
+          entry.id === item.id ? { ...entry, title } : entry,
+        ),
+      );
+      setSession((current) =>
+        current?.id === item.id ? { ...current, title } : current,
+      );
+      cancelItemRename();
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
+  function armSessionDelete(item: DesktopSessionSummary) {
+    cancelItemRename();
+    setDeleteArmKey(item.id);
+    if (deleteArmTimer.current !== null) {
+      window.clearTimeout(deleteArmTimer.current);
+    }
+    deleteArmTimer.current = window.setTimeout(() => {
+      setDeleteArmKey((key) => (key === item.id ? null : key));
+      deleteArmTimer.current = null;
+    }, 3500);
+  }
+
+  function disarmSessionDelete() {
+    if (deleteArmTimer.current !== null) {
+      window.clearTimeout(deleteArmTimer.current);
+      deleteArmTimer.current = null;
+    }
+    setDeleteArmKey(null);
+  }
+
+  async function removeSession(item: DesktopSessionSummary) {
+    if (busy) return;
+    try {
+      await window.covalentDesktop.deleteSession(item.id);
+      disarmSessionDelete();
+      setSessions((current) => current.filter((entry) => entry.id !== item.id));
+      setSession((current) => (current?.id === item.id ? null : current));
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
+  async function toggleSessionPin(item: DesktopSessionSummary) {
+    try {
+      await window.covalentDesktop.pinSession(item.id, !item.pinned);
+      setSessions((await window.covalentDesktop.listSessions()).items);
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
   const liveReasoning = busy ? (session?.live_reasoning ?? "") : "";
 
   return (
@@ -388,25 +482,18 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
       {conversationsVisible && (
         <section className="surface conversation-list">
           <div className="surface-heading">Recent conversations</div>
+          <div className="session-search">
+            <Search size={14} />
+            <input
+              className="session-search-input"
+              aria-label="Search conversations"
+              placeholder="Search conversations"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+            />
+          </div>
           <div className="session-list">
-            {sessions.length ? (
-              sessions.map((item) => (
-                <button
-                  type="button"
-                  key={item.id}
-                  className={`session-item ${session?.id === item.id ? "selected" : ""}`}
-                  onClick={() => openSession(item.id)}
-                >
-                  <MessageSquare size={15} />
-                  <span className="session-item-body">
-                    <strong className="session-title">
-                      <span className="session-title-text">{item.title}</span>
-                    </strong>
-                    <small>{item.agent_name}</small>
-                  </span>
-                </button>
-              ))
-            ) : (
+            {sessions.length === 0 ? (
               <div className="list-empty">
                 <MessageSquare size={22} />
                 <strong>No conversations yet</strong>
@@ -415,6 +502,147 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
                   message.
                 </p>
               </div>
+            ) : visibleSessions.length === 0 ? (
+              <div className="list-empty">
+                <Search size={22} />
+                <strong>No matching conversations.</strong>
+              </div>
+            ) : (
+              visibleSessions.map((item) => {
+                const isRenaming = renamingItemKey === item.id;
+                const armed = deleteArmKey === item.id;
+                return (
+                  <div
+                    className={`session-item ${session?.id === item.id ? "selected" : ""}${armed ? " is-armed" : ""}`}
+                    key={item.id}
+                  >
+                    {isRenaming ? (
+                      <input
+                        className="session-rename-input"
+                        aria-label="Conversation title"
+                        value={itemRenameDraft}
+                        autoFocus
+                        onChange={(event) =>
+                          setItemRenameDraft(event.target.value)
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            void saveItemRename(item);
+                          } else if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancelItemRename();
+                          }
+                        }}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className="session-open"
+                        onClick={() => openSession(item.id)}
+                      >
+                        <MessageSquare size={15} />
+                        <span className="session-item-body">
+                          <strong className="session-title">
+                            {item.pinned && <Pin size={11} />}
+                            <span className="session-title-text">
+                              {item.title}
+                            </span>
+                          </strong>
+                          <small>{item.agent_name}</small>
+                        </span>
+                      </button>
+                    )}
+                    <div
+                      aria-label="Conversation actions"
+                      className={`session-actions${armed ? " is-armed" : ""}`}
+                      role="group"
+                    >
+                      {isRenaming ? (
+                        <>
+                          <button
+                            type="button"
+                            className="session-action is-confirm"
+                            aria-label="Save title"
+                            title="Save title"
+                            disabled={!itemRenameDraft.trim() || busy}
+                            onClick={() => void saveItemRename(item)}
+                          >
+                            <Check size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            className="session-action"
+                            aria-label="Cancel rename"
+                            title="Cancel"
+                            onClick={cancelItemRename}
+                          >
+                            <X size={13} />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className="session-action"
+                            aria-label={
+                              item.pinned
+                                ? "Unpin conversation"
+                                : "Pin conversation"
+                            }
+                            title={
+                              item.pinned
+                                ? "Unpin conversation"
+                                : "Pin conversation"
+                            }
+                            disabled={busy}
+                            onClick={() => void toggleSessionPin(item)}
+                          >
+                            {item.pinned ? (
+                              <PinOff size={13} />
+                            ) : (
+                              <Pin size={13} />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className="session-action"
+                            aria-label="Rename conversation"
+                            title="Rename conversation"
+                            disabled={busy}
+                            onClick={() => startItemRename(item)}
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          {armed ? (
+                            <button
+                              type="button"
+                              className="session-action is-danger"
+                              aria-label="Confirm delete"
+                              title="Confirm delete"
+                              disabled={busy}
+                              onClick={() => void removeSession(item)}
+                            >
+                              <Check size={13} />
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="session-action is-danger"
+                              aria-label="Delete conversation"
+                              title="Delete conversation"
+                              disabled={busy}
+                              onClick={() => armSessionDelete(item)}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
         </section>

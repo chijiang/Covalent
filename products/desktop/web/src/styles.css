@@ -1084,14 +1084,106 @@ button:disabled {
   min-height: 51px;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 4px;
   padding: 7px 9px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   text-align: left;
   color: var(--fg-muted);
+}
+.session-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
   cursor: pointer;
+}
+.session-open > svg {
+  flex: none;
+}
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+.session-item:hover .session-actions,
+.session-item:focus-within .session-actions,
+.session-item.is-armed .session-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.session-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+.session-action:hover {
+  background: var(--surface-hover);
+  color: var(--fg-primary);
+}
+.session-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.session-action.is-danger:hover,
+.session-item.is-armed .session-action.is-danger {
+  color: var(--error-fg);
+}
+.session-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 9px 8px;
+  padding: 0 10px;
+  height: 32px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface-primary);
+  color: var(--fg-muted);
+}
+.session-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-primary);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.session-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface-primary);
+  color: var(--fg-primary);
+  font: inherit;
+  font-size: 12px;
 }
 .session-item:hover {
   background: var(--surface-hover);
@@ -1114,7 +1206,9 @@ button:disabled {
 /* Long titles scroll on hover instead of truncating: the container query on the
    wrapper plus min(0px, …) makes short titles stay put on their own. */
 .session-item strong.session-title {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
   font-size: 12px;
   font-weight: 600;
