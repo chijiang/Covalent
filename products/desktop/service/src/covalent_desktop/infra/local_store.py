@@ -26,7 +26,7 @@ class LocalStore:
             )
             row = db.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
-                db.execute("INSERT INTO schema_version VALUES (8)")
+                db.execute("INSERT INTO schema_version VALUES (9)")
                 db.execute(
                     "CREATE TABLE agents (name TEXT PRIMARY KEY, definition TEXT NOT NULL)"
                 )
@@ -35,7 +35,7 @@ class LocalStore:
                 )
                 self._create_resources(db)
                 db.execute(
-                    "CREATE TABLE sessions (id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, title TEXT NOT NULL, messages TEXT NOT NULL DEFAULT '[]', pending_input TEXT, suggestions TEXT NOT NULL DEFAULT '[]', activity TEXT NOT NULL DEFAULT '[]', live_reasoning TEXT, turn_meta TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                    "CREATE TABLE sessions (id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, title TEXT NOT NULL, messages TEXT NOT NULL DEFAULT '[]', pending_input TEXT, suggestions TEXT NOT NULL DEFAULT '[]', activity TEXT NOT NULL DEFAULT '[]', live_reasoning TEXT, turn_meta TEXT NOT NULL DEFAULT '[]', pinned_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
                 )
             elif row[0] == 1:
                 self._migrate_providers(db)
@@ -45,6 +45,7 @@ class LocalStore:
                 self._migrate_activity(db)
                 self._migrate_live_reasoning(db)
                 self._migrate_turn_meta(db)
+                self._migrate_pinned_at(db)
             elif row[0] == 2:
                 self._migrate_resources(db)
                 self._migrate_pending_input(db)
@@ -52,27 +53,35 @@ class LocalStore:
                 self._migrate_activity(db)
                 self._migrate_live_reasoning(db)
                 self._migrate_turn_meta(db)
+                self._migrate_pinned_at(db)
             elif row[0] == 3:
                 self._migrate_pending_input(db)
                 self._migrate_suggestions(db)
                 self._migrate_activity(db)
                 self._migrate_live_reasoning(db)
                 self._migrate_turn_meta(db)
+                self._migrate_pinned_at(db)
             elif row[0] == 4:
                 self._migrate_suggestions(db)
                 self._migrate_activity(db)
                 self._migrate_live_reasoning(db)
                 self._migrate_turn_meta(db)
+                self._migrate_pinned_at(db)
             elif row[0] == 5:
                 self._migrate_activity(db)
                 self._migrate_live_reasoning(db)
                 self._migrate_turn_meta(db)
+                self._migrate_pinned_at(db)
             elif row[0] == 6:
                 self._migrate_live_reasoning(db)
                 self._migrate_turn_meta(db)
+                self._migrate_pinned_at(db)
             elif row[0] == 7:
                 self._migrate_turn_meta(db)
-            elif row[0] != 8:
+                self._migrate_pinned_at(db)
+            elif row[0] == 8:
+                self._migrate_pinned_at(db)
+            elif row[0] != 9:
                 raise RuntimeError(f"Unsupported Desktop database schema: {row[0]}")
 
     def _migrate_pending_input(self, db: sqlite3.Connection) -> None:
@@ -100,6 +109,10 @@ class LocalStore:
             "ALTER TABLE sessions ADD COLUMN turn_meta TEXT NOT NULL DEFAULT '[]'"
         )
         db.execute("UPDATE schema_version SET version=8")
+
+    def _migrate_pinned_at(self, db: sqlite3.Connection) -> None:
+        db.execute("ALTER TABLE sessions ADD COLUMN pinned_at TEXT")
+        db.execute("UPDATE schema_version SET version=9")
 
     def _create_resources(self, db: sqlite3.Connection) -> None:
         db.execute(
@@ -299,14 +312,21 @@ class LocalStore:
                 (name, int(enabled)),
             )
 
-    def list_sessions(self) -> list[dict[str, str]]:
+    def list_sessions(self) -> list[dict[str, object]]:
         with self._connect() as db:
-            return [
-                dict(row)
-                for row in db.execute(
-                    "SELECT id, agent_name, title, created_at FROM sessions ORDER BY created_at DESC, rowid DESC"
-                )
-            ]
+            rows = db.execute(
+                "SELECT id, agent_name, title, created_at, pinned_at FROM sessions ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC, created_at DESC, rowid DESC"
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "agent_name": row["agent_name"],
+                "title": row["title"],
+                "created_at": row["created_at"],
+                "pinned": row["pinned_at"] is not None,
+            }
+            for row in rows
+        ]
 
     def create_session(self, agent_name: str, title: str) -> str:
         session_id = uuid4().hex
@@ -357,6 +377,13 @@ class LocalStore:
             db.execute(
                 "UPDATE sessions SET suggestions=? WHERE id=?",
                 (json.dumps(suggestions), session_id),
+            )
+
+    def set_pinned(self, session_id: str, pinned: bool) -> None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE sessions SET pinned_at=? WHERE id=?",
+                (_epoch_ms() if pinned else None, session_id),
             )
 
     def set_title(self, session_id: str, title: str) -> None:

@@ -314,7 +314,7 @@ export function App() {
           <h1>{meta.title}</h1>
           <p>{meta.subtitle}</p>
           <button
-            className="icon-button"
+            className="icon-button theme-toggle"
             type="button"
             aria-label={`Theme: ${themeLabels[theme]} (switch to ${themeLabels[next]})`}
             title={`Theme: ${themeLabels[theme]} (switch to ${themeLabels[next]})`}
@@ -328,7 +328,6 @@ export function App() {
               <Monitor size={16} />
             )}
           </button>
-          <span className="desktop-pill">DESKTOP</span>
         </header>
         <main
           className={`app-content ${page === "chat" ? "app-content-chat" : ""}`}

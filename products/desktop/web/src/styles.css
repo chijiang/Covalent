@@ -254,15 +254,8 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.desktop-pill {
+.theme-toggle {
   margin-left: auto;
-  padding: 5px 8px;
-  border: 1px solid var(--border-soft);
-  border-radius: 99px;
-  color: var(--fg-muted);
-  font-size: 10px;
-  font-weight: 650;
-  letter-spacing: 0.06em;
 }
 .app-content {
   flex: 1;
