@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
+import { AgentSelectField } from "./AgentSelectField";
 
 const empty: DesktopMcpServer = {
   name: "",
@@ -228,23 +229,22 @@ export function McpSettings() {
                   placeholder="my-server"
                 />
               </label>
-              <label>
-                Transport
-                <select
-                  value={form.transport}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      transport: event.target
-                        .value as DesktopMcpServer["transport"],
-                    })
-                  }
-                >
-                  <option value="streamable_http">Streamable HTTP</option>
-                  <option value="sse">SSE</option>
-                  <option value="stdio">Stdio</option>
-                </select>
-              </label>
+              <AgentSelectField
+                label="Transport"
+                value={form.transport}
+                onChange={(value) =>
+                  setForm({
+                    ...form,
+                    transport: value as DesktopMcpServer["transport"],
+                  })
+                }
+                options={[
+                  { value: "streamable_http", label: "Streamable HTTP" },
+                  { value: "sse", label: "SSE" },
+                  { value: "stdio", label: "Stdio" },
+                ]}
+                placeholder="Select transport"
+              />
               {form.transport === "stdio" ? (
                 <>
                   <label className="full-width">
@@ -278,21 +278,18 @@ export function McpSettings() {
                   />
                 </label>
               )}
-              <label>
-                Runtime
-                <select
-                  value={form.enabled ? "active" : "inactive"}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      enabled: event.target.value === "active",
-                    })
-                  }
-                >
-                  <option value="active">Active</option>
-                  <option value="inactive">Inactive</option>
-                </select>
-              </label>
+              <AgentSelectField
+                label="Runtime"
+                value={form.enabled ? "active" : "inactive"}
+                onChange={(value) =>
+                  setForm({ ...form, enabled: value === "active" })
+                }
+                options={[
+                  { value: "active", label: "Active" },
+                  { value: "inactive", label: "Inactive" },
+                ]}
+                placeholder="Select runtime"
+              />
               <label className="full-width">
                 Environment / headers
                 <textarea

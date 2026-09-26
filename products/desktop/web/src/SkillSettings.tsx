@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2, Upload } from "lucide-react";
+import { AgentSelectField } from "./AgentSelectField";
 
 export function SkillSettings() {
   const [items, setItems] = useState<DesktopSkill[]>([]);
@@ -140,25 +141,25 @@ export function SkillSettings() {
                 />
               </label>
               {selected && (
-                <label>
-                  Runtime
-                  <select
-                    value={selected.enabled ? "active" : "inactive"}
-                    onChange={(event) =>
-                      void perform(
-                        () =>
-                          window.covalentDesktop.setSkillEnabled(
-                            selected.name,
-                            event.target.value === "active",
-                          ),
-                        selected.name,
-                      )
-                    }
-                  >
-                    <option value="active">Active</option>
-                    <option value="inactive">Inactive</option>
-                  </select>
-                </label>
+                <AgentSelectField
+                  label="Runtime"
+                  value={selected.enabled ? "active" : "inactive"}
+                  onChange={(value) =>
+                    void perform(
+                      () =>
+                        window.covalentDesktop.setSkillEnabled(
+                          selected.name,
+                          value === "active",
+                        ),
+                      selected.name,
+                    )
+                  }
+                  options={[
+                    { value: "active", label: "Active" },
+                    { value: "inactive", label: "Inactive" },
+                  ]}
+                  placeholder="Select runtime"
+                />
               )}
               {(selected || createMode === "write") && (
                 <label className="full-width">

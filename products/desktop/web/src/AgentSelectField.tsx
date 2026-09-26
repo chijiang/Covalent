@@ -22,16 +22,14 @@ function useAnchoredMenu() {
       if (!anchor) return;
       const below = window.innerHeight - anchor.bottom - 12;
       const above = anchor.top - 12;
-      const maxHeight = Math.min(300, Math.max(below, above));
-      const placeAbove = below < 180 && above > below;
+      const placeAbove = below < 96 && above > below;
+      const maxHeight = Math.max(0, Math.min(300, placeAbove ? above : below));
       setRect({
         left: Math.max(
           8,
           Math.min(anchor.left, window.innerWidth - anchor.width - 8),
         ),
-        top: placeAbove
-          ? Math.max(8, anchor.top - maxHeight - 4)
-          : anchor.bottom + 4,
+        top: placeAbove ? anchor.top - maxHeight - 4 : anchor.bottom + 4,
         width: anchor.width,
         maxHeight,
       });
@@ -49,6 +47,14 @@ function useAnchoredMenu() {
         setOpen(false);
         anchorRef.current?.focus();
       }
+    }
+    const anchor = anchorRef.current;
+    const scroller = anchor?.closest<HTMLElement>(".agent-form");
+    if (anchor && scroller) {
+      const menuHeight = Math.min(300, menuRef.current?.scrollHeight ?? 300);
+      const available =
+        window.innerHeight - anchor.getBoundingClientRect().bottom - 12;
+      if (available < menuHeight) scroller.scrollTop += menuHeight - available;
     }
     update();
     window.addEventListener("resize", update);
@@ -74,6 +80,8 @@ export function AgentSelectField({
   placeholder,
   disabled = false,
   helper,
+  hideLabel = false,
+  className = "",
 }: {
   label: string;
   options: Option[];
@@ -82,6 +90,8 @@ export function AgentSelectField({
   placeholder: string;
   disabled?: boolean;
   helper?: string;
+  hideLabel?: boolean;
+  className?: string;
 }) {
   const menu = useAnchoredMenu();
   const selected = options.find((option) => option.value === value);
@@ -94,8 +104,8 @@ export function AgentSelectField({
         ?.focus();
   }, [menu.open]);
   return (
-    <div className="agent-select-field">
-      <span className="config-label">{label}</span>
+    <div className={`agent-select-field ${className}`}>
+      {!hideLabel && <span className="config-label">{label}</span>}
       <button
         ref={menu.anchorRef}
         type="button"

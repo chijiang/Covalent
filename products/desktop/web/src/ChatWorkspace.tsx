@@ -10,6 +10,7 @@ import {
   Send,
 } from "lucide-react";
 import { ChartBlock } from "./ChartBlock";
+import { AgentSelectField } from "./AgentSelectField";
 
 function contentText(content: unknown): string {
   return typeof content === "string" ? content : JSON.stringify(content);
@@ -264,26 +265,22 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
             >
               <Plus size={16} />
             </button>
-            <select
-              className="agent-picker"
-              aria-label="Select agent"
+            <AgentSelectField
+              className="chat-agent-picker"
+              hideLabel
+              label="Select agent"
               value={agentName}
-              onChange={(event) => {
-                setAgentName(event.target.value);
+              onChange={(value) => {
+                setAgentName(value);
                 setSession(null);
               }}
               disabled={!agents.length || busy}
-            >
-              {agents.length ? (
-                agents.map((agent) => (
-                  <option key={agent.name} value={agent.name}>
-                    {agent.name}
-                  </option>
-                ))
-              ) : (
-                <option value="">No agents</option>
-              )}
-            </select>
+              options={agents.map((agent) => ({
+                value: agent.name,
+                label: agent.name,
+              }))}
+              placeholder="No agents"
+            />
             <button
               className="icon-button"
               type="button"
@@ -377,27 +374,27 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
         {session?.input_request && (
           <div className="input-request">
             <h3>{session.input_request.title}</h3>
-            {session.input_request.questions.map((question) => (
-              <label key={question.header}>
-                {question.question}
-                {question.options.length ? (
-                  <select
-                    value={answers[question.header] ?? ""}
-                    onChange={(event) =>
-                      setAnswers((current) => ({
-                        ...current,
-                        [question.header]: event.target.value,
-                      }))
-                    }
-                  >
-                    <option value="">Choose an answer...</option>
-                    {question.options.map((option) => (
-                      <option key={option.label} value={option.label}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
+            {session.input_request.questions.map((question) =>
+              question.options.length ? (
+                <AgentSelectField
+                  key={question.header}
+                  label={question.question}
+                  value={answers[question.header] ?? ""}
+                  onChange={(value) =>
+                    setAnswers((current) => ({
+                      ...current,
+                      [question.header]: value,
+                    }))
+                  }
+                  options={question.options.map((option) => ({
+                    value: option.label,
+                    label: option.label,
+                  }))}
+                  placeholder="Choose an answer..."
+                />
+              ) : (
+                <label key={question.header}>
+                  {question.question}
                   <input
                     value={answers[question.header] ?? ""}
                     onChange={(event) =>
@@ -408,9 +405,9 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
                     }
                     placeholder="Your answer"
                   />
-                )}
-              </label>
-            ))}
+                </label>
+              ),
+            )}
             <button
               type="button"
               className="primary-button"

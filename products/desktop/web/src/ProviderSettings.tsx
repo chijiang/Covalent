@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
+import { AgentSelectField } from "./AgentSelectField";
 
 const emptyProvider: DesktopProvider = {
   name: "",
@@ -193,21 +194,18 @@ export function ProviderSettings() {
                   placeholder="https://api.openai.com/v1"
                 />
               </label>
-              <label>
-                API style
-                <select
-                  value={form.api_style}
-                  onChange={(event) =>
-                    change(
-                      "api_style",
-                      event.target.value as DesktopProvider["api_style"],
-                    )
-                  }
-                >
-                  <option value="chat_completions">Chat Completions</option>
-                  <option value="responses">Responses</option>
-                </select>
-              </label>
+              <AgentSelectField
+                label="API style"
+                value={form.api_style}
+                onChange={(value) =>
+                  change("api_style", value as DesktopProvider["api_style"])
+                }
+                options={[
+                  { value: "chat_completions", label: "Chat Completions" },
+                  { value: "responses", label: "Responses" },
+                ]}
+                placeholder="Select API style"
+              />
               <label>
                 Default model
                 <input

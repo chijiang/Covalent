@@ -310,9 +310,19 @@ button:disabled {
   flex: 0 1 245px;
   justify-content: flex-end;
 }
-.chat-heading-actions .agent-picker {
+.chat-heading-actions .chat-agent-picker {
   min-width: 0;
   flex: 1;
+}
+.chat-agent-picker .agent-select-trigger {
+  min-height: 32px;
+  padding: 5px 9px;
+  font-size: 11px;
+}
+.input-request .agent-select-field .config-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #4a4a4a;
 }
 .chat-heading-title {
   white-space: nowrap;
