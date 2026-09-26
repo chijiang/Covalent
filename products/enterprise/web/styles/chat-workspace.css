@@ -1821,19 +1821,18 @@
 }
 
 @media (max-width: 980px) {
+  /* The trace panel is display:none below 1024px (responsive.css), so the
+     conversation keeps the full column; reserving a trace row/column here
+     would leave phantom empty space and crush the transcript. */
   .chat-split-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) minmax(260px, 34vh);
+    grid-template-rows: minmax(0, 1fr);
     gap: 12px;
     height: 100%;
   }
 
   .chat-trace-resizer {
     display: none;
-  }
-
-  .chat-trace-panel {
-    min-height: 260px;
   }
 }
 
@@ -1967,4 +1966,90 @@
   text-transform: uppercase;
   color: var(--muted-foreground, #6b7280);
   margin-bottom: 4px;
+}
+
+button.chat-attachment-image-link {
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: zoom-in;
+}
+
+.chat-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: rgba(10, 10, 12, 0.88);
+  backdrop-filter: blur(8px);
+}
+
+.chat-image-lightbox-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.chat-image-lightbox-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-image-lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.chat-image-lightbox-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+
+.chat-image-lightbox-button:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.chat-image-lightbox-viewport {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 0 24px 24px;
+  overflow: auto;
+}
+
+.chat-image-lightbox-image {
+  margin: auto;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  object-fit: contain;
+  cursor: zoom-in;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
+}
+
+.chat-image-lightbox-image.zoomed {
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
 }

@@ -22,6 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EChartsBlock } from "@/components/chat/echarts-block";
+import { ImageLightbox } from "@/components/chat/image-lightbox";
 import {
   ArrowUp,
   Loader2,
@@ -718,6 +719,42 @@ function ChatReasoningBlock({ reasoning, active }: { reasoning: string; active: 
   );
 }
 
+function ChatImageAttachment({ file }: { file: ComposerAttachment }) {
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const downloadUrl = file.downloadUrl || "";
+
+  return (
+    <span className="chat-attachment-image-item">
+      <button
+        type="button"
+        className="chat-attachment-image-link"
+        onClick={() => setLightboxOpen(true)}
+        title={file.name}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={downloadUrl} alt={file.name} className="chat-attachment-image" loading="lazy" />
+      </button>
+      <span className="chat-attachment-topline">
+        <strong>{file.name}</strong>
+        <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
+      </span>
+      <span className="chat-attachment-meta">
+        {formatAttachmentMeta(file)}
+        {" · "}
+        <a href={downloadUrl} download>
+          Download
+        </a>
+      </span>
+      <ImageLightbox
+        open={lightboxOpen}
+        src={downloadUrl}
+        name={file.name}
+        onClose={() => setLightboxOpen(false)}
+      />
+    </span>
+  );
+}
+
 function ChatMessageBubble({
   message,
   sending,
@@ -791,38 +828,7 @@ function ChatMessageBubble({
             <div className="chat-attachment-list">
               {message.attachments.map((file) =>
                 file.kind === "image" && file.downloadUrl ? (
-                  <span className="chat-attachment-image-item" key={file.id}>
-                    <a
-                      className="chat-attachment-image-link"
-                      href={file.downloadUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      title={file.name}
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={file.downloadUrl}
-                        alt={file.name}
-                        className="chat-attachment-image"
-                        loading="lazy"
-                      />
-                    </a>
-                    <span className="chat-attachment-topline">
-                      <strong>{file.name}</strong>
-                      <span className="chat-attachment-badge">{formatAttachmentBadge(file)}</span>
-                    </span>
-                    <span className="chat-attachment-meta">
-                      {formatAttachmentMeta(file)}
-                      {file.downloadUrl ? (
-                        <>
-                          {" · "}
-                          <a href={file.downloadUrl} download>
-                            Download
-                          </a>
-                        </>
-                      ) : null}
-                    </span>
-                  </span>
+                  <ChatImageAttachment file={file} key={file.id} />
                 ) : file.downloadUrl ? (
                   <a className="chat-attachment-chip chat-attachment-chip-link" download href={file.downloadUrl} key={file.id}>
                     <span className="chat-attachment-topline">

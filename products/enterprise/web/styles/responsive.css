@@ -37,6 +37,15 @@
   .chat-trace-panel {
     display: none;
   }
+
+  /* The panel is hidden above, so stop reserving its column and resizer. */
+  .chat-split-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chat-trace-resizer {
+    display: none;
+  }
 }
 
 @media (max-width: 820px) {
