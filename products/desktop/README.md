@@ -14,8 +14,14 @@ manages stdio/SSE/Streamable HTTP MCP services and authored, ZIP, Git and local
 Skills. Enabled executable Skills run through the native host backend, which
 does not provide OS isolation; imported Skills start disabled. Workspace, PDF,
 browser and `ask_user` tools are available through per-Agent routing. Custom
-sandbox profiles remain unsupported. Streaming traces, template
-exchange, frozen sidecars and signed installers remain in development.
+sandbox profiles remain unsupported. Chat replies render Markdown (code blocks, tables,
+charts when the Agent enables the chart capability), Agent thinking streams into the
+conversation while a turn runs, conversations are auto-titled and renameable, messages
+carry timestamps with copy and edit-and-resend
+actions, published files preview and download from the message that produced them
+(agent screenshots render inline and open in a lightbox), and execution
+traces are captured per turn and refreshed in the trace panel. Token streaming,
+template exchange, frozen sidecars and signed installers remain in development.
 
 [Repository overview](../../README.md) · [Development guide](../../docs/products/desktop/development.md) · [Host contract](../../docs/products/desktop/host-contract.md)
 

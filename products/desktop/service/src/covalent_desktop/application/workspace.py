@@ -2,25 +2,55 @@
 
 from __future__ import annotations
 
+import logging
 import threading
-from pathlib import Path
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from time import perf_counter
 from typing import Protocol
 
 from covalent_contracts.agent import AgentSpec
 from covalent_contracts.mcp import McpServerConfig
 from covalent_contracts.messages import Capability
+from covalent_runtime.domain.types import (
+    GenerationRequest,
+    GenerationResponse,
+    Message,
+    RunContext,
+)
+from covalent_runtime.engine.react import ReactAgentRuntime
+from covalent_runtime.ports.registry import RuntimeRegistry
 from pydantic import ValidationError
+
 from covalent_desktop.application.agent_config import (
     DESKTOP_CAPABILITIES,
     DesktopAgentConfig,
 )
-from covalent_desktop.application.provider_config import DesktopProviderConfig
 from covalent_desktop.application.mcp_config import DesktopMcpService
-from covalent_runtime.domain.types import Message, RunContext, GenerationResponse
-from covalent_runtime.engine.react import ReactAgentRuntime
-from covalent_runtime.ports.registry import RuntimeRegistry
+from covalent_desktop.application.provider_config import DesktopProviderConfig
+from covalent_desktop.application.titles import (
+    TITLE_SYSTEM_PROMPT,
+    fallback_title,
+    normalize_generated_title,
+)
+from covalent_desktop.application.trace import (
+    REASONING_DELTA_EVENTS,
+    activity_item,
+    is_trace_event,
+    reasoning_source_marker,
+    strip_activity_payload,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+# Title generation is a single cheap call, mirroring Enterprise's limits.
+TITLE_MAX_TOKENS = 24
+MAX_TITLE_CHARS = 255
+
+# Reasoning deltas arrive per streaming chunk; the UI polls, so batching the
+# writes to SQLite keeps a long run from thrashing the session row.
+REASONING_FLUSH_INTERVAL_SECONDS = 0.25
 
 
 class WorkspaceStore(Protocol):
@@ -41,10 +71,20 @@ class WorkspaceStore(Protocol):
     def create_session(self, agent_name: str, title: str) -> str: ...
     def delete_session(self, session_id: str) -> None: ...
     def get_session(self, session_id: str) -> dict[str, object] | None: ...
+    def record_turn(self, session_id: str, user_ordinal: int | None) -> int: ...
+    def truncate_from_user_message(self, session_id: str, user_index: int) -> int: ...
+    def append_activity(
+        self, session_id: str, items: list[dict[str, object]]
+    ) -> None: ...
+    def activity_detail(
+        self, session_id: str, activity_id: str
+    ) -> dict[str, object] | None: ...
     def set_pending_input(
         self, session_id: str, request: dict[str, object] | None
     ) -> None: ...
     def set_suggestions(self, session_id: str, suggestions: list[str]) -> None: ...
+    def set_live_reasoning(self, session_id: str, reasoning: str | None) -> None: ...
+    def set_title(self, session_id: str, title: str) -> None: ...
     async def load_messages(self, scope_id: str) -> list[Message]: ...
     async def save_messages(self, scope_id: str, messages: list[Message]) -> None: ...
 
@@ -357,7 +397,47 @@ class DesktopWorkspace:
         session = self.store.get_session(session_id)
         if session is None:
             raise WorkspaceError("session_not_found", "Conversation not found", 404)
+        session["activity"] = self._strip_activity(session.get("activity"))
         return session
+
+    def get_session_activity(
+        self, session_id: str, activity_id: str
+    ) -> dict[str, object]:
+        item = self.store.activity_detail(session_id, activity_id)
+        if item is None:
+            raise WorkspaceError("activity_not_found", "Trace entry not found", 404)
+        return item
+
+    def _strip_activity(self, activity: object) -> list[dict[str, object]]:
+        if not isinstance(activity, list):
+            return []
+        stripped: list[dict[str, object]] = []
+        for item in activity:
+            payload, flags = strip_activity_payload(item.get("payload"))
+            stripped.append({**item, "payload": payload, **flags})
+        return stripped
+
+    def create_chat_session(self, agent_name: str, title: str) -> dict[str, object]:
+        raw_definition = self.store.get_agent(agent_name)
+        if raw_definition is None:
+            raise WorkspaceError("agent_not_found", "Agent not found", 404)
+        config = self._parse_agent(raw_definition)
+        if not config.enabled or Capability.CHAT not in config.capabilities:
+            raise WorkspaceError(
+                "agent_disabled", "Agent is not available for chat", 409
+            )
+        return {
+            "session_id": self.store.create_session(agent_name, fallback_title(title))
+        }
+
+    def rename_session(self, session_id: str, title: str) -> dict[str, object]:
+        cleaned = " ".join(title.split())
+        if not cleaned or len(cleaned) > MAX_TITLE_CHARS:
+            raise WorkspaceError("invalid_title", "Title must contain 1–255 characters")
+        if self.store.get_session(session_id) is None:
+            raise WorkspaceError("session_not_found", "Conversation not found", 404)
+        self.store.set_title(session_id, cleaned)
+        return {"id": session_id, "title": cleaned}
 
     async def send_message(
         self,
@@ -368,6 +448,7 @@ class DesktopWorkspace:
         provider_keys: dict[str, str] | None = None,
         mcp_env: dict[str, dict[str, str]] | None = None,
         resume_answers: dict[str, object] | None = None,
+        edit_user_index: int | None = None,
     ) -> dict[str, object]:
         raw_definition = self.store.get_agent(agent_name)
         if raw_definition is None:
@@ -377,6 +458,16 @@ class DesktopWorkspace:
             raise WorkspaceError(
                 "agent_disabled", "Agent is not available for chat", 409
             )
+        if edit_user_index is not None:
+            if resume_answers is not None:
+                raise WorkspaceError(
+                    "invalid_edit",
+                    "An edited message cannot answer a pending Agent question",
+                )
+            if edit_user_index < 1 or session_id is None:
+                raise WorkspaceError(
+                    "invalid_edit", "Editing needs a conversation and a message index"
+                )
         message = message.strip()
         if (not message and resume_answers is None) or len(message) > 100000:
             raise WorkspaceError(
@@ -392,7 +483,11 @@ class DesktopWorkspace:
                     raise WorkspaceError(
                         "agent_mismatch", "Conversation belongs to another Agent"
                     )
-                if session["input_request"] and resume_answers is None:
+                if (
+                    session["input_request"]
+                    and resume_answers is None
+                    and edit_user_index is None
+                ):
                     raise WorkspaceError(
                         "input_required",
                         "Answer the pending Agent question before sending another message",
@@ -402,6 +497,22 @@ class DesktopWorkspace:
                     raise WorkspaceError(
                         "no_pending_input", "No pending Agent question", 409
                     )
+                if edit_user_index is not None:
+                    # Rewriting history has to happen inside the run lock: the
+                    # runtime writes the whole transcript back when the turn
+                    # ends, so an out-of-band truncation would be overwritten.
+                    try:
+                        self.store.truncate_from_user_message(
+                            session_id, edit_user_index
+                        )
+                    except LookupError as error:
+                        raise WorkspaceError(
+                            "edit_target_missing",
+                            "That message is no longer part of the conversation",
+                            409,
+                        ) from error
+                    self.store.set_pending_input(session_id, None)
+                    self.store.set_suggestions(session_id, [])
             elif resume_answers is not None:
                 raise WorkspaceError(
                     "no_pending_input", "No pending Agent question", 409
@@ -485,6 +596,21 @@ class DesktopWorkspace:
                     }
                 response: GenerationResponse | None = None
                 pending: dict[str, object] | None = None
+                # The turn opens here, so its timestamp and the user message it
+                # answers are recorded together; trace entries below reuse the
+                # same turn number.
+                user_ordinal = None
+                if resume_answers is None:
+                    stored = self.get_session(session_id)["messages"]
+                    user_ordinal = 1 + sum(
+                        1 for item in stored if item.get("role") == "user"
+                    )
+                turn = self.store.record_turn(session_id, user_ordinal)
+                # Trace entries are persisted as they arrive so a running turn is
+                # observable before it finishes.
+                live_reasoning = ""
+                reasoning_source = ""
+                reasoning_flushed_at = 0.0
                 async for event in runtime.stream_events(
                     agent,
                     "" if resume_answers is not None else message,
@@ -492,12 +618,63 @@ class DesktopWorkspace:
                         agent_name=agent_name, session_id=session_id, metadata=metadata
                     ),
                 ):
-                    if event["event"] == "final":
+                    event_name = event["event"]
+                    if is_trace_event(event_name):
+                        self.store.append_activity(
+                            session_id,
+                            [activity_item(event_name, event["payload"], turn)],
+                        )
+                    if event_name in REASONING_DELTA_EVENTS:
+                        payload = event["payload"]
+                        text = payload.get("text") if isinstance(payload, dict) else ""
+                        if isinstance(text, str) and text:
+                            source = (
+                                str(payload.get("agent_name") or "")
+                                if event_name.startswith("delegate_")
+                                else ""
+                            )
+                            if source != reasoning_source:
+                                reasoning_source = source
+                                live_reasoning += reasoning_source_marker(source)
+                            live_reasoning += text
+                            now = perf_counter()
+                            if now - reasoning_flushed_at >= (
+                                REASONING_FLUSH_INTERVAL_SECONDS
+                            ):
+                                reasoning_flushed_at = now
+                                self.store.set_live_reasoning(
+                                    session_id, live_reasoning
+                                )
+                    if event_name == "final":
                         response = GenerationResponse.model_validate(event["payload"])
-                    elif event["event"] == "input_required":
+                    elif event_name == "input_required":
                         pending = event["payload"]
                 if response is None and pending is None:
                     raise RuntimeError("Runtime completed without a final response")
+                if user_ordinal == 1:
+                    # Name the conversation from its first message, like
+                    # Enterprise. Later turns never rename it, so a manual
+                    # rename always wins.
+                    title = fallback_title(message)
+                    try:
+                        adapter = registry.get_model_provider(agent.provider)
+                        suggestion = await adapter.generate(
+                            GenerationRequest(
+                                model=agent.provider.model,
+                                system_prompt=TITLE_SYSTEM_PROMPT,
+                                messages=[Message(role="user", content=message)],
+                                temperature=0.0,
+                                max_tokens=TITLE_MAX_TOKENS,
+                            )
+                        )
+                        title = (
+                            normalize_generated_title(suggestion.output_text) or title
+                        )
+                    except Exception:
+                        LOGGER.debug(
+                            "Conversation title generation failed", exc_info=True
+                        )
+                    self.store.set_title(session_id, title)
                 self.store.set_pending_input(session_id, pending)
                 self.store.set_suggestions(
                     session_id, response.suggestions if response else []
@@ -507,6 +684,8 @@ class DesktopWorkspace:
                     self.store.delete_session(session_id)
                 raise
             finally:
+                if session_id is not None:
+                    self.store.set_live_reasoning(session_id, None)
                 await registry.aclose()
             return {
                 "session_id": session_id,

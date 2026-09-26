@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 from covalent_runtime.domain.types import Message
+
+
+def _epoch_ms() -> int:
+    return int(datetime.now(UTC).timestamp() * 1000)
 
 
 class LocalStore:
@@ -21,7 +26,7 @@ class LocalStore:
             )
             row = db.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
-                db.execute("INSERT INTO schema_version VALUES (5)")
+                db.execute("INSERT INTO schema_version VALUES (8)")
                 db.execute(
                     "CREATE TABLE agents (name TEXT PRIMARY KEY, definition TEXT NOT NULL)"
                 )
@@ -30,23 +35,44 @@ class LocalStore:
                 )
                 self._create_resources(db)
                 db.execute(
-                    "CREATE TABLE sessions (id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, title TEXT NOT NULL, messages TEXT NOT NULL DEFAULT '[]', pending_input TEXT, suggestions TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                    "CREATE TABLE sessions (id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, title TEXT NOT NULL, messages TEXT NOT NULL DEFAULT '[]', pending_input TEXT, suggestions TEXT NOT NULL DEFAULT '[]', activity TEXT NOT NULL DEFAULT '[]', live_reasoning TEXT, turn_meta TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
                 )
             elif row[0] == 1:
                 self._migrate_providers(db)
                 self._migrate_resources(db)
                 self._migrate_pending_input(db)
                 self._migrate_suggestions(db)
+                self._migrate_activity(db)
+                self._migrate_live_reasoning(db)
+                self._migrate_turn_meta(db)
             elif row[0] == 2:
                 self._migrate_resources(db)
                 self._migrate_pending_input(db)
                 self._migrate_suggestions(db)
+                self._migrate_activity(db)
+                self._migrate_live_reasoning(db)
+                self._migrate_turn_meta(db)
             elif row[0] == 3:
                 self._migrate_pending_input(db)
                 self._migrate_suggestions(db)
+                self._migrate_activity(db)
+                self._migrate_live_reasoning(db)
+                self._migrate_turn_meta(db)
             elif row[0] == 4:
                 self._migrate_suggestions(db)
-            elif row[0] != 5:
+                self._migrate_activity(db)
+                self._migrate_live_reasoning(db)
+                self._migrate_turn_meta(db)
+            elif row[0] == 5:
+                self._migrate_activity(db)
+                self._migrate_live_reasoning(db)
+                self._migrate_turn_meta(db)
+            elif row[0] == 6:
+                self._migrate_live_reasoning(db)
+                self._migrate_turn_meta(db)
+            elif row[0] == 7:
+                self._migrate_turn_meta(db)
+            elif row[0] != 8:
                 raise RuntimeError(f"Unsupported Desktop database schema: {row[0]}")
 
     def _migrate_pending_input(self, db: sqlite3.Connection) -> None:
@@ -58,6 +84,22 @@ class LocalStore:
             "ALTER TABLE sessions ADD COLUMN suggestions TEXT NOT NULL DEFAULT '[]'"
         )
         db.execute("UPDATE schema_version SET version=5")
+
+    def _migrate_activity(self, db: sqlite3.Connection) -> None:
+        db.execute(
+            "ALTER TABLE sessions ADD COLUMN activity TEXT NOT NULL DEFAULT '[]'"
+        )
+        db.execute("UPDATE schema_version SET version=6")
+
+    def _migrate_live_reasoning(self, db: sqlite3.Connection) -> None:
+        db.execute("ALTER TABLE sessions ADD COLUMN live_reasoning TEXT")
+        db.execute("UPDATE schema_version SET version=7")
+
+    def _migrate_turn_meta(self, db: sqlite3.Connection) -> None:
+        db.execute(
+            "ALTER TABLE sessions ADD COLUMN turn_meta TEXT NOT NULL DEFAULT '[]'"
+        )
+        db.execute("UPDATE schema_version SET version=8")
 
     def _create_resources(self, db: sqlite3.Connection) -> None:
         db.execute(
@@ -282,7 +324,7 @@ class LocalStore:
     def get_session(self, session_id: str) -> dict[str, object] | None:
         with self._connect() as db:
             row = db.execute(
-                "SELECT id, agent_name, title, messages, pending_input, suggestions FROM sessions WHERE id=?",
+                "SELECT id, agent_name, title, messages, pending_input, suggestions, activity, live_reasoning, turn_meta FROM sessions WHERE id=?",
                 (session_id,),
             ).fetchone()
             if row is None:
@@ -296,6 +338,9 @@ class LocalStore:
                 if row["pending_input"]
                 else None,
                 "suggestions": json.loads(row["suggestions"]),
+                "activity": json.loads(row["activity"]),
+                "live_reasoning": row["live_reasoning"],
+                "turn_meta": json.loads(row["turn_meta"]),
             }
 
     def set_pending_input(
@@ -313,6 +358,137 @@ class LocalStore:
                 "UPDATE sessions SET suggestions=? WHERE id=?",
                 (json.dumps(suggestions), session_id),
             )
+
+    def set_title(self, session_id: str, title: str) -> None:
+        with self._connect() as db:
+            db.execute("UPDATE sessions SET title=? WHERE id=?", (title, session_id))
+
+    def set_live_reasoning(self, session_id: str, reasoning: str | None) -> None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE sessions SET live_reasoning=? WHERE id=?",
+                (reasoning, session_id),
+            )
+
+    def record_turn(self, session_id: str, user_ordinal: int | None) -> int:
+        """Opens the next conversation turn and returns its number.
+
+        ``user_ordinal`` is the 1-based index of the user message this turn
+        starts (``None`` when answering an Agent question, which adds no user
+        message). The turn number is the single source of truth shared with the
+        trace activity log.
+        """
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT activity, turn_meta FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            if row is None:
+                raise LookupError(session_id)
+            turn_meta = json.loads(row["turn_meta"])
+            turns = [int(entry["turn"]) for entry in turn_meta]
+            turns += [
+                int(item["turn"])
+                for item in json.loads(row["activity"])
+                if isinstance(item.get("turn"), int)
+            ]
+            turn = max(turns, default=0) + 1
+            turn_meta.append(
+                {
+                    "turn": turn,
+                    "started_at": _epoch_ms(),
+                    "user_ordinal": user_ordinal,
+                }
+            )
+            db.execute(
+                "UPDATE sessions SET turn_meta=? WHERE id=?",
+                (json.dumps(turn_meta), session_id),
+            )
+        return turn
+
+    def truncate_from_user_message(self, session_id: str, user_index: int) -> int:
+        """Drops the ``user_index``-th user message and everything after it.
+
+        Returns the turn the dropped message belongs to. Raises ``LookupError``
+        when the session or that user message is gone.
+        """
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT messages, activity, turn_meta FROM sessions WHERE id=?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(session_id)
+            messages = json.loads(row["messages"])
+            seen = 0
+            cut: int | None = None
+            for index, message in enumerate(messages):
+                if message.get("role") == "user":
+                    seen += 1
+                    if seen == user_index:
+                        cut = index
+                        break
+            if cut is None:
+                raise LookupError(f"user message {user_index}")
+            turn_meta = json.loads(row["turn_meta"])
+            opened = next(
+                (
+                    entry
+                    for entry in turn_meta
+                    if entry.get("user_ordinal") == user_index
+                ),
+                None,
+            )
+            # Sessions written before turn metadata existed fall back to the
+            # common case where the ordinal and the turn index line up.
+            turn = int(opened["turn"]) if opened else user_index
+            db.execute(
+                "UPDATE sessions SET messages=?, activity=?, turn_meta=? WHERE id=?",
+                (
+                    json.dumps(messages[:cut]),
+                    json.dumps(
+                        [
+                            item
+                            for item in json.loads(row["activity"])
+                            if int(item.get("turn") or 0) < turn
+                        ]
+                    ),
+                    json.dumps(
+                        [entry for entry in turn_meta if int(entry["turn"]) < turn]
+                    ),
+                    session_id,
+                ),
+            )
+        return turn
+
+    def append_activity(self, session_id: str, items: list[dict[str, object]]) -> None:
+        if not items:
+            return
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT activity FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            if row is None:
+                return
+            activity = json.loads(row["activity"])
+            activity.extend(items)
+            db.execute(
+                "UPDATE sessions SET activity=? WHERE id=?",
+                (json.dumps(activity), session_id),
+            )
+
+    def activity_detail(
+        self, session_id: str, activity_id: str
+    ) -> dict[str, object] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT activity FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        for item in json.loads(row["activity"]):
+            if item.get("id") == activity_id:
+                return item
+        return None
 
     async def load_messages(self, scope_id: str) -> list[Message]:
         session = self.get_session(scope_id)

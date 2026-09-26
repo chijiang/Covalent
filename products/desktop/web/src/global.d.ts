@@ -76,6 +76,21 @@ interface DesktopAgentOptions {
 interface DesktopMessage {
   role: string;
   content: unknown;
+  reasoning_content?: string | null;
+  tool_calls?: unknown[] | null;
+}
+interface DesktopSessionActivity {
+  id: string;
+  title: string;
+  payload: unknown;
+  turn: number;
+  has_raw_request?: boolean;
+  has_raw_response?: boolean;
+}
+interface DesktopTurnMeta {
+  turn: number;
+  started_at: number;
+  user_ordinal: number | null;
 }
 interface DesktopSessionSummary {
   id: string;
@@ -87,6 +102,9 @@ interface DesktopSession extends DesktopSessionSummary {
   messages: DesktopMessage[];
   input_request?: DesktopInputRequest | null;
   suggestions?: string[];
+  activity?: DesktopSessionActivity[];
+  live_reasoning?: string | null;
+  turn_meta?: DesktopTurnMeta[];
 }
 interface DesktopInputRequest {
   id: string;
@@ -138,12 +156,27 @@ interface Window {
     deleteSkill(name: string): Promise<void>;
     listSessions(): Promise<{ items: DesktopSessionSummary[] }>;
     getSession(id: string): Promise<DesktopSession>;
+    createConversation(
+      agentName: string,
+      title: string,
+    ): Promise<{ session_id: string }>;
+    getSessionActivity(
+      id: string,
+      activityId: string,
+    ): Promise<DesktopSessionActivity>;
     saveDownload(sessionId: string, name: string): Promise<void>;
+    openExternal(url: string): Promise<void>;
+    readDownload(sessionId: string, name: string): Promise<string>;
+    renameSession(
+      id: string,
+      title: string,
+    ): Promise<{ id: string; title: string }>;
     sendMessage(value: {
       agent_name: string;
       message: string;
       session_id?: string;
       resume_answers?: Record<string, string>;
+      edit_user_index?: number;
     }): Promise<DesktopChatResult>;
     onServiceStatus(
       listener: (status: DesktopServiceStatus) => void,

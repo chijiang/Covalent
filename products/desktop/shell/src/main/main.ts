@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  shell,
   type IpcMainInvokeEvent,
 } from "electron";
 import { promises as fs } from "node:fs";
@@ -361,34 +362,88 @@ function registerIpc(): void {
     return supervisor.request(`/sessions/${id}`);
   });
   ipcMain.handle(
+    "desktop:create-conversation",
+    (event, agentName: unknown, title: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (!isResourceName(agentName)) throw new Error("Invalid agent name");
+      return supervisor.request("/sessions", "POST", {
+        agent_name: agentName,
+        title: typeof title === "string" ? title : "",
+      });
+    },
+  );
+  ipcMain.handle(
+    "desktop:get-session-activity",
+    (event, id: unknown, activityId: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id))
+        throw new Error("Invalid conversation ID");
+      if (
+        typeof activityId !== "string" ||
+        !/^[A-Za-z0-9_.:-]{1,128}$/.test(activityId)
+      )
+        throw new Error("Invalid trace entry ID");
+      return supervisor.request(
+        `/sessions/${id}/activity/${encodeURIComponent(activityId)}`,
+      );
+    },
+  );
+  ipcMain.handle("desktop:open-external", async (event, url: unknown) => {
+    if (!isTrustedSender(event))
+      throw new Error("Untrusted Desktop IPC sender");
+    if (typeof url !== "string") throw new Error("Invalid URL");
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+      throw new Error("Unsupported URL scheme");
+    await shell.openExternal(parsed.toString());
+  });
+  ipcMain.handle(
     "desktop:save-download",
     async (event, sessionId: unknown, name: unknown) => {
       if (!isTrustedSender(event))
         throw new Error("Untrusted Desktop IPC sender");
-      if (
-        typeof sessionId !== "string" ||
-        !/^[a-f0-9]{32}$/.test(sessionId) ||
-        typeof name !== "string" ||
-        !/^[A-Za-z0-9_.-]{1,255}$/.test(name) ||
-        name === "." ||
-        name === ".."
-      )
-        throw new Error("Invalid download");
-      const root = path.join(
-        app.getPath("userData"),
-        "workspaces",
-        ".covalent",
-        "downloads",
-        sessionId,
-      );
-      const source = await fs.realpath(path.join(root, name));
-      if (path.dirname(source) !== (await fs.realpath(root)))
-        throw new Error("Download path escapes session");
+      const source = await resolveSessionDownload(sessionId, name);
       const selection = await dialog.showSaveDialog(mainWindow!, {
-        defaultPath: name,
+        defaultPath: name as string,
       });
       if (selection.canceled || !selection.filePath) return;
       await fs.copyFile(source, selection.filePath);
+    },
+  );
+  // Published files live on the local disk and the renderer has no service
+  // credential, so previews are read through the shell.
+  ipcMain.handle(
+    "desktop:read-download",
+    async (event, sessionId: unknown, name: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      const source = await resolveSessionDownload(sessionId, name);
+      const mime = INLINE_PREVIEW_TYPES[path.extname(source).toLowerCase()];
+      if (!mime) throw new Error("This file type cannot be previewed");
+      const stats = await fs.stat(source);
+      if (!stats.isFile()) throw new Error("Download not found");
+      if (stats.size > MAX_INLINE_PREVIEW_BYTES)
+        throw new Error("This file is too large to preview");
+      const bytes = await fs.readFile(source);
+      return `data:${mime};base64,${bytes.toString("base64")}`;
+    },
+  );
+  ipcMain.handle(
+    "desktop:rename-session",
+    (event, id: unknown, title: unknown) => {
+      if (!isTrustedSender(event))
+        throw new Error("Untrusted Desktop IPC sender");
+      if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id))
+        throw new Error("Invalid conversation ID");
+      if (
+        typeof title !== "string" ||
+        !title.trim() ||
+        title.length > 255
+      )
+        throw new Error("Invalid conversation title");
+      return supervisor.request(`/sessions/${id}`, "PATCH", { title });
     },
   );
   ipcMain.handle("desktop:send-message", async (event, value: unknown) => {
@@ -494,6 +549,7 @@ function isChatRequest(value: unknown): value is {
   message: string;
   session_id?: string;
   resume_answers?: Record<string, string>;
+  edit_user_index?: number;
 } {
   if (!value || typeof value !== "object") return false;
   const item = value as Record<string, unknown>;
@@ -507,10 +563,52 @@ function isChatRequest(value: unknown): value is {
         item.resume_answers !== null &&
         !Array.isArray(item.resume_answers) &&
         JSON.stringify(item.resume_answers).length <= 10000)) &&
+    (item.edit_user_index === undefined ||
+      (typeof item.edit_user_index === "number" &&
+        Number.isInteger(item.edit_user_index) &&
+        item.edit_user_index >= 1 &&
+        item.edit_user_index <= 10_000)) &&
     (item.session_id === undefined ||
       (typeof item.session_id === "string" &&
         /^[a-f0-9]{32}$/.test(item.session_id)))
   );
+}
+
+const INLINE_PREVIEW_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+const MAX_INLINE_PREVIEW_BYTES = 8 * 1024 * 1024;
+
+// Published files are written per conversation under the app's data directory;
+// resolving them here keeps every download path inside that directory.
+async function resolveSessionDownload(
+  sessionId: unknown,
+  name: unknown,
+): Promise<string> {
+  if (
+    typeof sessionId !== "string" ||
+    !/^[a-f0-9]{32}$/.test(sessionId) ||
+    typeof name !== "string" ||
+    !/^[A-Za-z0-9_.-]{1,255}$/.test(name) ||
+    name === "." ||
+    name === ".."
+  )
+    throw new Error("Invalid download");
+  const root = path.join(
+    app.getPath("userData"),
+    "workspaces",
+    ".covalent",
+    "downloads",
+    sessionId,
+  );
+  const source = await fs.realpath(path.join(root, name));
+  if (path.dirname(source) !== (await fs.realpath(root)))
+    throw new Error("Download path escapes session");
+  return source;
 }
 
 async function createWindow(): Promise<void> {

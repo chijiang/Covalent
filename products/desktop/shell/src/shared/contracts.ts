@@ -93,10 +93,19 @@ export interface ConversationSummary {
   title: string;
   created_at: string;
 }
+export interface ConversationActivity {
+  id: string;
+  title: string;
+  payload: unknown;
+  turn: number;
+  has_raw_request?: boolean;
+  has_raw_response?: boolean;
+}
 export interface Conversation extends ConversationSummary {
   messages: ConversationMessage[];
   input_request?: UserInputRequest | null;
   suggestions?: string[];
+  activity?: ConversationActivity[];
 }
 export interface UserInputRequest {
   id: string;

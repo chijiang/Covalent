@@ -137,8 +137,10 @@ function RuntimeWorkspace({
           <h3>Local workspace</h3>
           <p>
             Window startup, authentication, health checks, and service restart
-            are connected. Agent creation, model credentials, and local chat are
-            available. Streaming traces and templates are in development.
+            are connected. Agent creation, model credentials, local chat,
+            execution traces, Markdown rendering, message editing and file
+            downloads are available. Token streaming and templates are in
+            development.
           </p>
         </div>
       </section>

@@ -8,6 +8,7 @@ import type {
   SkillDefinition,
   ChatResult,
   Conversation,
+  ConversationActivity,
   ConversationSummary,
   ServiceStatus,
 } from "../shared/contracts";
@@ -64,13 +65,33 @@ contextBridge.exposeInMainWorld("covalentDesktop", {
     ipcRenderer.invoke("desktop:list-sessions"),
   getSession: (id: string): Promise<Conversation> =>
     ipcRenderer.invoke("desktop:get-session", id),
+  createConversation: (
+    agentName: string,
+    title: string,
+  ): Promise<{ session_id: string }> =>
+    ipcRenderer.invoke("desktop:create-conversation", agentName, title),
+  getSessionActivity: (
+    id: string,
+    activityId: string,
+  ): Promise<ConversationActivity> =>
+    ipcRenderer.invoke("desktop:get-session-activity", id, activityId),
   saveDownload: (sessionId: string, name: string): Promise<void> =>
     ipcRenderer.invoke("desktop:save-download", sessionId, name),
+  openExternal: (url: string): Promise<void> =>
+    ipcRenderer.invoke("desktop:open-external", url),
+  readDownload: (sessionId: string, name: string): Promise<string> =>
+    ipcRenderer.invoke("desktop:read-download", sessionId, name),
+  renameSession: (
+    id: string,
+    title: string,
+  ): Promise<{ id: string; title: string }> =>
+    ipcRenderer.invoke("desktop:rename-session", id, title),
   sendMessage: (value: {
     agent_name: string;
     message: string;
     session_id?: string;
     resume_answers?: Record<string, string>;
+    edit_user_index?: number;
   }): Promise<ChatResult> => ipcRenderer.invoke("desktop:send-message", value),
   onServiceStatus: (
     listener: (status: ServiceStatus) => void,

@@ -29,7 +29,7 @@ export class SidecarSupervisor {
 
   async request(
     pathname: string,
-    method: "GET" | "POST" | "DELETE" = "GET",
+    method: "GET" | "POST" | "PATCH" | "DELETE" = "GET",
     body?: object,
   ): Promise<unknown> {
     if (this.status.phase !== "ready" || !this.endpoint)

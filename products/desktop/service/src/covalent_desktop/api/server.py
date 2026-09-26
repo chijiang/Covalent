@@ -68,6 +68,21 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     {"code": error.code, "message": error.message},
                 )
                 return
+        elif self.path.startswith("/sessions/") and self.path.count("/") == 4:
+            _, _, session_id, resource, activity_id = self.path.split("/")
+            if resource != "activity":
+                self._write_json(
+                    HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
+                )
+                return
+            try:
+                payload = server.workspace.get_session_activity(session_id, activity_id)
+            except WorkspaceError as error:
+                self._write_json(
+                    HTTPStatus(error.status),
+                    {"code": error.code, "message": error.message},
+                )
+                return
         else:
             self._write_json(
                 HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
@@ -85,6 +100,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         if self.path not in (
             "/agents",
             "/messages",
+            "/sessions",
             "/providers",
             "/provider-models",
             "/mcp-services",
@@ -111,6 +127,10 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             workspace = cast(DesktopHTTPServer, self.server).workspace
             if self.path == "/agents":
                 payload = workspace.save_agent(data)
+            elif self.path == "/sessions":
+                payload = workspace.create_chat_session(
+                    str(data.get("agent_name", "")), str(data.get("title", ""))
+                )
             elif self.path == "/providers":
                 payload = workspace.save_provider(data)
             elif self.path == "/mcp-services":
@@ -169,6 +189,13 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     not isinstance(answers, dict) or len(json.dumps(answers)) > 10000
                 ):
                     raise ValueError("Invalid Agent question answers")
+                edit_user_index = data.get("edit_user_index")
+                if edit_user_index is not None and (
+                    isinstance(edit_user_index, bool)
+                    or not isinstance(edit_user_index, int)
+                    or edit_user_index < 1
+                ):
+                    raise ValueError("Invalid edited message index")
                 payload = asyncio.run(
                     workspace.send_message(
                         str(data.get("agent_name", "")),
@@ -177,6 +204,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                         provider_keys=keys,
                         mcp_env=data.get("mcp_env"),
                         resume_answers=answers,
+                        edit_user_index=edit_user_index,
                     )
                 )
         except (ValueError, json.JSONDecodeError) as error:
@@ -255,6 +283,44 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             )
             return
         self._write_json(HTTPStatus.OK, {"deleted": True})
+
+    def do_PATCH(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if not self._is_authorized():
+            self._write_json(
+                HTTPStatus.UNAUTHORIZED,
+                {"code": "unauthorized", "message": "Invalid service credential"},
+            )
+            return
+        if self.path.count("/") != 2 or not self.path.startswith("/sessions/"):
+            self._write_json(
+                HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
+            )
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 1 or length > 120000:
+                raise ValueError("Invalid request size")
+            data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict):
+                raise ValueError("Expected JSON object")
+            title = data.get("title")
+            if not isinstance(title, str):
+                raise ValueError("Invalid title")
+            payload = cast(DesktopHTTPServer, self.server).workspace.rename_session(
+                self.path.split("/")[2], title
+            )
+        except (ValueError, json.JSONDecodeError) as error:
+            self._write_json(
+                HTTPStatus.BAD_REQUEST,
+                {"code": "invalid_request", "message": str(error)},
+            )
+            return
+        except WorkspaceError as error:
+            self._write_json(
+                HTTPStatus(error.status), {"code": error.code, "message": error.message}
+            )
+            return
+        self._write_json(HTTPStatus.OK, payload)
 
     def log_message(self, format: str, *args: object) -> None:
         LOGGER.info("desktop_http %s", format % args)
