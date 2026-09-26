@@ -8,6 +8,7 @@
     "build": "pnpm --filter @covalent/desktop-web build && pnpm run build:shell",
     "build:shell": "tsc -p tsconfig.json",
     "dev": "node scripts/dev.mjs",
+    "package:mac": "node scripts/package-mac.mjs",
     "start": "pnpm run build && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

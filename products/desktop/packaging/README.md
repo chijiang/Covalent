@@ -1,31 +1,59 @@
-# Desktop 发行验收
+# Desktop Release Acceptance
 
-Desktop 的跨平台打包、签名、安装和升级验收规范。
+Cross-platform packaging, signing, installation and upgrade acceptance criteria for Desktop.
 
-**当前状态：发行计划，无构建脚本和安装包。** 首发覆盖 macOS 和 Windows；建议验证 macOS arm64/x64、Windows x64，Windows arm64 的原生支持单独验证后声明。
-最低 OS 版本在 Electron 与 Python 打包器版本选定后记录，不能仅凭开发机版本声明支持。
+**Current status: macOS local packaging is implemented (ad-hoc signed prototype, see below); Windows packaging, production signing, notarization and installers remain outstanding.** The first release covers macOS and Windows; validate macOS arm64/x64 and Windows x64, while native Windows arm64 support is declared only after separate validation.
+The minimum supported OS version is recorded once the Electron and Python packaging tool versions are chosen; it must not be declared from a development machine alone.
 
-[Desktop README](../README.md) · [开发指南](../../../docs/products/desktop/development.md)
+[Desktop README](../README.md) · [Development guide](../../../docs/products/desktop/development.md)
 
-## 构建流水线目标
+## Build pipeline goals
 
-1. 在对应 OS/架构构建 contracts/runtime/agent-kit/Desktop wheels，以固定版本安装到隔离环境。
-2. 使用选定的 Python 打包方案生成独立 sidecar；原型优先验证 PyInstaller，冻结依赖与资源 hooks。
-3. 构建 React 静态资源和 Electron main/preload，组合成同一 Desktop 发行物。
-4. 执行代码签名、macOS 公证和 Windows 安装验证；签名凭据由 CI secret 提供。
-5. 生成发行清单：产品版本、commit、核心包版本、模板/API 协议版本、OS/架构、资源摘要。
-6. 完成安装/升级/清理测试后发布；升级整体替换 UI、shell 和 sidecar，不能单独漂移内核。
+1. Build contracts/runtime/agent-kit/Desktop wheels per OS/architecture, and install them at pinned versions into an isolated environment.
+2. Generate a standalone sidecar with the selected Python packaging solution; the prototype prefers PyInstaller, freezing dependencies and resource hooks.
+3. Build the React static assets and Electron main/preload, and combine them into a single Desktop distributable.
+4. Perform code signing, macOS notarization and Windows installer verification; signing credentials are provided by CI secrets.
+5. Produce a release manifest: product version, commit, core package versions, template/API protocol versions, OS/architecture, asset digests.
+6. Release after install/upgrade/cleanup testing; upgrades replace the UI, shell and sidecar as a whole and must never drift the kernel independently.
 
-## 每个平台必须验证
+## macOS local packaging (implemented prototype)
 
-- 无系统 Python、无开发工具环境中启动，路径带空格/中文也可运行。
-- 内置 Python/Node runner 资源定位正确；可选外部运行时缺失时明确报错。
-- 单实例、sidecar 握手、失败诊断和服务版本不兼容处理。
-- SSE 输出、工具运行、用户取消、关闭窗口/退出应用、进程异常退出后无孤儿进程。
-- Windows 子进程树回收与 macOS 进程组行为分别验证，不能只终止顶层 Python PID。
-- 凭据存取、本地目录授权、日志脱敏和应用数据目录权限。
-- 数据库迁移失败保持旧数据可恢复；自动更新失败后能启动兼容版本。
+Run from the repository root:
 
-会话持久化不等于崩溃恢复；首版遗留执行记录标记 interrupted，不自动重放有副作用的工具。
-回退前检查 schema 兼容性；已升级数据库不能直接交给不兼容的旧程序。
-自动更新服务商、签名身份、最终安装包格式与 Python 冻结方式待原型验证后锁定。
+```bash
+pnpm package:desktop:mac
+```
+
+Artifacts land in `products/desktop/shell/build/`:
+
+- `Covalent Desktop.app`: a self-contained application (Electron/Chromium, the frozen sidecar and the renderer all live inside the bundle), ad-hoc signed and directly runnable.
+- `Covalent-Desktop-<version>-macos-<arch>.dmg`: a zlib-compressed image (UDZO) of the same .app, containing the .app plus an `/Applications` symlink for drag-install.
+
+Pipeline (`shell/scripts/package-mac.mjs` orchestrates; `shell/scripts/package-service.mjs` freezes the sidecar):
+
+1. `pnpm --filter @covalent/desktop-shell build` builds the renderer (Vite) and the shell (tsc).
+2. PyInstaller onedir freezes `covalent_desktop` into `covalent-desktop-service`. Key flags: `--copy-metadata mcp` (`mcp/client.py` reads `importlib.metadata.version` at runtime), `--collect-data covalent_agent_kit` and `--collect-data covalent_execution_native` (carry `skill_sdk.js`, `node_runner.js` and other data files), and `--collect-all playwright`. The freeze self-test starts the binary with `COVALENT_DESKTOP_SERVICE_TOKEN` set and validates the single-line ready JSON on stdout.
+3. Assemble the bundle from `node_modules/electron/dist/Electron.app` (copied with `ditto` to preserve symlinks). The layout mirrors the shell's packaged path conventions: `Contents/Resources/app/` (shell package.json + dist), `Contents/Resources/web/dist/` (renderer), and `Contents/Resources/service/` (frozen sidecar flattened so the binary sits exactly at `Resources/service/covalent-desktop-service`).
+4. **`Contents/MacOS/Electron` must be renamed and `CFBundleExecutable` updated accordingly**: `app.isPackaged` compares the first 8 characters of the executable name against "electron" (case-insensitive), so without the rename a packaged instance takes the dev branch and looks for `.venv/bin/python`.
+5. PlistBuddy writes `CFBundleName`/`CFBundleDisplayName`/`CFBundleIdentifier` (com.covalent.desktop); an icns is generated from `covalent-mark.png` via `sips` + `iconutil`; `codesign --force --deep -s -` re-signs ad hoc (unsigned binaries cannot run on arm64); `hdiutil create -format UDZO` produces the dmg.
+
+Current prototype boundaries:
+
+- Ad-hoc signing: the app runs directly when the file carries no quarantine mark (internal or hand-copied distribution); public distribution requires a Developer ID signature (hardened runtime + entitlements) plus notarization and stapling, per pipeline goal 4.
+- arm64 only; x64 must be built on the matching architecture.
+- Playwright browser binaries are not bundled; the runtime shares `~/Library/Caches/ms-playwright`, and browser tools degrade through the existing error path when they are missing.
+- Upgrade/uninstall semantics (data migration for `~/Library/Application Support/Covalent Desktop`, orphan process reclamation) still follow "must validate on every platform"; the prototype does not cover them.
+
+## Must validate on every platform
+
+- Launch in environments without system Python or development tools; run from paths containing spaces or non-ASCII characters.
+- Bundled Python/Node runner resources resolve correctly; missing optional external runtimes fail with clear errors.
+- Single instance, sidecar handshake, failure diagnostics and service version incompatibility handling.
+- SSE output, tool runs, user cancellation, window close/app quit, and no orphan processes after abnormal exits.
+- Reclaim the Windows process tree and macOS process groups separately; never stop at the top-level Python PID.
+- Credential storage, local directory grants, log redaction and app data directory permissions.
+- A failed database migration keeps old data recoverable; a failed auto-update can still start a compatible version.
+
+Session persistence is not crash recovery; leftover executions from a first release are marked interrupted and side-effectful tools are never replayed automatically.
+Check schema compatibility before rollback; an upgraded database must never be handed back to an incompatible older build.
+The Python freeze approach is validated in the macOS prototype (PyInstaller onedir); the auto-update vendor, signing identity and final installer format remain to be locked.
