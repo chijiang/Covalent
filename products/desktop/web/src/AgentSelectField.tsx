@@ -233,7 +233,9 @@ export function AgentMultiSelectField({
         </span>
         <ChevronDown size={15} aria-hidden="true" />
       </button>
-      {!options.length && <small className="config-help">{empty}</small>}
+      {!options.length && empty && (
+        <small className="config-help">{empty}</small>
+      )}
       {menu.open &&
         createPortal(
           <div

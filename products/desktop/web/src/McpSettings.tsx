@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Cable, Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 
 const empty: DesktopMcpServer = {
   name: "",
@@ -168,16 +168,7 @@ export function McpSettings() {
     }
   }
   return (
-    <div className="management-layout">
-      <aside className="surface management-rail">
-        <div className="surface-heading">Service Console</div>
-        <nav aria-label="Service settings">
-          <div className="rail-item selected">
-            <Cable size={16} />
-            MCP services
-          </div>
-        </nav>
-      </aside>
+    <div className="management-layout resource-management-layout">
       <section className="surface inventory-panel">
         <div className="surface-heading">
           MCP services{" "}
@@ -219,13 +210,11 @@ export function McpSettings() {
       <section className="surface detail-panel">
         <div className="surface-heading">
           {isNew ? "Add MCP service" : form.name}
-          <span className="subtle-tag">LOCAL</span>
         </div>
-        <div className="agent-form">
-          <div className="form-intro">
-            <h2>{isNew ? "Add MCP service" : "Edit MCP service"}</h2>
-            <p>Configure a connection once, then select it in an Agent.</p>
-          </div>
+        <div className="agent-form resource-form">
+          <p className="resource-intro">
+            Connect an MCP server for agent tools.
+          </p>
           <section className="config-section">
             <div className="form-grid">
               <label>
@@ -307,6 +296,7 @@ export function McpSettings() {
               <label className="full-width">
                 Environment / headers
                 <textarea
+                  className="resource-short-textarea"
                   rows={3}
                   value={env}
                   onChange={(event) => setEnv(event.target.value)}
@@ -314,8 +304,8 @@ export function McpSettings() {
                 />
                 <small>
                   {form.has_env
-                    ? "Encrypted values are saved. Enter new values to replace them."
-                    : "Saved with system encryption. For HTTP transports, these values become request headers."}
+                    ? "Values saved securely. Enter new values to replace them."
+                    : "Stored securely. Used as headers for HTTP connections."}
                 </small>
               </label>
             </div>
@@ -360,28 +350,30 @@ export function McpSettings() {
               </div>
             </section>
           )}
-          <section className="config-section">
-            <h3>Import configuration</h3>
-            <label className="full-width">
-              MCP JSON
-              <textarea
-                rows={4}
-                value={importText}
-                onChange={(event) => setImportText(event.target.value)}
-                placeholder={
-                  '{"mcpServers":{"my-server":{"command":"npx","args":["-y","package"]}}}'
-                }
-              />
-            </label>
-            <button
-              className="secondary-button"
-              type="button"
-              disabled={busy || !importText.trim()}
-              onClick={() => void importConfig()}
-            >
-              Import JSON
-            </button>
-          </section>
+          <details className="config-section resource-import">
+            <summary>Import JSON configuration</summary>
+            <div className="form-grid">
+              <label className="full-width">
+                MCP JSON
+                <textarea
+                  rows={4}
+                  value={importText}
+                  onChange={(event) => setImportText(event.target.value)}
+                  placeholder={'{"mcpServers":{"my-server":{"command":"npx"}}}'}
+                />
+              </label>
+            </div>
+            <div className="resource-import-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={busy || !importText.trim()}
+                onClick={() => void importConfig()}
+              >
+                Import JSON
+              </button>
+            </div>
+          </details>
           {error && (
             <p className="form-error" role="alert">
               {error}

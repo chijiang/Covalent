@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Cpu, Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 
 const emptyProvider: DesktopProvider = {
   name: "",
@@ -126,16 +126,7 @@ export function ProviderSettings() {
   }
 
   return (
-    <div className="management-layout agent-layout">
-      <aside className="surface management-rail">
-        <div className="surface-heading">Service Console</div>
-        <nav aria-label="Service settings">
-          <div className="rail-item selected">
-            <Cpu size={16} />
-            Provider settings
-          </div>
-        </nav>
-      </aside>
+    <div className="management-layout resource-management-layout">
       <section className="surface inventory-panel">
         <div className="surface-heading">
           Providers{" "}
@@ -166,25 +157,18 @@ export function ProviderSettings() {
             </button>
           ))}
           {!providers.length && (
-            <div className="inventory-empty">
-              No providers yet. Select + to configure one.
-            </div>
+            <div className="inventory-empty">No providers yet.</div>
           )}
         </div>
       </section>
       <section className="surface detail-panel">
         <div className="surface-heading">
           {isNew ? "Create provider" : form.name}
-          <span className="subtle-tag">LOCAL</span>
         </div>
-        <div className="agent-form">
-          <div className="form-intro">
-            <h2>{isNew ? "Create provider" : "Edit provider"}</h2>
-            <p>
-              Configure an OpenAI-compatible connection, then select this
-              provider and a model in Agent settings.
-            </p>
-          </div>
+        <div className="agent-form resource-form">
+          <p className="resource-intro">
+            Connect a model provider for your agents.
+          </p>
           <section className="config-section">
             <h3>Connection</h3>
             <div className="form-grid">
@@ -237,17 +221,14 @@ export function ProviderSettings() {
               <label className="full-width">
                 Available models
                 <textarea
-                  rows={4}
+                  rows={3}
                   value={modelsText}
                   onChange={(event) => setModelsText(event.target.value)}
                   placeholder={"gpt-4.1\ngpt-4.1-mini"}
                 />
-                <small>
-                  One model per line. These appear in the Agent model picker;
-                  custom model names are also accepted.
-                </small>
               </label>
-              <div className="full-width provider-model-actions">
+              <div className="full-width resource-field-footer">
+                <small>One model per line.</small>
                 <button
                   className="secondary-button"
                   type="button"
@@ -286,9 +267,7 @@ export function ProviderSettings() {
                   }
                 />
                 <small>
-                  {form.has_api_key
-                    ? "API key saved in system encrypted storage."
-                    : "No API key saved for this provider."}
+                  {form.has_api_key ? "Key saved securely." : "No key saved."}
                 </small>
               </label>
             </div>

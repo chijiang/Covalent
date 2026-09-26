@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Sparkles, Trash2, Upload } from "lucide-react";
+import { Plus, Trash2, Upload } from "lucide-react";
 
 export function SkillSettings() {
   const [items, setItems] = useState<DesktopSkill[]>([]);
@@ -8,6 +8,9 @@ export function SkillSettings() {
   const [content, setContent] = useState("");
   const [gitUrl, setGitUrl] = useState("");
   const [gitRef, setGitRef] = useState("");
+  const [createMode, setCreateMode] = useState<"write" | "zip" | "git">(
+    "write",
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -22,6 +25,10 @@ export function SkillSettings() {
     if (next) {
       setName(next.name);
       setContent(next.instructions);
+    } else {
+      setName("");
+      setContent("");
+      setCreateMode("write");
     }
   }
   useEffect(() => {
@@ -43,16 +50,7 @@ export function SkillSettings() {
     }
   }
   return (
-    <div className="management-layout">
-      <aside className="surface management-rail">
-        <div className="surface-heading">Service Console</div>
-        <nav aria-label="Service settings">
-          <div className="rail-item selected">
-            <Sparkles size={16} />
-            Skill settings
-          </div>
-        </nav>
-      </aside>
+    <div className="management-layout resource-management-layout">
       <section className="surface inventory-panel">
         <div className="surface-heading">
           Skills{" "}
@@ -64,7 +62,11 @@ export function SkillSettings() {
               setSelected(null);
               setName("");
               setContent("");
+              setGitUrl("");
+              setGitRef("");
+              setCreateMode("write");
               setError("");
+              setMessage("");
             }}
           >
             <Plus size={15} />
@@ -98,16 +100,34 @@ export function SkillSettings() {
       <section className="surface detail-panel">
         <div className="surface-heading">
           {selected?.name ?? "Create skill"}
-          <span className="subtle-tag">LOCAL</span>
         </div>
-        <div className="agent-form">
-          <div className="form-intro">
-            <h2>{selected ? "Skill details" : "Create skill"}</h2>
-            <p>
-              Managed skills are discovered from SKILL.md and skill.yaml. Enable
-              a skill before assigning it to an Agent.
-            </p>
-          </div>
+        <div className="agent-form resource-form">
+          <p className="resource-intro">
+            {selected
+              ? "Manage instructions and availability."
+              : "Choose how to add a skill."}
+          </p>
+          {!selected && (
+            <div className="resource-mode-picker" aria-label="Skill source">
+              {(
+                [
+                  ["write", "Write"],
+                  ["zip", "Import ZIP"],
+                  ["git", "Sync Git"],
+                ] as const
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={createMode === mode ? "active" : ""}
+                  aria-pressed={createMode === mode}
+                  onClick={() => setCreateMode(mode)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <section className="config-section">
             <div className="form-grid">
               <label>
@@ -140,19 +160,24 @@ export function SkillSettings() {
                   </select>
                 </label>
               )}
-              <label className="full-width">
-                Instructions
-                <textarea
-                  rows={12}
-                  value={content}
-                  readOnly={Boolean(
-                    selected && selected.source_category !== "authored",
-                  )}
-                  onChange={(event) => setContent(event.target.value)}
-                  placeholder="---\nname: my-skill\ndescription: What this skill does\n---\n\nInstructions for the agent..."
-                />
-              </label>
-              {!selected && (
+              {(selected || createMode === "write") && (
+                <label className="full-width">
+                  Instructions
+                  <textarea
+                    className="resource-instructions"
+                    rows={8}
+                    value={content}
+                    readOnly={Boolean(
+                      selected && selected.source_category !== "authored",
+                    )}
+                    onChange={(event) => setContent(event.target.value)}
+                    placeholder={
+                      "---\nname: my-skill\ndescription: What this skill does\n---\n\nWrite instructions for the agent..."
+                    }
+                  />
+                </label>
+              )}
+              {!selected && createMode === "git" && (
                 <>
                   <label className="full-width">
                     Git repository URL
@@ -191,54 +216,56 @@ export function SkillSettings() {
             </p>
           )}
           <div className="form-actions">
-            {!selected && (
-              <>
-                <button
-                  type="button"
-                  className="primary-button"
-                  disabled={busy || !name || !content.trim()}
-                  onClick={() =>
-                    void perform(
-                      () => window.covalentDesktop.createSkill(name, content),
-                      name,
-                    )
-                  }
-                >
-                  Create skill
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={busy || !name}
-                  onClick={() =>
-                    void perform(
-                      () => window.covalentDesktop.uploadSkill(name),
-                      name,
-                    )
-                  }
-                >
-                  <Upload size={14} />
-                  Import ZIP
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={busy || !name || !gitUrl}
-                  onClick={() =>
-                    void perform(
-                      () =>
-                        window.covalentDesktop.syncGitSkills(
-                          name,
-                          gitUrl,
-                          gitRef || undefined,
-                        ),
-                      name,
-                    )
-                  }
-                >
-                  Sync Git
-                </button>
-              </>
+            {!selected && createMode === "write" && (
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy || !name || !content.trim()}
+                onClick={() =>
+                  void perform(
+                    () => window.covalentDesktop.createSkill(name, content),
+                    name,
+                  )
+                }
+              >
+                Create skill
+              </button>
+            )}
+            {!selected && createMode === "zip" && (
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy || !name}
+                onClick={() =>
+                  void perform(
+                    () => window.covalentDesktop.uploadSkill(name),
+                    name,
+                  )
+                }
+              >
+                <Upload size={14} />
+                Import ZIP
+              </button>
+            )}
+            {!selected && createMode === "git" && (
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy || !name || !gitUrl}
+                onClick={() =>
+                  void perform(
+                    () =>
+                      window.covalentDesktop.syncGitSkills(
+                        name,
+                        gitUrl,
+                        gitRef || undefined,
+                      ),
+                    name,
+                  )
+                }
+              >
+                Sync Git
+              </button>
             )}
             {selected?.source_category === "authored" && (
               <button

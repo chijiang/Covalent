@@ -236,6 +236,7 @@ button:disabled {
 }
 .surface-heading {
   height: 49px;
+  flex-shrink: 0;
   padding: 0 16px;
   border-bottom: 1px solid var(--border-muted);
   display: flex;
@@ -397,6 +398,9 @@ button:disabled {
   min-height: 0;
   flex: 1;
 }
+.resource-management-layout {
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+}
 .resource-tabs {
   display: flex;
   gap: 6px;
@@ -413,6 +417,7 @@ button:disabled {
   border-radius: 6px;
   padding: 7px 13px;
   font: inherit;
+  font-size: 14px;
   cursor: pointer;
 }
 .resource-tabs button.active {
@@ -636,7 +641,7 @@ button:disabled {
   .chat-layout {
     grid-template-columns: 205px minmax(310px, 1fr) 235px;
   }
-  .management-layout {
+  .management-layout:not(.resource-management-layout) {
     grid-template-columns: 155px 210px minmax(310px, 1fr);
   }
 }
@@ -893,11 +898,16 @@ button:disabled {
 }
 .form-grid .provider-default-check {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
 }
 .form-grid .provider-default-check input {
-  width: auto;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 0;
   accent-color: #dc2626;
 }
 .provider-actions {
@@ -1233,6 +1243,151 @@ button:disabled {
   justify-content: flex-end;
   margin-top: 20px;
 }
+/* Resource editors use one consistent three-level type scale. */
+.resource-management-layout .surface-heading {
+  height: 56px;
+  font-size: 14px;
+}
+.resource-management-layout .detail-panel > .surface-heading {
+  padding: 0 28px;
+  font-size: 18px;
+}
+.resource-management-layout .subtle-tag,
+.resource-management-layout .inventory-empty,
+.resource-management-layout .inventory-item small,
+.resource-management-layout .form-grid label,
+.resource-management-layout .form-grid input,
+.resource-management-layout .form-grid select,
+.resource-management-layout .form-grid textarea,
+.resource-management-layout .form-grid small,
+.resource-management-layout .config-label,
+.resource-management-layout .config-help,
+.resource-management-layout .agent-select-trigger,
+.resource-management-layout .resource-field-footer,
+.resource-management-layout .credential-help,
+.resource-management-layout .form-error,
+.resource-management-layout .form-success,
+.resource-management-layout .secondary-button,
+.resource-management-layout .primary-button {
+  font-size: 12px;
+}
+.resource-management-layout .inventory-item strong,
+.resource-management-layout .config-section h3,
+.resource-management-layout .resource-import summary,
+.resource-management-layout .resource-mode-picker button {
+  font-size: 14px;
+}
+.resource-management-layout .inventory-item {
+  gap: 3px;
+  padding: 11px 12px;
+}
+.resource-management-layout .resource-form {
+  width: 100%;
+  max-width: 860px;
+  padding: 24px 28px 32px;
+}
+.resource-intro {
+  margin: 0 0 20px;
+  color: #777;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.resource-form .config-section:first-of-type {
+  padding-top: 0;
+  border-top: 0;
+}
+.resource-form .config-section {
+  padding: 19px 0;
+}
+.resource-form .form-grid {
+  gap: 16px 20px;
+}
+.resource-form .form-grid label {
+  gap: 7px;
+}
+.resource-form .form-grid textarea {
+  min-height: 90px;
+}
+.resource-form .form-grid textarea.resource-short-textarea {
+  min-height: 76px;
+}
+.resource-form .form-grid textarea.resource-instructions {
+  min-height: 210px;
+  max-height: 320px;
+}
+.resource-field-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: -8px;
+}
+.resource-field-footer small {
+  margin: 0;
+}
+.resource-import summary {
+  color: #292929;
+  font-weight: 650;
+  cursor: pointer;
+}
+.resource-import[open] summary {
+  margin-bottom: 16px;
+}
+.resource-import-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.resource-mode-picker {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 20px;
+  border: 1px solid var(--border-muted);
+  border-radius: 8px;
+}
+.resource-mode-picker button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #666;
+  font-family: inherit;
+  cursor: pointer;
+}
+.resource-mode-picker button.active {
+  background: #fff3f2;
+  color: #b91c1c;
+  font-weight: 600;
+}
+.resource-form .form-actions {
+  position: sticky;
+  bottom: -32px;
+  z-index: 1;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-muted);
+  background: #fff;
+}
+.resource-form .mcp-editor > .agent-select-field:not(:first-child) {
+  margin-top: 16px;
+}
+.resource-form .mcp-editor > .secondary-button {
+  margin-top: 12px;
+}
+@media (max-width: 760px) {
+  .resource-management-layout {
+    grid-template-columns: minmax(150px, 200px) minmax(0, 1fr);
+  }
+  .resource-management-layout .resource-form {
+    padding: 20px;
+  }
+  .resource-form .form-grid {
+    grid-template-columns: 1fr;
+  }
+}
 .primary-button {
   border: 1px solid #b91c1c;
   border-radius: 6px;
@@ -1266,7 +1421,7 @@ button:disabled {
         205px
       );
   }
-  .management-layout {
+  .management-layout:not(.resource-management-layout) {
     grid-template-columns: 150px minmax(185px, 210px) minmax(270px, 1fr);
   }
 }

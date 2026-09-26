@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bot, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import {
   AgentMultiSelectField as MultiChecks,
   AgentSelectField,
@@ -164,16 +164,7 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
   );
 
   return (
-    <div className="management-layout agent-layout">
-      <aside className="surface management-rail">
-        <div className="surface-heading">Service Console</div>
-        <nav aria-label="Service settings">
-          <div className="rail-item selected">
-            <Bot size={16} />
-            Agent settings
-          </div>
-        </nav>
-      </aside>
+    <div className="management-layout resource-management-layout agent-layout">
       <section className="surface inventory-panel">
         <div className="surface-heading">
           Agents{" "}
@@ -216,26 +207,15 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
             </button>
           ))}
           {!agents.length && (
-            <div className="inventory-empty">
-              No agents yet. Select + to create one.
-            </div>
+            <div className="inventory-empty">No agents yet.</div>
           )}
         </div>
       </section>
       <section className="surface detail-panel">
         <div className="surface-heading">
           {isNew ? "Create agent" : form.name}
-          <span className="subtle-tag">LOCAL</span>
         </div>
-        <div className="agent-form">
-          <div className="form-intro">
-            <h2>{isNew ? "Create agent" : "Edit agent"}</h2>
-            <p>
-              Configure the same core runtime fields as Enterprise. Changes are
-              stored locally.
-            </p>
-          </div>
-
+        <div className="agent-form resource-form">
           <section className="config-section">
             <h3>Basics</h3>
             <div className="form-grid">
@@ -261,6 +241,7 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
               <label className="full-width">
                 Description
                 <textarea
+                  className="resource-short-textarea"
                   rows={2}
                   value={form.description}
                   onChange={(event) =>
@@ -290,7 +271,7 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
                 placeholder="Select a provider..."
                 helper={
                   !providers.length
-                    ? "Configure a Provider in Resources & connections first."
+                    ? "Add a provider in Resources first."
                     : undefined
                 }
               />
@@ -497,16 +478,13 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
                   placeholder="api.example.com, *.openai.com"
                 />
                 <small>
-                  Saved with the agent. Desktop native execution does not
-                  enforce a network sandbox yet.
+                  Native execution does not enforce network restrictions.
                 </small>
               </label>
               <label className="full-width">
                 Sandbox profile
                 <input value="Default (native execution)" disabled />
-                <small>
-                  Custom sandbox profiles are not available in Desktop yet.
-                </small>
+                <small>Custom profiles are unavailable on Desktop.</small>
               </label>
             </div>
             <div className="mcp-editor">
@@ -531,7 +509,7 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
                       .join("\n"),
                   );
                 }}
-                empty="Configure an MCP service in Resources & connections first."
+                empty="Add MCP services in Resources first."
               />
               {!!form.mcp_servers.length && (
                 <button
@@ -558,15 +536,15 @@ export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
                     : "Select MCP services first"
                 }
                 disabled={!form.mcp_servers.length}
-                empty="Inspect selected MCP services to load their tools."
+                empty={
+                  form.mcp_servers.length
+                    ? "Inspect services to load tools."
+                    : ""
+                }
               />
             </div>
           </section>
 
-          <p className="credential-help">
-            Save an API key under Resources & connections → Provider settings.
-            The key is never stored in the agent configuration.
-          </p>
           {error && (
             <p className="form-error" role="alert">
               {error}
