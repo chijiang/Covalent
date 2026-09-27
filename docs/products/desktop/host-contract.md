@@ -1,17 +1,17 @@
 # Desktop 宿主与服务契约
 
-状态：状态/重启、Agent/Provider/MCP/Skill 定义、会话、问答恢复和文件保存 bridge 已实现；流式事件与取消仍是后续约定。
+状态：状态/重启、Agent/Provider/MCP/Skill 定义、会话、问答恢复和文件保存 bridge 已实现；正文/思考流式事件与断连取消已接通。
 
 ## 调用路径
 
 React → preload 的有限 typed bridge → Electron main → 本地 Python API → application → Runtime。
 窗口生命周期、文件选择和系统凭据等 OS 操作在 main 完成；Agent 执行在 Python 完成。
-main 代理固定的本地 HTTP 路径，使 token 和 sidecar 地址不进入 renderer；当前提供状态、Agent 定义、会话与非流式对话，后续保持公共事件 payload 语义。
+main 代理固定的本地 HTTP 路径，使 token 和 sidecar 地址不进入 renderer；当前提供状态、Agent 定义、会话与流式对话，保留 Runtime 事件名称和 payload 语义。
 握手已有运行时校验；后续每个业务 bridge 也要校验参数，不能仅依赖 TypeScript。
 
 Python sidecar 仅绑定 `127.0.0.1` 的系统分配端口。main 生成每次启动 256-bit 随机 token，通过只传给子进程的环境变量传入，
 不通过命令行参数、日志、renderer 或固定配置文件暴露。sidecar 在 stdout 写一条 JSON ready 消息，业务日志写 stderr。
-握手上限 16 KiB、启动超时 15 秒、健康检查超时 3 秒；当前协议版本为 3，报告 service 版本、PID 与能力。
+握手上限 16 KiB、启动超时 15 秒、健康检查超时 3 秒；当前协议版本为 4，报告 service 版本、PID 与能力。
 
 启动状态：stopped → starting → ready → stopping → stopped；异常进入 failed。
 main 在握手成功、版本兼容和就绪探测完成前不开放业务请求。握手超时清理整个子进程树并展示可诊断错误。
@@ -19,8 +19,8 @@ main 在握手成功、版本兼容和就绪探测完成前不开放业务请求
 
 ## Bridge 能力范围
 
-当前提供查询 service 状态、订阅状态变化、重启、Agent/Provider/MCP/Skill 管理、读取 Provider 模型目录、查询本地可用 Skills/Tools/Capabilities、读取会话、发送与恢复消息、ZIP 文件选择与生成文件保存。Provider 密钥和 MCP 环境变量由 Electron 加密保存。订阅执行事件和取消仍待实现。
-不提供任意 fetch URL、任意 IPC channel、任意进程执行方法。每条订阅绑定窗口与 run_id，窗口销毁后清理订阅。
+当前提供查询 service 状态、订阅状态变化、重启、Agent/Provider/MCP/Skill 管理、读取 Provider 模型目录、查询本地可用 Skills/Tools/Capabilities、读取会话、发送与恢复消息、ZIP 文件选择与生成文件保存。Provider 密钥和 MCP 环境变量由 Electron 加密保存。`streamMessage` 和 `cancelMessage` 提供当前窗口的输出订阅与取消，原非流式 `sendMessage` 保持兼容。
+不提供任意 fetch URL、任意 IPC channel、任意进程执行方法。每条订阅绑定窗口、preload 生成的唯一 stream ID 和递增序号，窗口销毁、导航或 renderer 崩溃时取消并清理。
 采用 contextIsolation、renderer sandbox、关闭 nodeIntegration，并验证 IPC sender 和导航来源。
 不在有宿主权限的窗口加载任意远程网页；外部链接经允许的系统浏览器路径打开。
 
@@ -40,3 +40,11 @@ sidecar 的服务鉴权独立于模板权限；loopback 地址不等于已授权
 
 服务握手与发布清单报告 Desktop/service、Runtime、Contracts 版本和能力。
 首版安装包将 shell/UI/service 作为一致版本整体交付；检测到不兼容的残留 service 时拒绝连接，提示修复安装。
+
+## Streaming limits and lifecycle
+
+- `POST /messages/stream` is authenticated and fixed by main; credentials never enter the renderer. Only assistant, assistant_delta, reasoning_delta and delegate_reasoning_delta are forwarded. `complete` follows persisted transcript, pending input and suggestions; errors are redacted. EOF without completion is a failure, never an automatic retry.
+- HTTP frame/parser limit: 4 MiB. Renderer live text plus reasoning: 2 Mi characters. IPC permits one outstanding frame, acknowledged by the same window, stream ID and sequence; a 5-second acknowledgement timeout aborts the request. Runs have a 10-minute deadline.
+- A 500ms heartbeat detects disconnects during silent model/tool calls; socket writes time out after 5 seconds. Disconnect cancels the asyncio task, closes the runtime generator and registry, and releases the run lock. Cancellation cannot undo completed tool side effects. Durable replay/reconnection is not implemented.
+- Desktop executes one run at a time. Concurrent requests fail immediately instead of queuing. A new request can briefly encounter a busy run while cancellation cleanup is in progress.
+- React batches updates per animation frame, deduplicates assistant output by iteration and preserves delegated reasoning attribution. Completion replaces temporary text with the persisted transcript. Charts render after completion; execution traces retain low-frequency polling.

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from collections.abc import Callable
+from contextlib import aclosing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -81,6 +83,7 @@ def _read_preview_text(path: Path) -> str | None:
     if len(raw) > _SKILL_PREVIEW_MAX_BYTES:
         return f"{content}\n\n... truncated ...\n"
     return content
+
 
 # Title generation is a single cheap call, mirroring Enterprise's limits.
 TITLE_MAX_TOKENS = 24
@@ -513,6 +516,15 @@ class DesktopWorkspace:
         self.store.set_title(session_id, cleaned)
         return {"id": session_id, "title": cleaned}
 
+    @contextmanager
+    def _exclusive_run(self):
+        if not self._run_lock.acquire(blocking=False):
+            raise WorkspaceError("run_busy", "An Agent is already running", 409)
+        try:
+            yield
+        finally:
+            self._run_lock.release()
+
     async def send_message(
         self,
         agent_name: str,
@@ -523,6 +535,7 @@ class DesktopWorkspace:
         mcp_env: dict[str, dict[str, str]] | None = None,
         resume_answers: dict[str, object] | None = None,
         edit_user_index: int | None = None,
+        on_event: Callable[[dict[str, object]], None] | None = None,
     ) -> dict[str, object]:
         raw_definition = self.store.get_agent(agent_name)
         if raw_definition is None:
@@ -549,7 +562,7 @@ class DesktopWorkspace:
             )
         provider_keys = provider_keys or {}
         mcp_env = mcp_env or {}
-        with self._run_lock:
+        with self._exclusive_run():
             created = session_id is None
             if session_id:
                 session = self.get_session(session_id)
@@ -592,6 +605,7 @@ class DesktopWorkspace:
                     "no_pending_input", "No pending Agent question", 409
                 )
             registry = self.registry_factory()
+            turn: int | None = None
             try:
                 candidates = {
                     candidate.name: candidate
@@ -685,46 +699,63 @@ class DesktopWorkspace:
                 live_reasoning = ""
                 reasoning_source = ""
                 reasoning_flushed_at = 0.0
-                async for event in runtime.stream_events(
+                events = runtime.stream_events(
                     agent,
                     "" if resume_answers is not None else message,
                     RunContext(
                         agent_name=agent_name, session_id=session_id, metadata=metadata
                     ),
-                ):
-                    event_name = event["event"]
-                    if is_trace_event(event_name):
-                        self.store.append_activity(
-                            session_id,
-                            [activity_item(event_name, event["payload"], turn)],
-                        )
-                    if event_name in REASONING_DELTA_EVENTS:
-                        payload = event["payload"]
-                        text = payload.get("text") if isinstance(payload, dict) else ""
-                        if isinstance(text, str) and text:
-                            source = (
-                                str(payload.get("agent_name") or "")
-                                if event_name.startswith("delegate_")
-                                else ""
+                )
+                async with aclosing(events):
+                    async for event in events:
+                        event_name = event["event"]
+                        if on_event is not None and event_name in {
+                            "assistant_delta",
+                            "assistant",
+                            "reasoning_delta",
+                            "delegate_reasoning_delta",
+                        }:
+                            on_event({"event": event_name, "payload": event["payload"]})
+                        if is_trace_event(event_name):
+                            self.store.append_activity(
+                                session_id,
+                                [activity_item(event_name, event["payload"], turn)],
                             )
-                            if source != reasoning_source:
-                                reasoning_source = source
-                                live_reasoning += reasoning_source_marker(source)
-                            live_reasoning += text
-                            now = perf_counter()
-                            if now - reasoning_flushed_at >= (
-                                REASONING_FLUSH_INTERVAL_SECONDS
-                            ):
-                                reasoning_flushed_at = now
-                                self.store.set_live_reasoning(
-                                    session_id, live_reasoning
+                        if event_name in REASONING_DELTA_EVENTS:
+                            payload = event["payload"]
+                            text = (
+                                payload.get("text") if isinstance(payload, dict) else ""
+                            )
+                            if isinstance(text, str) and text:
+                                source = (
+                                    str(payload.get("agent_name") or "")
+                                    if event_name.startswith("delegate_")
+                                    else ""
                                 )
-                    if event_name == "final":
-                        response = GenerationResponse.model_validate(event["payload"])
-                    elif event_name == "input_required":
-                        pending = event["payload"]
+                                if source != reasoning_source:
+                                    reasoning_source = source
+                                    live_reasoning += reasoning_source_marker(source)
+                                live_reasoning += text
+                                now = perf_counter()
+                                if now - reasoning_flushed_at >= (
+                                    REASONING_FLUSH_INTERVAL_SECONDS
+                                ):
+                                    reasoning_flushed_at = now
+                                    self.store.set_live_reasoning(
+                                        session_id, live_reasoning
+                                    )
+                        if event_name == "final":
+                            response = GenerationResponse.model_validate(
+                                event["payload"]
+                            )
+                        elif event_name == "input_required":
+                            pending = event["payload"]
                 if response is None and pending is None:
                     raise RuntimeError("Runtime completed without a final response")
+                self.store.set_pending_input(session_id, pending)
+                self.store.set_suggestions(
+                    session_id, response.suggestions if response else []
+                )
                 if user_ordinal == 1:
                     # Name the conversation from its first message, like
                     # Enterprise. Later turns never rename it, so a manual
@@ -749,10 +780,26 @@ class DesktopWorkspace:
                             "Conversation title generation failed", exc_info=True
                         )
                     self.store.set_title(session_id, title)
-                self.store.set_pending_input(session_id, pending)
-                self.store.set_suggestions(
-                    session_id, response.suggestions if response else []
-                )
+            except (
+                asyncio.CancelledError,
+                BrokenPipeError,
+                ConnectionResetError,
+                TimeoutError,
+            ):
+                if session_id is not None and turn is not None:
+                    self.store.append_activity(
+                        session_id,
+                        [
+                            activity_item(
+                                "error",
+                                {
+                                    "message": "Run interrupted; completed tool actions may still have taken effect."
+                                },
+                                turn,
+                            )
+                        ],
+                    )
+                raise
             except Exception:
                 if created and session_id is not None:
                     self.store.delete_session(session_id)

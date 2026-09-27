@@ -487,52 +487,95 @@ function registerIpc(): void {
       return supervisor.request(`/sessions/${id}`, "PATCH", { pinned });
     },
   );
-  ipcMain.handle("desktop:send-message", async (event, value: unknown) => {
+  const activeStreams = new Map<number, AbortController>();
+  ipcMain.handle("desktop:cancel-message", (event) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted Desktop IPC sender");
+    activeStreams.get(event.sender.id)?.abort();
+  });
+  ipcMain.handle("desktop:send-message", async (event, value: unknown, streamId?: string) => {
     if (!isTrustedSender(event))
       throw new Error("Untrusted Desktop IPC sender");
     if (!isChatRequest(value)) throw new Error("Invalid message request");
-    const providers = (await supervisor.request("/providers")) as {
-      items: ProviderDefinition[];
-    };
-    const agents = (await supervisor.request("/agents")) as {
-      items: AgentDefinition[];
-    };
-    const agentsByName = new Map(
-      agents.items.map((agent) => [agent.name, agent]),
-    );
-    const providerNames = new Set<string>();
-    const mcpNames = new Set<string>();
-    const visited = new Set<string>();
-    const pending = [value.agent_name];
-    while (pending.length) {
-      const name = pending.pop()!;
-      if (visited.has(name)) continue;
-      visited.add(name);
-      const agent = agentsByName.get(name);
-      if (!agent) continue;
-      providerNames.add(agent.provider_name);
-      agent.mcp_servers.forEach((item) => mcpNames.add(item));
-      pending.push(...agent.delegate_agents);
-    }
-    const providerKeys: Record<string, string> = {};
-    const mcpEnv: Record<string, Record<string, string>> = {};
-    for (const name of mcpNames) {
-      const env = await getMcpEnv(name);
-      if (env) mcpEnv[name] = env;
-    }
-    for (const provider of providers.items) {
-      if (!providerNames.has(provider.name)) continue;
-      const key = await getProviderKey(
-        provider.name,
-        provider.legacy_credential,
+    if (streamId !== undefined && !/^[a-f0-9-]{36}$/.test(streamId)) throw new Error("Invalid stream ID");
+    if (activeStreams.has(event.sender.id)) throw new Error("An Agent is already running");
+    const controller = new AbortController();
+    activeStreams.set(event.sender.id, controller);
+    const abort = () => controller.abort();
+    event.sender.once("destroyed", abort);
+    event.sender.once("render-process-gone", abort);
+    event.sender.once("did-start-navigation", abort);
+    const deadline = setTimeout(abort, 10 * 60_000);
+    try {
+      const providers = (await supervisor.request("/providers")) as {
+        items: ProviderDefinition[];
+      };
+      const agents = (await supervisor.request("/agents")) as {
+        items: AgentDefinition[];
+      };
+      const agentsByName = new Map(
+        agents.items.map((agent) => [agent.name, agent]),
       );
-      if (key) providerKeys[provider.name] = key;
+      const providerNames = new Set<string>();
+      const mcpNames = new Set<string>();
+      const visited = new Set<string>();
+      const pending = [value.agent_name];
+      while (pending.length) {
+        const name = pending.pop()!;
+        if (visited.has(name)) continue;
+        visited.add(name);
+        const agent = agentsByName.get(name);
+        if (!agent) continue;
+        providerNames.add(agent.provider_name);
+        agent.mcp_servers.forEach((item) => mcpNames.add(item));
+        pending.push(...agent.delegate_agents);
+      }
+      const providerKeys: Record<string, string> = {};
+      const mcpEnv: Record<string, Record<string, string>> = {};
+      for (const name of mcpNames) {
+        const env = await getMcpEnv(name);
+        if (env) mcpEnv[name] = env;
+      }
+      for (const provider of providers.items) {
+        if (!providerNames.has(provider.name)) continue;
+        const key = await getProviderKey(
+          provider.name,
+          provider.legacy_credential,
+        );
+        if (key) providerKeys[provider.name] = key;
+      }
+      controller.signal.throwIfAborted();
+      const body = { ...value, provider_keys: providerKeys, mcp_env: mcpEnv };
+      if (!streamId) return await supervisor.request("/messages", "POST", body);
+      let sequence = 0;
+      return await supervisor.streamMessage(body, controller.signal, async (chunk) => {
+        controller.signal.throwIfAborted();
+        const seq = ++sequence;
+        // One outstanding IPC frame: acknowledgement gives bounded backpressure.
+        await new Promise<void>((resolve, reject) => {
+          const cleanup = () => {
+            clearTimeout(timer);
+            ipcMain.removeListener("desktop:stream-ack", ack);
+            controller.signal.removeEventListener("abort", cancelled);
+          };
+          const cancelled = () => { cleanup(); reject(new Error("Agent stream cancelled")); };
+          const ack = (reply: Electron.IpcMainEvent, id: unknown, number: unknown) => {
+            if (reply.sender !== event.sender || id !== streamId || number !== seq) return;
+            cleanup(); resolve();
+          };
+          const timer = setTimeout(() => { cleanup(); controller.abort(); reject(new Error("Stream consumer timed out")); }, 5000);
+          ipcMain.on("desktop:stream-ack", ack);
+          controller.signal.addEventListener("abort", cancelled, { once: true });
+          event.sender.send("desktop:message-event", streamId, seq, chunk);
+        });
+      });
+    } finally {
+      clearTimeout(deadline);
+      controller.abort();
+      activeStreams.delete(event.sender.id);
+      event.sender.removeListener("destroyed", abort);
+      event.sender.removeListener("render-process-gone", abort);
+      event.sender.removeListener("did-start-navigation", abort);
     }
-    return supervisor.request("/messages", "POST", {
-      ...value,
-      provider_keys: providerKeys,
-      mcp_env: mcpEnv,
-    });
   });
 }
 

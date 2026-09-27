@@ -1,4 +1,4 @@
-export const DESKTOP_PROTOCOL_VERSION = 3;
+export const DESKTOP_PROTOCOL_VERSION = 4;
 
 export type ServicePhase =
   | "stopped"
@@ -176,4 +176,9 @@ function isPositiveInteger(value: unknown): value is number {
 
 function isPort(value: unknown): value is number {
   return isPositiveInteger(value) && value <= 65535;
+}
+
+export interface MessageStreamEvent {
+  event: string;
+  payload?: Record<string, unknown>;
 }

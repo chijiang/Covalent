@@ -36,6 +36,8 @@ import {
   type PublishedFile,
 } from "./transcript";
 
+import { applyStreamEvent, emptyStream } from "./stream-state";
+
 const TRACE_POLL_INTERVAL_MS = 1500;
 
 function formatFileSize(bytes: number): string {
@@ -261,6 +263,55 @@ export function ChatWorkspace({
   const isFelinesCommand = draft.trim().toLowerCase() === "le chat";
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const [streamOutput, setStreamOutput] = useState(emptyStream);
+  const runningRef = useRef(false);
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const followOutputRef = useRef(true);
+  useLayoutEffect(() => {
+    const list = messageListRef.current;
+    if (list && followOutputRef.current) list.scrollTop = list.scrollHeight;
+  }, [streamOutput, session?.messages, busy]);
+
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (runningRef.current) void window.covalentDesktop.cancelMessage().catch(() => {});
+    };
+  }, []);
+
+  async function sendStreaming(value: Parameters<typeof window.covalentDesktop.streamMessage>[0]) {
+    if (!mountedRef.current) throw new Error("Chat workspace closed");
+    let output = emptyStream();
+    let frame = 0;
+    runningRef.current = true;
+    setStreamOutput(output);
+    try {
+      return await window.covalentDesktop.streamMessage(value, (event) => {
+        if (!mountedRef.current) return;
+        output = applyStreamEvent(output, event);
+        if (!frame) frame = requestAnimationFrame(() => {
+          frame = 0;
+          if (mountedRef.current) setStreamOutput(output);
+        });
+      });
+    } catch (cause) {
+      runningRef.current = false;
+      // Failed edits/runs may already have persisted changes. Never restore a
+      // stale pre-run transcript or automatically retry tool side effects.
+      if (value.session_id && mountedRef.current) {
+        try { setSession(await window.covalentDesktop.getSession(value.session_id)); }
+        catch { /* Keep the last visible state if the service is unavailable. */ }
+      }
+      throw cause;
+    } finally {
+      runningRef.current = false;
+      cancelAnimationFrame(frame);
+      if (mountedRef.current) setStreamOutput(output);
+    }
+  }
+
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [conversationsVisible, setConversationsVisible] = useState(true);
@@ -299,9 +350,11 @@ export function ChatWorkspace({
   }, [status.phase]);
 
   async function openSession(id: string) {
+    if (busy) return;
     try {
       setError("");
       const value = await window.covalentDesktop.getSession(id);
+      followOutputRef.current = true;
       setSession(value);
       setAnswers({});
       setRenamingTitle(false);
@@ -332,7 +385,9 @@ export function ChatWorkspace({
       busy
     )
       return;
+    followOutputRef.current = true;
     setBusy(true);
+    setStreamOutput(emptyStream());
     setError("");
     setDraft("");
     const previous = session;
@@ -344,6 +399,7 @@ export function ChatWorkspace({
         ? previous.id
         : (await window.covalentDesktop.createConversation(agentName, title))
             .session_id;
+      if (!mountedRef.current) return;
       setSession({
         id: sessionId,
         agent_name: agentName,
@@ -356,7 +412,7 @@ export function ChatWorkspace({
         ],
         activity: previous?.activity || [],
       });
-      const result = await window.covalentDesktop.sendMessage({
+      const result = await sendStreaming({
         agent_name: agentName,
         message,
         session_id: sessionId,
@@ -369,7 +425,6 @@ export function ChatWorkspace({
       setSessions(recent.items);
     } catch (cause) {
       setError(String(cause));
-      setSession(previous);
       setDraft(message);
     } finally {
       setBusy(false);
@@ -386,10 +441,12 @@ export function ChatWorkspace({
       setError("Answer each question before continuing.");
       return;
     }
+    followOutputRef.current = true;
     setBusy(true);
+    setStreamOutput(emptyStream());
     setError("");
     try {
-      const result = await window.covalentDesktop.sendMessage({
+      const result = await sendStreaming({
         agent_name: session.agent_name,
         session_id: session.id,
         message: "",
@@ -417,33 +474,29 @@ export function ChatWorkspace({
     [session?.id],
   );
 
-  // Trace entries are written by the service as the run streams, so polling is
-  // enough to follow a running turn without a streaming transport.
+  // Poll only persisted trace metadata. Text comes from the live stream; a
+  // late poll must never overwrite the authoritative completion snapshot.
   const polledSessionId = session?.id ?? null;
   useEffect(() => {
     if (!busy || !polledSessionId) return;
     let active = true;
+    let pending = false;
     const timer = window.setInterval(() => {
+      if (pending || !runningRef.current) return;
+      pending = true;
       window.covalentDesktop
         .getSession(polledSessionId)
         .then((polled) => {
-          if (!active) return;
+          if (!active || !runningRef.current) return;
           setSession((current) => {
             if (!current || current.id !== polledSessionId) return current;
-            // The runtime persists the transcript only once the run ends, so a
-            // mid-run poll would otherwise drop the optimistic user message.
-            return {
-              ...polled,
-              messages:
-                polled.messages.length >= current.messages.length
-                  ? polled.messages
-                  : current.messages,
-            };
+            return { ...current, activity: polled.activity, turn_meta: polled.turn_meta };
           });
         })
         .catch(() => {
           /* Transient poll failures recover on the next tick. */
-        });
+        })
+        .finally(() => { pending = false; });
     }, TRACE_POLL_INTERVAL_MS);
     return () => {
       active = false;
@@ -500,7 +553,9 @@ export function ChatWorkspace({
     const previous = session;
     const target = displayMessages.find((item) => item.key === editingKey);
     if (!draft || !previous || !target?.userOrdinal || busy) return;
+    followOutputRef.current = true;
     setBusy(true);
+    setStreamOutput(emptyStream());
     setError("");
     setEditingKey(null);
     setSession({
@@ -519,7 +574,7 @@ export function ChatWorkspace({
       suggestions: [],
     });
     try {
-      const result = await window.covalentDesktop.sendMessage({
+      const result = await sendStreaming({
         agent_name: previous.agent_name,
         message: draft,
         session_id: previous.id,
@@ -533,7 +588,6 @@ export function ChatWorkspace({
       setSessions(recent.items);
     } catch (cause) {
       setError(String(cause));
-      setSession(previous);
       setEditingKey(target.key);
       setEditingDraft(draft);
     } finally {
@@ -654,9 +708,10 @@ export function ChatWorkspace({
     }
   }
 
-  const liveReasoning = busy ? (session?.live_reasoning ?? "") : "";
+  const liveReasoning = busy ? streamOutput.reasoning : "";
 
   function startNewConversation() {
+    if (busy) return;
     setSession(null);
     setAnswers({});
     setError("");
@@ -681,6 +736,7 @@ export function ChatWorkspace({
             type="button"
             aria-label="New conversation"
             title="New conversation"
+            disabled={busy}
             onClick={startNewConversation}
           >
             <Plus size={16} />
@@ -742,6 +798,7 @@ export function ChatWorkspace({
                     <button
                       type="button"
                       className="session-open"
+                      disabled={busy}
                       onClick={() => openSession(item.id)}
                     >
                       <MessageSquare size={15} />
@@ -887,7 +944,8 @@ export function ChatWorkspace({
               type="button"
               aria-label="New conversation"
               title="New conversation"
-              onClick={startNewConversation}
+              disabled={busy}
+            onClick={startNewConversation}
             >
               <Plus size={16} />
             </button>
@@ -923,7 +981,10 @@ export function ChatWorkspace({
             </button>
           </div>
         </div>
-        <div className="message-list">
+        <div className="message-list" ref={messageListRef} onScroll={(event) => {
+          const list = event.currentTarget;
+          followOutputRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 64;
+        }}>
           {displayMessages.length ? (
             displayMessages.map((message) => {
               const isUser = message.role === "user";
@@ -1047,7 +1108,14 @@ export function ChatWorkspace({
               </div>
             </div>
           ) : null}
-          {busy && !liveReasoning ? <ThinkingIndicator /> : null}
+          {busy && streamOutput.text ? (
+            <div className="chat-message assistant">
+              <span className="message-role">{agentName}</span>
+              <MarkdownContent content={streamOutput.text} enableCharts={false}
+                onDownload={saveDownload} onOpenExternal={openExternal} tone="inbound" />
+            </div>
+          ) : null}
+          {busy && !liveReasoning && !streamOutput.text ? <ThinkingIndicator /> : null}
         </div>
         {!!session?.suggestions?.length && (
           <div className="suggested-questions">

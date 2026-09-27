@@ -161,7 +161,7 @@ function RuntimeWorkspace({
             Window startup, authentication, health checks, and service restart
             are connected. Agent creation, model credentials, local chat,
             execution traces, Markdown rendering, message editing and file
-            downloads are available. Token streaming and templates are in
+            downloads and live token streaming are available. Templates are in
             development.
           </p>
         </div>

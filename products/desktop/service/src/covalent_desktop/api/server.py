@@ -59,9 +59,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             payload = {"items": server.workspace.list_skills()}
         elif self.path.startswith("/skill-preview/") and self.path.count("/") == 2:
             try:
-                payload = server.workspace.preview_skill(
-                    self.path.split("/")[2]
-                )
+                payload = server.workspace.preview_skill(self.path.split("/")[2])
             except WorkspaceError as error:
                 self._write_json(
                     HTTPStatus(error.status),
@@ -111,6 +109,7 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         if self.path not in (
             "/agents",
             "/messages",
+            "/messages/stream",
             "/sessions",
             "/providers",
             "/provider-models",
@@ -207,6 +206,11 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                     or edit_user_index < 1
                 ):
                     raise ValueError("Invalid edited message index")
+                if self.path == "/messages/stream":
+                    self._stream_message(
+                        workspace, data, keys, answers, edit_user_index
+                    )
+                    return
                 payload = asyncio.run(
                     workspace.send_message(
                         str(data.get("agent_name", "")),
@@ -262,6 +266,72 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             )
             return
         self._write_json(HTTPStatus.OK, payload)
+
+    def _stream_message(self, workspace, data, keys, answers, edit_user_index):
+        # A dedicated request owns the run. No unbounded event queue or replay.
+        self.connection.settimeout(5)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        def emit(event):
+            frame = (json.dumps(event, ensure_ascii=True) + "\n").encode()
+            if len(frame) > 4 * 1024 * 1024:
+                raise ValueError("Stream event exceeds size limit")
+            self.wfile.write(frame)
+            self.wfile.flush()
+
+        async def run():
+            task = asyncio.create_task(
+                workspace.send_message(
+                    str(data.get("agent_name", "")),
+                    str(data.get("message", "")),
+                    str(data["session_id"]) if data.get("session_id") else None,
+                    provider_keys=keys,
+                    mcp_env=data.get("mcp_env"),
+                    resume_answers=answers,
+                    edit_user_index=edit_user_index,
+                    on_event=emit,
+                )
+            )
+            try:
+                while not task.done():
+                    await asyncio.wait({task}, timeout=0.5)
+                    if not task.done():
+                        # Detect disconnected consumers even during silent model/tool work.
+                        emit({"event": "heartbeat"})
+                result = await task
+                # Only report completion after transcript and pending input are saved.
+                emit(
+                    {
+                        "event": "complete",
+                        "payload": {"session_id": result["session_id"]},
+                    }
+                )
+            except (OSError, ConnectionError):
+                pass
+            except Exception:
+                LOGGER.exception("Desktop stream failed")
+                try:
+                    emit(
+                        {
+                            "event": "error",
+                            "payload": {
+                                "message": "Agent stream failed; inspect the conversation before retrying."
+                            },
+                        }
+                    )
+                except OSError:
+                    pass
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        asyncio.run(run())
 
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         if not self._is_authorized():

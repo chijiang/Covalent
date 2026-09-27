@@ -194,6 +194,11 @@ interface Window {
       resume_answers?: Record<string, string>;
       edit_user_index?: number;
     }): Promise<DesktopChatResult>;
+    streamMessage(value: {
+      agent_name: string; message: string; session_id?: string;
+      resume_answers?: Record<string, string>; edit_user_index?: number;
+    }, listener: (event: { event: string; payload: Record<string, unknown> }) => void): Promise<{ session_id: string }>;
+    cancelMessage(): Promise<void>;
     onServiceStatus(
       listener: (status: DesktopServiceStatus) => void,
     ): () => void;

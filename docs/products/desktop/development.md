@@ -1,6 +1,6 @@
 # Desktop 开发指南
 
-状态：本地开发链路、Provider/Agent/MCP/Skill 配置和本地对话已接入共享 Runtime。流式事件、取消、冻结 sidecar、双平台安装与签名仍待实现。技术选择见 [ADR 0001](../../adr/0001-desktop-stack.md)。
+状态：本地开发链路、Provider/Agent/MCP/Skill 配置和本地对话已接入共享 Runtime。实时正文/思考与断连取消已接通；冻结 sidecar、双平台安装与签名仍待实现。技术选择见 [ADR 0001](../../adr/0001-desktop-stack.md)。
 
 ## 产品与边界
 
@@ -66,7 +66,7 @@ Python API 处理 health、鉴权、Agent/会话的 JSON 映射；application �
 | D5 | 版本化模板、导入预检、环境绑定、导出 | Desktop → Lite/Enterprise 可验证转换；缺能力失败且不改现有配置 |
 | D6 | 签名、安装/升级、发布清单与兼容矩阵 | 完成 packaging/README 中两个平台的发行验收 |
 
-D1a 已加入 Electron/React/Vite 依赖和双平台源码 CI；D1b 才加入 Python/Electron 打包器。基础对话已装配 agent-kit；D2 的 SSE/取消仍待实现。
+D1a 已加入 Electron/React/Vite 依赖和双平台源码 CI；D1b 才加入 Python/Electron 打包器。基础对话已装配 agent-kit；D2 已接入 HTTP NDJSON 增量和断连取消，完整三产品语义一致性仍待验收。
 agent-kit 当前传递依赖 MCP/native execution；不要宣称这些已成为可选安装项。
 普通单测使用假模型/工具；真实模型 smoke 使用环境凭据，不成为离线测试前提。
 Desktop 已有独立 macOS/Windows CI job，运行 service/边界测试、TypeScript 检查和生产构建。打包测试仍必须跑实际目标 OS，不能用源码导入替代。
@@ -85,4 +85,4 @@ Desktop 聊天输入独立口令 `le chat` 并发送后启用 Felines 模式（�
 
 页面和资源子页使用 180ms 淡入/轻微位移，列表卡片的选中、悬停状态使用颜色与边框过渡。
 动效仅在系统未开启“减少动态效果”时启用；不通过重建表单或聊天组件触发动效，也不对每次轮询更新的文本重复播放动画。
-当前聊天仍通过 1500ms 会话轮询更新执行轨迹和 `live_reasoning`，正文在调用完成后读取；这不是 token SSE 流式输出。真正的流式体验仍需接通 service → Electron main → preload → renderer 的执行事件链路。
+正文和思考通过 `/messages/stream` HTTP NDJSON → Electron main → preload → renderer 实时传递，React 按帧合并更新。1500ms 轮询仅刷新执行轨迹，结束后读取持久化会话。发送、编辑重跑和问答恢复共用同一流式路径；运行期间暂不允许切换会话，离开聊天工作区会断开并取消运行。
