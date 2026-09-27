@@ -245,12 +245,20 @@ function SessionActionsMenu({
   );
 }
 
-export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
+export function ChatWorkspace({
+  status,
+  onEnterFelines,
+}: {
+  status: DesktopServiceStatus;
+  onEnterFelines: () => void;
+}) {
   const [agents, setAgents] = useState<DesktopAgent[]>([]);
   const [sessions, setSessions] = useState<DesktopSessionSummary[]>([]);
   const [agentName, setAgentName] = useState("");
   const [session, setSession] = useState<DesktopSession | null>(null);
   const [draft, setDraft] = useState("");
+  const [felinesNotice, setFelinesNotice] = useState("");
+  const isFelinesCommand = draft.trim().toLowerCase() === "le chat";
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -306,8 +314,19 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
 
   async function send() {
     const message = draft.trim();
+    // A standalone local command: never create a conversation or invoke an agent.
+    if (message.toLowerCase() === "le chat") {
+      onEnterFelines();
+      setDraft("");
+      setFelinesNotice(
+        "Meow. Felines mode is on — use the cat in the top bar to leave.",
+      );
+      return;
+    }
     if (
       !message ||
+      status.phase !== "ready" ||
+      Boolean(session?.input_request) ||
       !agentName ||
       !agents.some((agent) => agent.name === agentName) ||
       busy
@@ -1096,6 +1115,11 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
             {error}
           </p>
         )}
+        {felinesNotice && (
+          <p className="felines-notice" role="status">
+            {felinesNotice}
+          </p>
+        )}
         <div className="composer">
           <textarea
             aria-label="Message"
@@ -1105,29 +1129,33 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
                 : "Create or activate a chat agent first"
             }
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            disabled={busy || Boolean(session?.input_request)}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setFelinesNotice("");
+            }}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing
+              ) {
                 event.preventDefault();
                 void send();
               }
             }}
-            disabled={
-              !agents.some((agent) => agent.name === agentName) ||
-              status.phase !== "ready" ||
-              Boolean(session?.input_request) ||
-              busy
-            }
           />
           <button
             type="button"
             onClick={() => void send()}
             disabled={
               !draft.trim() ||
-              !agents.some((agent) => agent.name === agentName) ||
-              status.phase !== "ready" ||
-              Boolean(session?.input_request) ||
-              busy
+              (!isFelinesCommand && (
+                !agents.some((agent) => agent.name === agentName) ||
+                status.phase !== "ready" ||
+                Boolean(session?.input_request) ||
+                busy
+              ))
             }
             aria-label="Send message"
           >

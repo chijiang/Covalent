@@ -76,3 +76,7 @@ Desktop 已有独立 macOS/Windows CI job，运行 service/边界测试、TypeSc
 一个变更同时更新实现、相邻契约、受影响消费者和状态文档。
 共享 Runtime 变更运行各产品已有一致性测试；尚未实现的消费者标为未覆盖。
 本地 Electron smoke、wheel 导入和安装包验收是不同门禁；当前前两项可执行，不声称安装包或 Agent 功能已经交付。
+
+## 隐藏外观彩蛋
+
+Desktop 聊天输入独立口令 `le chat` 并发送后启用 Felines 模式（忽略首尾空格与大小写）。口令仅在 renderer 消费，不创建会话或调用模型。图标猫耳、气泡尾巴和主要按钮爪印适配深浅主题，跨页面保留；外观偏好保存于本机 localStorage，点击顶栏猫咪按钮退出。无需配置 Agent 即可触发。
