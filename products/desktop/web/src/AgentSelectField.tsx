@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, Search } from "lucide-react";
+import { Check, ChevronDown, RefreshCw, Search } from "lucide-react";
 
 type Option = { value: string; label: string };
 
@@ -191,6 +191,12 @@ export function AgentMultiSelectField({
   empty,
   placeholder = "Choose one or more",
   disabled = false,
+  allowCustom = false,
+  searchPlaceholder = "Search options...",
+  onLoad,
+  loading = false,
+  loadDisabled = false,
+  loadDisabledReason,
 }: {
   label: string;
   options: string[];
@@ -199,6 +205,12 @@ export function AgentMultiSelectField({
   empty: string;
   placeholder?: string;
   disabled?: boolean;
+  allowCustom?: boolean;
+  searchPlaceholder?: string;
+  onLoad?: () => void;
+  loading?: boolean;
+  loadDisabled?: boolean;
+  loadDisabledReason?: string;
 }) {
   const menu = useAnchoredMenu();
   const [query, setQuery] = useState("");
@@ -211,6 +223,18 @@ export function AgentMultiSelectField({
   const filtered = available.filter((option) =>
     option.toLowerCase().includes(query.trim().toLowerCase()),
   );
+  const customName = query.trim();
+  const canAddCustom =
+    allowCustom &&
+    customName.length > 0 &&
+    !available.some(
+      (option) => option.toLowerCase() === customName.toLowerCase(),
+    );
+  function addCustom() {
+    if (!canAddCustom) return;
+    onChange([...value, customName]);
+    setQuery("");
+  }
   const chosen = value.slice(0, 2);
   return (
     <div className="agent-select-field">
@@ -264,21 +288,29 @@ export function AgentMultiSelectField({
                 ref={searchRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search options..."
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && canAddCustom) {
+                    event.preventDefault();
+                    addCustom();
+                  }
+                }}
+                placeholder={searchPlaceholder}
                 aria-label={`Search ${label}`}
               />
             </div>
-            <div className="agent-multi-actions">
-              <button
-                type="button"
-                onClick={() => onChange([...new Set([...value, ...options])])}
-              >
-                Select all
-              </button>
-              <button type="button" onClick={() => onChange([])}>
-                Clear
-              </button>
-            </div>
+            {available.length > 0 && (
+              <div className="agent-multi-actions">
+                <button
+                  type="button"
+                  onClick={() => onChange([...new Set([...value, ...options])])}
+                >
+                  Select all
+                </button>
+                <button type="button" onClick={() => onChange([])}>
+                  Clear
+                </button>
+              </div>
+            )}
             <div
               className="agent-select-options"
               role="listbox"
@@ -310,12 +342,39 @@ export function AgentMultiSelectField({
                   </span>
                 </button>
               ))}
-              {!filtered.length && (
+              {canAddCustom && (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected="false"
+                  className="agent-select-option agent-custom-option"
+                  onClick={addCustom}
+                >
+                  Add “{customName}”
+                </button>
+              )}
+              {!filtered.length && !canAddCustom && empty && (
                 <p className="agent-select-empty">
                   {query ? "No matching options" : empty}
                 </p>
               )}
             </div>
+            {onLoad && (
+              <div className="agent-multi-load">
+                <button
+                  type="button"
+                  disabled={loading || loadDisabled}
+                  title={loadDisabled ? loadDisabledReason : undefined}
+                  onClick={onLoad}
+                >
+                  <RefreshCw size={14} aria-hidden="true" />
+                  {loading ? "Loading models…" : "Load models"}
+                </button>
+                {loadDisabled && loadDisabledReason && (
+                  <small>{loadDisabledReason}</small>
+                )}
+              </div>
+            )}
           </div>,
           document.body,
         )}

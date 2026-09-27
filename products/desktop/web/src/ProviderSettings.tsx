@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import { AgentSelectField } from "./AgentSelectField";
+import { AgentMultiSelectField, AgentSelectField } from "./AgentSelectField";
 
 const emptyProvider: DesktopProvider = {
   name: "",
@@ -16,7 +16,9 @@ const emptyProvider: DesktopProvider = {
 export function ProviderSettings() {
   const [providers, setProviders] = useState<DesktopProvider[]>([]);
   const [form, setForm] = useState<DesktopProvider>({ ...emptyProvider });
-  const [modelsText, setModelsText] = useState("");
+  const [models, setModels] = useState<string[]>([]);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [customModelSelected, setCustomModelSelected] = useState(false);
   const [key, setKey] = useState("");
   const [isNew, setIsNew] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -26,7 +28,9 @@ export function ProviderSettings() {
 
   function select(provider: DesktopProvider) {
     setForm(provider);
-    setModelsText(provider.models.join("\n"));
+    setModels(provider.models);
+    setModelOptions(provider.models);
+    setCustomModelSelected(false);
     setKey("");
     setIsNew(false);
     setError("");
@@ -35,7 +39,9 @@ export function ProviderSettings() {
 
   function create() {
     setForm({ ...emptyProvider, is_default: providers.length === 0 });
-    setModelsText("");
+    setModels([]);
+    setModelOptions([]);
+    setCustomModelSelected(false);
     setKey("");
     setIsNew(true);
     setError("");
@@ -71,10 +77,6 @@ export function ProviderSettings() {
     setError("");
     setMessage("");
     try {
-      const models = modelsText
-        .split(/\r?\n/)
-        .map((item) => item.trim())
-        .filter(Boolean);
       const saved = await window.covalentDesktop.saveProvider({
         ...form,
         models,
@@ -115,7 +117,8 @@ export function ProviderSettings() {
     setMessage("");
     try {
       const result = await window.covalentDesktop.loadProviderModels(form.name);
-      setModelsText(result.items.join("\n"));
+      setModelOptions(result.items);
+      setModels(result.items);
       setMessage(
         `${result.items.length} models loaded. Save the Provider to keep this list.`,
       );
@@ -125,6 +128,10 @@ export function ProviderSettings() {
       setLoadingModels(false);
     }
   }
+
+  const showCustomModel =
+    customModelSelected ||
+    Boolean(form.default_model && !models.includes(form.default_model));
 
   return (
     <div className="management-layout resource-management-layout">
@@ -206,35 +213,50 @@ export function ProviderSettings() {
                 ]}
                 placeholder="Select API style"
               />
-              <label>
-                Default model
-                <input
-                  value={form.default_model}
-                  onChange={(event) =>
-                    change("default_model", event.target.value)
-                  }
-                  placeholder="gpt-4.1"
+              <div className="provider-model-field">
+                <AgentSelectField
+                  label="Default model"
+                  value={showCustomModel ? "__custom__" : form.default_model}
+                  onChange={(value) => {
+                    const custom = value === "__custom__";
+                    setCustomModelSelected(custom);
+                    change("default_model", custom ? "" : value);
+                  }}
+                  options={[
+                    ...models.map((model) => ({ value: model, label: model })),
+                    { value: "__custom__", label: "Custom model…" },
+                  ]}
+                  placeholder="Select a model…"
                 />
-              </label>
-              <label className="full-width">
-                Available models
-                <textarea
-                  rows={3}
-                  value={modelsText}
-                  onChange={(event) => setModelsText(event.target.value)}
-                  placeholder={"gpt-4.1\ngpt-4.1-mini"}
+                {showCustomModel && (
+                  <input
+                    aria-label="Custom model name"
+                    value={form.default_model}
+                    onChange={(event) =>
+                      change("default_model", event.target.value)
+                    }
+                    placeholder="Enter model name"
+                  />
+                )}
+              </div>
+              <div className="full-width">
+                <AgentMultiSelectField
+                  label="Available models"
+                  options={modelOptions}
+                  value={models}
+                  onChange={(value) => {
+                    setModels(value);
+                    setMessage("");
+                  }}
+                  empty=""
+                  placeholder="Select or add models…"
+                  searchPlaceholder="Search or add a model…"
+                  allowCustom
+                  onLoad={() => void loadModels()}
+                  loading={loadingModels}
+                  loadDisabled={isNew || !form.has_api_key}
+                  loadDisabledReason="Save the provider and API key first."
                 />
-              </label>
-              <div className="full-width resource-field-footer">
-                <small>One model per line.</small>
-                <button
-                  className="secondary-button"
-                  type="button"
-                  disabled={isNew || !form.has_api_key || loadingModels}
-                  onClick={() => void loadModels()}
-                >
-                  {loadingModels ? "Loading models…" : "Load models"}
-                </button>
               </div>
               <label className="full-width provider-default-check">
                 <input
