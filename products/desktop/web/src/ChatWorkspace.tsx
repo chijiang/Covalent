@@ -1,11 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   Check,
+  ListTree,
   MessageSquare,
-  PanelLeftClose,
-  PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
+  MessagesSquare,
+  MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
@@ -57,9 +64,7 @@ function DocumentChip({
     >
       <span className="chat-attachment-topline">
         <strong>{file.name}</strong>
-        <span className="chat-attachment-badge">
-          {file.kind.toUpperCase()}
-        </span>
+        <span className="chat-attachment-badge">{file.kind.toUpperCase()}</span>
       </span>
       <span className="chat-attachment-meta">{formatFileSize(file.size)}</span>
       {file.summary ? (
@@ -80,6 +85,163 @@ function ThinkingIndicator() {
         <span className="chat-thinking-dot" />
       </span>
     </div>
+  );
+}
+
+function SessionActionsMenu({
+  title,
+  pinned,
+  armed,
+  busy,
+  onPin,
+  onRename,
+  onDelete,
+}: {
+  title: string;
+  pinned: boolean;
+  armed: boolean;
+  busy: boolean;
+  onPin: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    function updatePosition() {
+      const anchor = triggerRef.current?.getBoundingClientRect();
+      if (!anchor) return;
+      const menuWidth = 176;
+      const menuHeight = 120;
+      setPosition({
+        left: Math.max(
+          8,
+          Math.min(anchor.right - menuWidth, window.innerWidth - menuWidth - 8),
+        ),
+        top: Math.max(
+          8,
+          anchor.bottom + menuHeight + 8 > window.innerHeight
+            ? anchor.top - menuHeight - 4
+            : anchor.bottom + 4,
+        ),
+      });
+    }
+    function closeOutside(event: PointerEvent) {
+      const target = event.target as Node;
+      if (
+        !triggerRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
+        setOpen(false);
+      }
+    }
+    function closeEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
+    updatePosition();
+    menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeEscape);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeEscape);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="session-action session-more"
+        aria-label={`More actions for ${title}`}
+        title="More actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <MoreHorizontal size={17} />
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="session-action-menu"
+            role="menu"
+            aria-label={`Actions for ${title}`}
+            style={position}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+              event.preventDefault();
+              const buttons = [
+                ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                  "button:not(:disabled)",
+                ),
+              ];
+              const index = buttons.indexOf(
+                document.activeElement as HTMLButtonElement,
+              );
+              buttons[
+                (index +
+                  (event.key === "ArrowDown" ? 1 : -1) +
+                  buttons.length) %
+                  buttons.length
+              ]?.focus();
+            }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => {
+                onPin();
+                setOpen(false);
+              }}
+            >
+              {pinned ? <PinOff size={14} /> : <Pin size={14} />}
+              {pinned ? "Unpin" : "Pin"}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => {
+                onRename();
+                setOpen(false);
+              }}
+            >
+              <Pencil size={14} />
+              Rename
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="is-danger"
+              disabled={busy}
+              onClick={() => {
+                onDelete();
+                if (armed) setOpen(false);
+              }}
+            >
+              {armed ? <Check size={14} /> : <Trash2 size={14} />}
+              {armed ? "Confirm delete" : "Delete"}
+            </button>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
@@ -280,7 +442,8 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
   );
 
   const displayMessages = useMemo(
-    () => buildDisplayMessages(session?.messages ?? [], session?.turn_meta ?? []),
+    () =>
+      buildDisplayMessages(session?.messages ?? [], session?.turn_meta ?? []),
     [session?.messages, session?.turn_meta],
   );
 
@@ -479,179 +642,136 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
       className={`chat-layout ${conversationsVisible ? "" : "conversations-hidden"} ${traceVisible ? "" : "trace-hidden"}`}
       data-loaded={loaded}
     >
-      {conversationsVisible && (
-        <section className="surface conversation-list">
-          <div className="surface-heading">Recent conversations</div>
-          <div className="session-search">
-            <Search size={14} />
-            <input
-              className="session-search-input"
-              aria-label="Search conversations"
-              placeholder="Search conversations"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-            />
-          </div>
-          <div className="session-list">
-            {sessions.length === 0 ? (
-              <div className="list-empty">
-                <MessageSquare size={22} />
-                <strong>No conversations yet</strong>
-                <p>
-                  Your conversation will be saved locally after the first
-                  message.
-                </p>
-              </div>
-            ) : visibleSessions.length === 0 ? (
-              <div className="list-empty">
-                <Search size={22} />
-                <strong>No matching conversations.</strong>
-              </div>
-            ) : (
-              visibleSessions.map((item) => {
-                const isRenaming = renamingItemKey === item.id;
-                const armed = deleteArmKey === item.id;
-                return (
+      <section
+        className="surface conversation-list"
+        aria-hidden={!conversationsVisible}
+        inert={!conversationsVisible}
+      >
+        <div className="surface-heading">Recent conversations</div>
+        <div className="session-search">
+          <Search size={14} />
+          <input
+            className="session-search-input"
+            aria-label="Search conversations"
+            placeholder="Search conversations"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+          />
+        </div>
+        <div className="session-list">
+          {sessions.length === 0 ? (
+            <div className="list-empty">
+              <MessageSquare size={22} />
+              <strong>No conversations yet</strong>
+              <p>
+                Your conversation will be saved locally after the first message.
+              </p>
+            </div>
+          ) : visibleSessions.length === 0 ? (
+            <div className="list-empty">
+              <Search size={22} />
+              <strong>No matching conversations.</strong>
+            </div>
+          ) : (
+            visibleSessions.map((item) => {
+              const isRenaming = renamingItemKey === item.id;
+              const armed = deleteArmKey === item.id;
+              return (
+                <div
+                  className={`session-item ${session?.id === item.id ? "selected" : ""}${item.pinned ? " pinned" : ""}${armed ? " is-armed" : ""}`}
+                  key={item.id}
+                >
+                  {isRenaming ? (
+                    <input
+                      className="session-rename-input"
+                      aria-label="Conversation title"
+                      value={itemRenameDraft}
+                      autoFocus
+                      onChange={(event) =>
+                        setItemRenameDraft(event.target.value)
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void saveItemRename(item);
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelItemRename();
+                        }
+                      }}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="session-open"
+                      onClick={() => openSession(item.id)}
+                    >
+                      <MessageSquare size={15} />
+                      <span className="session-item-body">
+                        <strong className="session-title">
+                          {item.pinned && <Pin size={11} />}
+                          <span className="session-title-text">
+                            {item.title}
+                          </span>
+                        </strong>
+                        <small>{item.agent_name}</small>
+                      </span>
+                    </button>
+                  )}
                   <div
-                    className={`session-item ${session?.id === item.id ? "selected" : ""}${armed ? " is-armed" : ""}`}
-                    key={item.id}
+                    aria-label="Conversation actions"
+                    className={`session-actions${armed ? " is-armed" : ""}`}
+                    role="group"
                   >
                     {isRenaming ? (
-                      <input
-                        className="session-rename-input"
-                        aria-label="Conversation title"
-                        value={itemRenameDraft}
-                        autoFocus
-                        onChange={(event) =>
-                          setItemRenameDraft(event.target.value)
-                        }
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            void saveItemRename(item);
-                          } else if (event.key === "Escape") {
-                            event.preventDefault();
-                            cancelItemRename();
-                          }
-                        }}
-                      />
+                      <>
+                        <button
+                          type="button"
+                          className="session-action is-confirm"
+                          aria-label="Save title"
+                          title="Save title"
+                          disabled={!itemRenameDraft.trim() || busy}
+                          onClick={() => void saveItemRename(item)}
+                        >
+                          <Check size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          className="session-action"
+                          aria-label="Cancel rename"
+                          title="Cancel"
+                          onClick={cancelItemRename}
+                        >
+                          <X size={13} />
+                        </button>
+                      </>
                     ) : (
-                      <button
-                        type="button"
-                        className="session-open"
-                        onClick={() => openSession(item.id)}
-                      >
-                        <MessageSquare size={15} />
-                        <span className="session-item-body">
-                          <strong className="session-title">
-                            {item.pinned && <Pin size={11} />}
-                            <span className="session-title-text">
-                              {item.title}
-                            </span>
-                          </strong>
-                          <small>{item.agent_name}</small>
-                        </span>
-                      </button>
+                      <SessionActionsMenu
+                        title={item.title}
+                        pinned={item.pinned}
+                        armed={armed}
+                        busy={busy}
+                        onPin={() => void toggleSessionPin(item)}
+                        onRename={() => startItemRename(item)}
+                        onDelete={() =>
+                          armed
+                            ? void removeSession(item)
+                            : armSessionDelete(item)
+                        }
+                      />
                     )}
-                    <div
-                      aria-label="Conversation actions"
-                      className={`session-actions${armed ? " is-armed" : ""}`}
-                      role="group"
-                    >
-                      {isRenaming ? (
-                        <>
-                          <button
-                            type="button"
-                            className="session-action is-confirm"
-                            aria-label="Save title"
-                            title="Save title"
-                            disabled={!itemRenameDraft.trim() || busy}
-                            onClick={() => void saveItemRename(item)}
-                          >
-                            <Check size={13} />
-                          </button>
-                          <button
-                            type="button"
-                            className="session-action"
-                            aria-label="Cancel rename"
-                            title="Cancel"
-                            onClick={cancelItemRename}
-                          >
-                            <X size={13} />
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            className="session-action"
-                            aria-label={
-                              item.pinned
-                                ? "Unpin conversation"
-                                : "Pin conversation"
-                            }
-                            title={
-                              item.pinned
-                                ? "Unpin conversation"
-                                : "Pin conversation"
-                            }
-                            disabled={busy}
-                            onClick={() => void toggleSessionPin(item)}
-                          >
-                            {item.pinned ? (
-                              <PinOff size={13} />
-                            ) : (
-                              <Pin size={13} />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            className="session-action"
-                            aria-label="Rename conversation"
-                            title="Rename conversation"
-                            disabled={busy}
-                            onClick={() => startItemRename(item)}
-                          >
-                            <Pencil size={13} />
-                          </button>
-                          {armed ? (
-                            <button
-                              type="button"
-                              className="session-action is-danger"
-                              aria-label="Confirm delete"
-                              title="Confirm delete"
-                              disabled={busy}
-                              onClick={() => void removeSession(item)}
-                            >
-                              <Check size={13} />
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="session-action is-danger"
-                              aria-label="Delete conversation"
-                              title="Delete conversation"
-                              disabled={busy}
-                              onClick={() => armSessionDelete(item)}
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          )}
-                        </>
-                      )}
-                    </div>
                   </div>
-                );
-              })
-            )}
-          </div>
-        </section>
-      )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </section>
       <section className="surface conversation-panel">
         <div className="surface-heading">
           <div className="chat-heading-group">
             <button
-              className="icon-button"
+              className={`icon-button chat-rail-toggle ${conversationsVisible ? "is-active" : ""}`}
               type="button"
               aria-label={
                 conversationsVisible
@@ -666,11 +786,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
               aria-expanded={conversationsVisible}
               onClick={() => setConversationsVisible((visible) => !visible)}
             >
-              {conversationsVisible ? (
-                <PanelLeftClose size={16} />
-              ) : (
-                <PanelLeftOpen size={16} />
-              )}
+              <MessagesSquare size={16} />
             </button>
             {renamingTitle ? (
               <div className="chat-title-editor">
@@ -729,7 +845,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
           </div>
           <div className="chat-heading-group chat-heading-actions">
             <button
-              className="icon-button"
+              className={`icon-button chat-rail-toggle ${traceVisible ? "is-active" : ""}`}
               type="button"
               aria-label="New conversation"
               title="New conversation"
@@ -771,11 +887,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
               aria-expanded={traceVisible}
               onClick={() => setTraceVisible((visible) => !visible)}
             >
-              {traceVisible ? (
-                <PanelRightClose size={16} />
-              ) : (
-                <PanelRightOpen size={16} />
-              )}
+              <ListTree size={16} />
             </button>
           </div>
         </div>
@@ -793,7 +905,9 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
                     <span className="message-role">
                       {isUser ? "You" : agentName}
                     </span>
-                    <div className={`chat-bubble${isEditing ? " is-editing" : ""}`}>
+                    <div
+                      className={`chat-bubble${isEditing ? " is-editing" : ""}`}
+                    >
                       {!isUser && message.reasoning ? (
                         <ReasoningBlock
                           reasoning={message.reasoning}
@@ -1008,15 +1122,17 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
           </button>
         </div>
       </section>
-      {traceVisible && (
-        <section className="surface trace-panel">
-          <TracePanel
-            activity={session?.activity ?? []}
-            userMessages={userMessages}
-            onFetchRaw={fetchActivityRaw}
-          />
-        </section>
-      )}
+      <section
+        className="surface trace-panel"
+        aria-hidden={!traceVisible}
+        inert={!traceVisible}
+      >
+        <TracePanel
+          activity={session?.activity ?? []}
+          userMessages={userMessages}
+          onFetchRaw={fetchActivityRaw}
+        />
+      </section>
     </div>
   );
 }

@@ -85,34 +85,73 @@ button:disabled {
   min-width: 900px;
   height: 100vh;
   overflow: hidden;
+  transition: grid-template-columns 260ms ease;
 }
 .desktop-shell.sidebar-hidden {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 64px minmax(0, 1fr);
 }
 .app-sidebar {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   background: var(--surface-sidebar);
   border-right: 1px solid var(--border-soft);
 }
 .sidebar-brand {
   height: 52px;
+  flex: none;
   display: flex;
   align-items: center;
   padding: 0 15px;
   border-bottom: 1px solid var(--border-muted);
+  position: relative;
+  transition: height 260ms ease;
 }
-.sidebar-brand img {
+.sidebar-brand .sidebar-logo-full {
   width: 150px;
   height: 42px;
   object-fit: contain;
   object-position: left;
+  transition: opacity 150ms ease;
+}
+.sidebar-brand .sidebar-logo-mark {
+  position: absolute;
+  top: 8px;
+  left: 17px;
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.sidebar-toggle {
+  position: absolute;
+  top: 13px;
+  right: 9px;
+  transition:
+    top 260ms ease,
+    right 260ms ease;
+}
+.sidebar-hidden .sidebar-brand {
+  height: 86px;
+}
+.sidebar-hidden .sidebar-logo-full {
+  opacity: 0;
+}
+.sidebar-hidden .sidebar-logo-mark {
+  opacity: 1;
+}
+.sidebar-hidden .sidebar-toggle {
+  top: 53px;
+  right: 18px;
 }
 .sidebar-content {
   flex: 1;
   padding: 11px 9px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .sidebar-group {
   margin-bottom: 18px;
@@ -123,6 +162,19 @@ button:disabled {
   font-size: 10px;
   font-weight: 650;
   letter-spacing: 0.09em;
+  white-space: nowrap;
+  overflow: hidden;
+  max-height: 31px;
+  transition:
+    opacity 150ms ease,
+    max-height 260ms ease,
+    padding 260ms ease;
+}
+.sidebar-hidden .sidebar-label {
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 .sidebar-group nav {
   display: grid;
@@ -142,6 +194,25 @@ button:disabled {
   text-align: left;
   font-size: 13px;
   cursor: pointer;
+  white-space: nowrap;
+  transition:
+    padding 260ms ease,
+    background-color 150ms ease;
+}
+.nav-text {
+  min-width: 0;
+  overflow: hidden;
+  opacity: 1;
+  transition: opacity 150ms ease;
+}
+.sidebar-hidden .nav-item {
+  justify-content: center;
+  padding: 0;
+}
+.sidebar-hidden .nav-text {
+  opacity: 0;
+  width: 0;
+  flex: 0 0 0;
 }
 .nav-item:hover {
   background: var(--surface-hover);
@@ -152,13 +223,13 @@ button:disabled {
   color: var(--fg-primary);
   font-weight: 600;
 }
-.nav-item > span {
+.nav-item > span:not(.nav-text) {
   width: 17px;
   text-align: center;
   font-size: 17px;
   color: var(--fg-muted);
 }
-.nav-item.active > span {
+.nav-item.active > span:not(.nav-text) {
   color: var(--surface-accent-strong);
 }
 .sidebar-footer {
@@ -168,6 +239,16 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 10px;
+  overflow: hidden;
+  transition: padding 260ms ease;
+}
+.sidebar-hidden .sidebar-footer {
+  padding: 11px 14px;
+}
+.sidebar-hidden .footer-copy {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
 }
 .desktop-avatar {
   width: 34px;
@@ -185,6 +266,8 @@ button:disabled {
 .footer-copy {
   display: grid;
   gap: 3px;
+  white-space: nowrap;
+  transition: opacity 150ms ease;
 }
 .footer-copy strong {
   font-size: 12px;
@@ -230,10 +313,6 @@ button:disabled {
   padding: 0 17px;
   border-bottom: 1px solid var(--border-soft);
   background: var(--surface-primary);
-}
-.shell-toggle {
-  flex: none;
-  color: var(--fg-muted);
 }
 .topbar-icon {
   color: var(--fg-muted);
@@ -318,20 +397,45 @@ button:disabled {
 .chat-layout {
   height: 100%;
   display: grid;
-  grid-template-columns: minmax(205px, 248px) minmax(320px, 1fr) minmax(
-      235px,
-      290px
-    );
-  gap: 12px;
+  --session-column: clamp(205px, 21vw, 248px);
+  --trace-column: clamp(235px, 24vw, 290px);
+  --session-gap: 12px;
+  --trace-gap: 12px;
+  grid-template-columns:
+    var(--session-column) var(--session-gap) minmax(0, 1fr)
+    var(--trace-gap) var(--trace-column);
+  transition: grid-template-columns 260ms ease;
 }
-.chat-layout.trace-hidden:not(.conversations-hidden) {
-  grid-template-columns: minmax(205px, 248px) minmax(0, 1fr);
+.chat-layout.conversations-hidden {
+  --session-column: 0px;
+  --session-gap: 0px;
 }
-.chat-layout.conversations-hidden:not(.trace-hidden) {
-  grid-template-columns: minmax(0, 1fr) minmax(235px, 290px);
+.chat-layout.trace-hidden {
+  --trace-column: 0px;
+  --trace-gap: 0px;
 }
-.chat-layout.conversations-hidden.trace-hidden {
-  grid-template-columns: minmax(0, 1fr);
+.conversation-list {
+  grid-column: 1;
+}
+.conversation-panel {
+  grid-column: 3;
+}
+.trace-panel {
+  grid-column: 5;
+}
+.conversation-list,
+.trace-panel {
+  overflow: hidden;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 180ms ease,
+    visibility 260ms ease;
+}
+.conversations-hidden .conversation-list,
+.trace-hidden .trace-panel {
+  opacity: 0;
+  visibility: hidden;
 }
 .chat-heading-group {
   display: flex;
@@ -1030,13 +1134,14 @@ button:disabled {
 }
 @media (max-width: 1120px) {
   .chat-layout {
-    grid-template-columns: 205px minmax(310px, 1fr) 235px;
+    --session-column: 205px;
+    --trace-column: 235px;
   }
-  .chat-layout.trace-hidden:not(.conversations-hidden) {
-    grid-template-columns: minmax(170px, 205px) minmax(0, 1fr);
+  .chat-layout.conversations-hidden {
+    --session-column: 0px;
   }
-  .chat-layout.conversations-hidden:not(.trace-hidden) {
-    grid-template-columns: minmax(0, 1fr) minmax(175px, 205px);
+  .chat-layout.trace-hidden {
+    --trace-column: 0px;
   }
   .chat-layout:not(.conversations-hidden):not(.trace-hidden)
     .chat-heading-title {
@@ -1072,6 +1177,25 @@ button:disabled {
 .icon-button:hover {
   background: var(--surface-hover);
   color: var(--surface-accent-strong);
+}
+.chat-rail-toggle.is-active {
+  color: var(--accent-red-deep);
+  background: var(--surface-accent-soft);
+}
+@media (prefers-reduced-motion: reduce) {
+  .desktop-shell,
+  .sidebar-brand,
+  .sidebar-toggle,
+  .sidebar-label,
+  .nav-item,
+  .nav-text,
+  .sidebar-footer,
+  .footer-copy,
+  .chat-layout,
+  .conversation-list,
+  .trace-panel {
+    transition-duration: 0.01ms;
+  }
 }
 .session-list {
   flex: 1;
@@ -1120,6 +1244,7 @@ button:disabled {
 }
 .session-item:hover .session-actions,
 .session-item:focus-within .session-actions,
+.session-item:has(.session-more[aria-expanded="true"]) .session-actions,
 .session-item.is-armed .session-actions {
   opacity: 1;
   pointer-events: auto;
@@ -1148,9 +1273,42 @@ button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
-.session-action.is-danger:hover,
-.session-item.is-armed .session-action.is-danger {
+.session-action-menu {
+  position: fixed;
+  z-index: 1000;
+  width: 176px;
+  padding: 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-primary);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.13);
+}
+.session-action-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-secondary);
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+.session-action-menu button:hover,
+.session-action-menu button:focus-visible {
+  background: var(--surface-hover);
+  color: var(--fg-primary);
+}
+.session-action-menu button.is-danger {
   color: var(--error-fg);
+}
+.session-action-menu button.is-danger:hover,
+.session-action-menu button.is-danger:focus-visible {
+  background: var(--error-bg);
 }
 .session-search {
   display: flex;
@@ -1192,6 +1350,18 @@ button:disabled {
   background: var(--surface-hover);
   border-color: var(--border-soft);
   color: var(--surface-accent-strong);
+}
+.session-item.pinned {
+  background: color-mix(in srgb, var(--accent-red) 5%, var(--surface-primary));
+  box-shadow: inset 2px 0 0 var(--accent-red);
+}
+.session-item.pinned.selected {
+  background: color-mix(in srgb, var(--accent-red) 9%, var(--surface-primary));
+  border-color: color-mix(in srgb, var(--accent-red) 25%, var(--border-soft));
+}
+.session-item.pinned .session-title svg {
+  flex: none;
+  color: var(--accent-red);
 }
 .session-item-body {
   display: grid;
@@ -2555,12 +2725,6 @@ button:disabled {
   }
 }
 @media (max-width: 1120px) {
-  .chat-layout {
-    grid-template-columns: minmax(170px, 205px) minmax(270px, 1fr) minmax(
-        175px,
-        205px
-      );
-  }
   .management-layout:not(.resource-management-layout) {
     grid-template-columns: 150px minmax(185px, 210px) minmax(270px, 1fr);
   }
