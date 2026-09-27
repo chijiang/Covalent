@@ -12,6 +12,12 @@ import pytest
 
 from covalent_desktop.application.workspace import DesktopWorkspace, WorkspaceError
 from covalent_desktop.infra.agent_registry import DesktopRegistryFactory
+from covalent_desktop.infra.built_in_skills import (
+    ENV_SOURCE,
+    bundled_built_in_skills_root,
+    sync_bundled_skills,
+    sync_built_in_skills,
+)
 from covalent_desktop.infra.local_store import LocalStore
 from covalent_desktop.infra.skill_manager import DesktopSkillManager
 from covalent_desktop.infra.agent_registry import _ask_user
@@ -239,3 +245,66 @@ def test_uploaded_skill_starts_disabled_and_rejects_path_traversal(
     with pytest.raises(WorkspaceError, match="unsafe path"):
         workspace.install_skill("bad", archive({"../outside/SKILL.md": "unsafe"}))
     assert not (tmp_path / "outside").exists()
+
+
+def _write_skill(root: Path, name: str, description: str = "Bundled skill") -> None:
+    directory = root / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\nGuidance.",
+        encoding="utf-8",
+    )
+
+
+def test_built_in_skills_sync_mirrors_overwrites_and_prunes(tmp_path: Path) -> None:
+    source = tmp_path / "bundle"
+    _write_skill(source, "skill-creator")
+    (source / "notes").mkdir()
+    target = tmp_path / "data" / "skills" / "built_in"
+
+    assert sync_built_in_skills(source, target) == ["skill-creator"]
+    assert (target / "skill-creator" / "SKILL.md").is_file()
+    assert not (target / "notes").exists()
+
+    _write_skill(target, "legacy")
+    (target / "skill-creator" / "SKILL.md").write_text("edited", encoding="utf-8")
+    assert sync_built_in_skills(source, target) == ["skill-creator"]
+    assert (target / "skill-creator" / "SKILL.md").read_text(
+        encoding="utf-8"
+    ).startswith("---")
+    assert not (target / "legacy").exists()
+
+    with pytest.raises(ValueError, match="must differ"):
+        sync_built_in_skills(target, target)
+
+
+def test_bundled_built_in_skills_sync_into_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "bundle"
+    _write_skill(source, "skill-creator", description="Create new skills")
+    monkeypatch.setenv(ENV_SOURCE, str(source))
+    data_dir = tmp_path / "data"
+
+    assert sync_bundled_skills(data_dir / "skills" / "built_in") == ["skill-creator"]
+
+    store = LocalStore(data_dir / "desktop.sqlite3")
+    registry_factory = DesktopRegistryFactory(data_dir, store)
+    workspace = DesktopWorkspace(
+        store,
+        registry_factory,
+        registry_factory.available_skills,
+        skill_manager=DesktopSkillManager(
+            registry_factory.skill_loader, data_dir / "skills"
+        ),
+    )
+    skills = {item["name"]: item for item in workspace.list_skills()}
+    assert skills["skill-creator"]["source_category"] == "built_in"
+    assert "skill-creator" in workspace.agent_options()["skills"]
+
+    with pytest.raises(WorkspaceError, match="authored and uploaded"):
+        workspace.delete_skill("skill-creator")
+
+    monkeypatch.setenv(ENV_SOURCE, str(tmp_path / "missing"))
+    assert bundled_built_in_skills_root() is None
+    assert sync_bundled_skills(tmp_path / "elsewhere") == []

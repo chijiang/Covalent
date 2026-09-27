@@ -75,6 +75,8 @@ async function freeze() {
     "covalent_agent_kit",
     "--collect-data",
     "covalent_execution_native",
+    "--add-data",
+    `${path.join(repoRoot, "skills", "built_in")}${path.delimiter}built_in_skills`,
     "--collect-all",
     "playwright",
     entry,
@@ -99,6 +101,7 @@ async function smokeFrozenBinary() {
       env: {
         ...process.env,
         COVALENT_DESKTOP_SERVICE_TOKEN: "packaging-self-test-0123456789abcdef",
+        COVALENT_DESKTOP_DATA_DIR: path.join(buildDir, "service-smoke-data"),
       },
     },
   );

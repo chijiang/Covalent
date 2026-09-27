@@ -14,6 +14,7 @@ from typing import TextIO
 
 from covalent_desktop.api.server import create_server
 from covalent_desktop.application.workspace import DesktopWorkspace
+from covalent_desktop.infra.built_in_skills import sync_bundled_skills
 from covalent_desktop.infra.local_store import LocalStore
 from covalent_desktop.infra.agent_registry import DesktopRegistryFactory
 from covalent_desktop.infra.provider_catalog import DesktopProviderCatalog
@@ -43,6 +44,12 @@ def run_service(
         )
     )
     store = LocalStore(data_dir / "desktop.sqlite3")
+    try:
+        synced = sync_bundled_skills(data_dir / "skills" / "built_in")
+        if synced:
+            LOGGER.info("Synced built-in skills: %s", ", ".join(synced))
+    except OSError as error:
+        LOGGER.warning("Could not sync built-in skills: %s", error)
     registry_factory = DesktopRegistryFactory(data_dir, store)
     server = create_server(
         host,
