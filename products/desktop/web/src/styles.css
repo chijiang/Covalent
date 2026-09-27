@@ -1314,13 +1314,19 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 0 9px 8px;
+  margin: 11px 9px 8px;
   padding: 0 10px;
   height: 32px;
   border: 1px solid var(--border-soft);
   border-radius: 6px;
   background: var(--surface-primary);
   color: var(--fg-muted);
+}
+.conversation-list > .surface-heading {
+  padding: 0 12px;
+}
+.session-create {
+  flex: none;
 }
 .session-search-input {
   flex: 1;

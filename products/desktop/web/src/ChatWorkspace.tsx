@@ -637,6 +637,14 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
 
   const liveReasoning = busy ? (session?.live_reasoning ?? "") : "";
 
+  function startNewConversation() {
+    setSession(null);
+    setAnswers({});
+    setError("");
+    setRenamingTitle(false);
+    setTitleDraft("");
+  }
+
   return (
     <div
       className={`chat-layout ${conversationsVisible ? "" : "conversations-hidden"} ${traceVisible ? "" : "trace-hidden"}`}
@@ -647,7 +655,18 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
         aria-hidden={!conversationsVisible}
         inert={!conversationsVisible}
       >
-        <div className="surface-heading">Recent conversations</div>
+        <div className="surface-heading">
+          <span>Recent conversations</span>
+          <button
+            className="icon-button session-create"
+            type="button"
+            aria-label="New conversation"
+            title="New conversation"
+            onClick={startNewConversation}
+          >
+            <Plus size={16} />
+          </button>
+        </div>
         <div className="session-search">
           <Search size={14} />
           <input
@@ -845,17 +864,11 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
           </div>
           <div className="chat-heading-group chat-heading-actions">
             <button
-              className={`icon-button chat-rail-toggle ${traceVisible ? "is-active" : ""}`}
+              className="icon-button"
               type="button"
               aria-label="New conversation"
               title="New conversation"
-              onClick={() => {
-                setSession(null);
-                setAnswers({});
-                setError("");
-                setRenamingTitle(false);
-                setTitleDraft("");
-              }}
+              onClick={startNewConversation}
             >
               <Plus size={16} />
             </button>
