@@ -11,6 +11,7 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  Pencil,
 } from "lucide-react";
 import { copyText } from "./clipboard";
 
@@ -139,9 +140,21 @@ function TreeView({
   );
 }
 
-function FileView({ file }: { file: DesktopSkillPreviewFile }) {
+function FileView({
+  file,
+  editable,
+  onSave,
+}: {
+  file: DesktopSkillPreviewFile;
+  editable: boolean;
+  onSave: (content: string) => Promise<void>;
+}) {
   const [showSource, setShowSource] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const markdown = isMarkdownFile(file.path);
   async function handleCopy() {
     try {
@@ -152,12 +165,79 @@ function FileView({ file }: { file: DesktopSkillPreviewFile }) {
       setCopied(false);
     }
   }
+  async function handleSave() {
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(draft);
+      setEditing(false);
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+  if (editing) {
+    return (
+      <div className="skill-file-view">
+        <div className="skill-file-view-head">
+          <strong title={file.path}>{baseName(file.path)}</strong>
+          <span className="skill-file-view-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={saving || !draft.trim()}
+              onClick={() => void handleSave()}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={saving}
+              onClick={() => {
+                setEditing(false);
+                setError("");
+              }}
+            >
+              Cancel
+            </button>
+          </span>
+        </div>
+        <textarea
+          className="skill-file-edit"
+          value={draft}
+          spellCheck={false}
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        {error && (
+          <p className="form-error skill-file-edit-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    );
+  }
   return (
     <div className="skill-file-view">
       <div className="skill-file-view-head">
         <strong title={file.path}>{baseName(file.path)}</strong>
         <span className="skill-file-language">{file.language || "text"}</span>
         <span className="skill-file-view-actions">
+          {editable && (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Edit instructions"
+              title="Edit instructions"
+              onClick={() => {
+                setDraft(file.content);
+                setEditing(true);
+              }}
+            >
+              <Pencil size={14} />
+            </button>
+          )}
           {markdown && (
             <button
               type="button"
@@ -196,10 +276,19 @@ function FileView({ file }: { file: DesktopSkillPreviewFile }) {
   );
 }
 
-export function SkillFilesWorkbench({ name }: { name: string }) {
+export function SkillFilesWorkbench({
+  name,
+  canEdit = false,
+  onChanged,
+}: {
+  name: string;
+  canEdit?: boolean;
+  onChanged?: () => void;
+}) {
   const [preview, setPreview] = useState<DesktopSkillPreview | null>(null);
   const [failed, setFailed] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   useEffect(() => {
     let cancelled = false;
     setPreview(null);
@@ -216,7 +305,12 @@ export function SkillFilesWorkbench({ name }: { name: string }) {
     return () => {
       cancelled = true;
     };
-  }, [name]);
+  }, [name, reloadKey]);
+  async function handleSave(content: string) {
+    await window.covalentDesktop.updateSkill(name, content);
+    setReloadKey((key) => key + 1);
+    onChanged?.();
+  }
   const tree = useMemo(
     () => buildPreviewTree(preview?.files ?? []),
     [preview],
@@ -234,7 +328,7 @@ export function SkillFilesWorkbench({ name }: { name: string }) {
   return (
     <section className="config-section skill-files-section">
       <div className="skill-files-head">
-        <h3>Bundled files</h3>
+        <h3>Content Explorer</h3>
         {preview && <span>{files.length} files</span>}
       </div>
       {!preview ? (
@@ -250,7 +344,14 @@ export function SkillFilesWorkbench({ name }: { name: string }) {
               onSelectPath={setSelectedPath}
             />
           </div>
-          {selected && <FileView key={selected.path} file={selected} />}
+          {selected && (
+            <FileView
+              key={selected.path}
+              file={selected}
+              editable={canEdit && selected.path === "SKILL.md"}
+              onSave={handleSave}
+            />
+          )}
         </div>
       )}
     </section>

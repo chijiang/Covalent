@@ -27,7 +27,9 @@ pnpm package:desktop:mac
 Artifacts land in `products/desktop/shell/build/`:
 
 - `Covalent Desktop.app`: a self-contained application (Electron/Chromium, the frozen sidecar and the renderer all live inside the bundle), ad-hoc signed and directly runnable.
-- `Covalent-Desktop-<version>-macos-<arch>.dmg`: a zlib-compressed image (UDZO) of the same .app, containing the .app plus an `/Applications` symlink for drag-install.
+- `Covalent-Desktop-<version>-macos-<arch>.dmg`: a zlib-compressed image (UDZO) with a Finder icon layout and arrow showing the app-to-Applications drag path. It also contains **Install for This User**, which installs into `~/Applications` without administrator privileges.
+
+In the DMG, drag the app onto **Applications** for an all-users install (macOS may request administrator authorization). For a standard user account, double-click **Install for This User** instead. That command copies the app into the current user's `~/Applications` and reveals it in Finder; it does not use `sudo` or write to `/Applications`. Quit a running Covalent Desktop before replacing it. The app's local data in `~/Library/Application Support/Covalent Desktop` is outside the app bundle and is not replaced.
 
 Pipeline (`shell/scripts/package-mac.mjs` orchestrates; `shell/scripts/package-service.mjs` freezes the sidecar):
 
@@ -35,11 +37,13 @@ Pipeline (`shell/scripts/package-mac.mjs` orchestrates; `shell/scripts/package-s
 2. PyInstaller onedir freezes `covalent_desktop` into `covalent-desktop-service`. Key flags: `--copy-metadata mcp` (`mcp/client.py` reads `importlib.metadata.version` at runtime), `--collect-data covalent_agent_kit` and `--collect-data covalent_execution_native` (carry `skill_sdk.js`, `node_runner.js` and other data files), and `--collect-all playwright`. The freeze self-test starts the binary with `COVALENT_DESKTOP_SERVICE_TOKEN` set and validates the single-line ready JSON on stdout.
 3. Assemble the bundle from `node_modules/electron/dist/Electron.app` (copied with `ditto` to preserve symlinks). The layout mirrors the shell's packaged path conventions: `Contents/Resources/app/` (shell package.json + dist), `Contents/Resources/web/dist/` (renderer), and `Contents/Resources/service/` (frozen sidecar flattened so the binary sits exactly at `Resources/service/covalent-desktop-service`).
 4. **`Contents/MacOS/Electron` must be renamed and `CFBundleExecutable` updated accordingly**: `app.isPackaged` compares the first 8 characters of the executable name against "electron" (case-insensitive), so without the rename a packaged instance takes the dev branch and looks for `.venv/bin/python`.
-5. PlistBuddy writes `CFBundleName`/`CFBundleDisplayName`/`CFBundleIdentifier` (com.covalent.desktop); an icns is generated from the Covalent mark (`enterprise/web/public/logos/covalent-mark-512.png`) via `sips` + `iconutil`; `codesign --force --deep -s -` re-signs ad hoc (unsigned binaries cannot run on arm64); `hdiutil create -format UDZO` produces the dmg.
+5. PlistBuddy writes `CFBundleName`/`CFBundleDisplayName`/`CFBundleIdentifier` (com.covalent.desktop); an icns is generated from the Covalent mark (`enterprise/web/public/logos/covalent-mark-512.png`) via `sips` + `iconutil`; `codesign --force --deep -s -` re-signs ad hoc (unsigned binaries cannot run on arm64).
+6. `shell/scripts/package-dmg.mjs` invokes pinned `dmgbuild` through `uvx` to create the Finder layout without Finder automation. Its first run needs access to the configured Python package index; later runs can use the uv cache. The disk image includes the system Applications shortcut and the per-user installer command.
 
 Current prototype boundaries:
 
 - Ad-hoc signing: the app runs directly when the file carries no quarantine mark (internal or hand-copied distribution); public distribution requires a Developer ID signature (hardened runtime + entitlements) plus notarization and stapling, per pipeline goal 4.
+- The per-user installer removes the need for **administrator privileges to copy the app**. It does not bypass macOS Gatekeeper; downloaded builds still need production signing and notarization for a normal first-launch experience.
 - arm64 only; x64 must be built on the matching architecture.
 - Playwright browser binaries are not bundled; the runtime shares `~/Library/Caches/ms-playwright`, and browser tools degrade through the existing error path when they are missing.
 - Upgrade/uninstall semantics (data migration for `~/Library/Application Support/Covalent Desktop`, orphan process reclamation) still follow "must validate on every platform"; the prototype does not cover them.

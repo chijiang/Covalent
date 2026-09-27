@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { cp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const scriptDir = path.dirname(new URL(import.meta.url).pathname);
@@ -155,40 +155,8 @@ async function assembleApp() {
   return target;
 }
 
-async function buildDmg(appPath) {
-  const shellPackage = JSON.parse(
-    await readFile(path.join(shellDir, "package.json"), "utf8"),
-  );
-  const arch = process.arch === "arm64" ? "arm64" : process.arch;
-  const dmgPath = path.join(
-    buildDir,
-    `Covalent-Desktop-${shellPackage.version}-macos-${arch}.dmg`,
-  );
-  const staging = path.join(buildDir, "dmg-staging");
-  await rm(staging, { recursive: true, force: true });
-  await mkdir(staging, { recursive: true });
-  await cp(appPath, path.join(staging, path.basename(appPath)), {
-    recursive: true,
-  });
-  await symlink("/Applications", path.join(staging, "Applications"));
-  await rm(dmgPath, { force: true });
-  await run("hdiutil", [
-    "create",
-    "-volname",
-    appName,
-    "-srcfolder",
-    staging,
-    "-ov",
-    "-format",
-    "UDZO",
-    dmgPath,
-  ]);
-  await rm(staging, { recursive: true, force: true });
-  return dmgPath;
-}
-
 await buildRendererAndShell();
 await freezeService();
 const appPath = await assembleApp();
-const dmgPath = await buildDmg(appPath);
-console.log(`\nProduced:\n  ${appPath}\n  ${dmgPath}`);
+await run("node", [path.join(scriptDir, "package-dmg.mjs"), appPath]);
+console.log(`\nProduced application:\n  ${appPath}`);

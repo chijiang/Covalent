@@ -2813,13 +2813,17 @@ button:disabled {
 .skill-files-workbench {
   display: grid;
   grid-template-columns: minmax(150px, 230px) minmax(0, 1fr);
+  /* minmax(0, 1fr) keeps the row at the fixed height so the panes scroll
+     internally instead of stretching past it and being clipped. */
+  grid-template-rows: minmax(0, 1fr);
   border: 1px solid var(--border-soft);
   border-radius: 10px;
   background: var(--surface-primary);
-  height: 420px;
+  height: clamp(360px, 55vh, 560px);
   overflow: hidden;
 }
 .skill-files-tree {
+  min-height: 0;
   overflow: auto;
   padding: 10px 8px;
   border-right: 1px solid var(--border-muted);
@@ -2902,6 +2906,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 .skill-file-view-head {
   display: flex;
@@ -2939,6 +2944,25 @@ button:disabled {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--fg-primary);
+}
+.skill-file-edit {
+  flex: 1;
+  overflow: auto;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 14px;
+  background: var(--surface-primary);
+  color: var(--fg-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+.skill-file-edit-error {
+  margin: 0;
+  padding: 8px 14px;
+  font-size: 12px;
 }
 .skill-file-markdown {
   flex: 1;

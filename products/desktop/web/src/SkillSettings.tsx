@@ -26,7 +26,6 @@ export function SkillSettings() {
     setSelected(next);
     if (next) {
       setName(next.name);
-      setContent(next.instructions);
     } else {
       setName("");
       setContent("");
@@ -83,7 +82,6 @@ export function SkillSettings() {
               onClick={() => {
                 setSelected(item);
                 setName(item.name);
-                setContent(item.instructions);
                 setError("");
               }}
             >
@@ -106,7 +104,7 @@ export function SkillSettings() {
         <div className="agent-form resource-form">
           <p className="resource-intro">
             {selected
-              ? "Manage instructions and availability."
+              ? "Manage availability and explore the skill's content."
               : "Choose how to add a skill."}
           </p>
           {!selected && (
@@ -162,16 +160,13 @@ export function SkillSettings() {
                   placeholder="Select runtime"
                 />
               )}
-              {(selected || createMode === "write") && (
+              {!selected && createMode === "write" && (
                 <label className="full-width">
                   Instructions
                   <textarea
                     className="resource-instructions"
                     rows={8}
                     value={content}
-                    readOnly={Boolean(
-                      selected && selected.source_category !== "authored",
-                    )}
                     onChange={(event) => setContent(event.target.value)}
                     placeholder={
                       "---\nname: my-skill\ndescription: What this skill does\n---\n\nWrite instructions for the agent..."
@@ -201,7 +196,13 @@ export function SkillSettings() {
               )}
             </div>
           </section>
-          {selected && <SkillFilesWorkbench name={selected.name} />}
+          {selected && (
+            <SkillFilesWorkbench
+              name={selected.name}
+              canEdit={selected.source_category === "authored"}
+              onChanged={() => void refresh(selected.name)}
+            />
+          )}
           {selected?.executable && (
             <p className="credential-help">
               Executable skills run as local host processes with your account
@@ -268,25 +269,6 @@ export function SkillSettings() {
                 }
               >
                 Sync Git
-              </button>
-            )}
-            {selected?.source_category === "authored" && (
-              <button
-                type="button"
-                className="primary-button"
-                disabled={busy || !content.trim()}
-                onClick={() =>
-                  void perform(
-                    () =>
-                      window.covalentDesktop.updateSkill(
-                        selected.name,
-                        content,
-                      ),
-                    selected.name,
-                  )
-                }
-              >
-                Save instructions
               </button>
             )}
             {selected &&

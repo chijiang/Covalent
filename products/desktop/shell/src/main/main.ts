@@ -61,7 +61,7 @@ async function completeSmoke(
               const text = document.querySelector('.detail-panel')?.textContent ?? '';
               // Built-in skills sync at startup, so the panel may open on a
               // skill detail instead of the empty-state create form.
-              if (text.includes('Create skill') || text.includes('Manage instructions and availability.')) resolve(true);
+              if (text.includes('Create skill') || text.includes("Manage availability and explore the skill's content.")) resolve(true);
               else if (Date.now() >= deadline) reject(new Error('Skill settings did not render'));
               else setTimeout(waitForSkill, 50);
             };
