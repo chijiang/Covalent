@@ -80,3 +80,9 @@ Desktop 已有独立 macOS/Windows CI job，运行 service/边界测试、TypeSc
 ## 隐藏外观彩蛋
 
 Desktop 聊天输入独立口令 `le chat` 并发送后启用 Felines 模式（忽略首尾空格与大小写）。口令仅在 renderer 消费，不创建会话或调用模型。图标猫耳、气泡尾巴和主要按钮爪印适配深浅主题，跨页面保留；外观偏好保存于本机 localStorage，点击顶栏猫咪按钮退出。无需配置 Agent 即可触发。
+
+## Renderer 动效与输出更新
+
+页面和资源子页使用 180ms 淡入/轻微位移，列表卡片的选中、悬停状态使用颜色与边框过渡。
+动效仅在系统未开启“减少动态效果”时启用；不通过重建表单或聊天组件触发动效，也不对每次轮询更新的文本重复播放动画。
+当前聊天仍通过 1500ms 会话轮询更新执行轨迹和 `live_reasoning`，正文在调用完成后读取；这不是 token SSE 流式输出。真正的流式体验仍需接通 service → Electron main → preload → renderer 的执行事件链路。
