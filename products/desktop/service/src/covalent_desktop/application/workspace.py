@@ -44,6 +44,44 @@ from covalent_desktop.application.trace import (
 
 LOGGER = logging.getLogger(__name__)
 
+_SKILL_PREVIEW_IGNORED_DIRS = {
+    ".git",
+    ".next",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    "venv",
+}
+_SKILL_PREVIEW_MAX_BYTES = 128 * 1024
+
+
+def _preview_language(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".md", ".markdown"}:
+        return "markdown"
+    if suffix in {".yml", ".yaml"}:
+        return "yaml"
+    if suffix == ".py":
+        return "python"
+    if suffix in {".js", ".mjs", ".cjs"}:
+        return "javascript"
+    if suffix == ".json":
+        return "json"
+    return "text"
+
+
+def _read_preview_text(path: Path) -> str | None:
+    raw = path.read_bytes()
+    if b"\x00" in raw:
+        return None
+    try:
+        content = raw[:_SKILL_PREVIEW_MAX_BYTES].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if len(raw) > _SKILL_PREVIEW_MAX_BYTES:
+        return f"{content}\n\n... truncated ...\n"
+    return content
+
 # Title generation is a single cheap call, mirroring Enterprise's limits.
 TITLE_MAX_TOKENS = 24
 MAX_TITLE_CHARS = 255
@@ -253,6 +291,30 @@ class DesktopWorkspace:
             }
             for spec in registry.manifest_skills.values()
         ]
+
+    def preview_skill(self, name: str) -> dict[str, object]:
+        spec = self.registry_factory().manifest_skills.get(name)
+        if spec is None or not spec.source_dir:
+            raise WorkspaceError("skill_not_found", "Skill not found", 404)
+        root = Path(spec.source_dir)
+        if not root.is_dir():
+            raise WorkspaceError("skill_not_found", "Skill directory is missing", 404)
+        files = []
+        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+            relative = path.relative_to(root)
+            if any(part in _SKILL_PREVIEW_IGNORED_DIRS for part in relative.parts[:-1]):
+                continue
+            content = _read_preview_text(path)
+            if content is None:
+                continue
+            files.append(
+                {
+                    "path": relative.as_posix(),
+                    "language": _preview_language(path),
+                    "content": content,
+                }
+            )
+        return {"name": spec.name, "files": files}
 
     def set_skill_enabled(self, name: str, enabled: bool) -> dict[str, object]:
         if name not in {item["name"] for item in self.list_skills()}:

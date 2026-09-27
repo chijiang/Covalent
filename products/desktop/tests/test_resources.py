@@ -308,3 +308,46 @@ def test_bundled_built_in_skills_sync_into_data_dir(
     monkeypatch.setenv(ENV_SOURCE, str(tmp_path / "missing"))
     assert bundled_built_in_skills_root() is None
     assert sync_bundled_skills(tmp_path / "elsewhere") == []
+
+
+def test_preview_skill_lists_files_and_skips_binaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from covalent_desktop.application.workspace import _SKILL_PREVIEW_MAX_BYTES
+
+    source = tmp_path / "bundle"
+    skill = source / "preview-me"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: preview-me\ndescription: Preview\n---\n# Guide",
+        encoding="utf-8",
+    )
+    (skill / "references").mkdir()
+    (skill / "references" / "schema.md").write_text("# Schema", encoding="utf-8")
+    (skill / "scripts").mkdir()
+    (skill / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+    (skill / "data.bin").write_bytes(b"a\x00b")
+    (skill / "__pycache__").mkdir()
+    (skill / "__pycache__" / "run.cpython.pyc").write_bytes(b"\x00binary")
+    (skill / "big.txt").write_text(
+        "x" * (_SKILL_PREVIEW_MAX_BYTES + 10), encoding="utf-8"
+    )
+    monkeypatch.setenv(ENV_SOURCE, str(source))
+    data_dir = tmp_path / "data"
+    sync_bundled_skills(data_dir / "skills" / "built_in")
+
+    store = LocalStore(data_dir / "desktop.sqlite3")
+    registry_factory = DesktopRegistryFactory(data_dir, store)
+    workspace = DesktopWorkspace(
+        store, registry_factory, registry_factory.available_skills
+    )
+    preview = workspace.preview_skill("preview-me")
+    paths = {file["path"]: file for file in preview["files"]}
+    assert set(paths) == {"SKILL.md", "references/schema.md", "scripts/run.py", "big.txt"}
+    assert paths["scripts/run.py"]["language"] == "python"
+    assert paths["references/schema.md"]["language"] == "markdown"
+    assert "... truncated ..." in paths["big.txt"]["content"]
+    assert len(paths["big.txt"]["content"]) <= _SKILL_PREVIEW_MAX_BYTES + 32
+
+    with pytest.raises(WorkspaceError, match="Skill not found"):
+        workspace.preview_skill("missing")

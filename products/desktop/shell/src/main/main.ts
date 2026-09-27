@@ -58,7 +58,10 @@ async function completeSmoke(
           setTimeout(() => {
             skills.click();
             const waitForSkill = () => {
-              if (document.querySelector('.detail-panel')?.textContent?.includes('Create skill')) resolve(true);
+              const text = document.querySelector('.detail-panel')?.textContent ?? '';
+              // Built-in skills sync at startup, so the panel may open on a
+              // skill detail instead of the empty-state create form.
+              if (text.includes('Create skill') || text.includes('Manage instructions and availability.')) resolve(true);
               else if (Date.now() >= deadline) reject(new Error('Skill settings did not render'));
               else setTimeout(waitForSkill, 50);
             };
@@ -265,6 +268,12 @@ function registerIpc(): void {
     if (!isTrustedSender(event))
       throw new Error("Untrusted Desktop IPC sender");
     return supervisor.request("/skills");
+  });
+  ipcMain.handle("desktop:skill-preview", (event, name: unknown) => {
+    if (!isTrustedSender(event))
+      throw new Error("Untrusted Desktop IPC sender");
+    if (!isResourceName(name)) throw new Error("Invalid skill name");
+    return supervisor.request(`/skill-preview/${encodeURIComponent(name)}`);
   });
   ipcMain.handle(
     "desktop:create-skill",

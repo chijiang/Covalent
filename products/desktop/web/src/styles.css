@@ -2796,3 +2796,201 @@ button:disabled {
   background: rgba(255, 255, 255, 0.14);
   color: var(--fg-secondary);
 }
+
+.skill-files-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.skill-files-head h3 {
+  margin: 0;
+}
+.skill-files-head span {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.skill-files-workbench {
+  display: grid;
+  grid-template-columns: minmax(150px, 230px) minmax(0, 1fr);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface-primary);
+  height: 420px;
+  overflow: hidden;
+}
+.skill-files-tree {
+  overflow: auto;
+  padding: 10px 8px;
+  border-right: 1px solid var(--border-muted);
+  font-size: 12px;
+}
+.skill-tree-group summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  color: var(--fg-primary);
+}
+.skill-tree-group summary::-webkit-details-marker {
+  display: none;
+}
+.skill-tree-group summary:hover {
+  background: var(--surface-hover);
+}
+.skill-tree-chevron {
+  transition: transform 0.15s ease;
+  color: var(--fg-muted);
+}
+.skill-tree-group[open] .skill-tree-chevron {
+  transform: rotate(90deg);
+}
+.skill-tree-group > .skill-tree-toggle .skill-tree-icon-open {
+  display: none;
+}
+.skill-tree-group[open] > .skill-tree-toggle .skill-tree-icon-open {
+  display: inline;
+}
+.skill-tree-group[open] > .skill-tree-toggle .skill-tree-icon-closed {
+  display: none;
+}
+.skill-tree-group > .skill-tree-toggle svg {
+  color: var(--fg-muted);
+}
+.skill-tree-children {
+  margin-left: 14px;
+  border-left: 1px solid var(--border-muted);
+  padding-left: 4px;
+}
+.skill-tree-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: var(--fg-secondary);
+  cursor: pointer;
+}
+.skill-tree-file svg {
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+.skill-tree-file:hover {
+  background: var(--surface-hover);
+}
+.skill-tree-file.active {
+  background: var(--surface-accent-soft);
+  color: var(--fg-primary);
+  font-weight: 600;
+}
+.skill-tree-file span,
+.skill-tree-group summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skill-file-view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.skill-file-view-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-muted);
+  font-size: 13px;
+}
+.skill-file-view-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skill-file-language {
+  padding: 1px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+.skill-file-view-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.skill-file-source {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg-primary);
+}
+.skill-file-markdown {
+  flex: 1;
+  overflow: auto;
+  padding: 14px 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg-primary);
+}
+.skill-file-markdown h1,
+.skill-file-markdown h2,
+.skill-file-markdown h3 {
+  margin: 18px 0 8px;
+  line-height: 1.3;
+}
+.skill-file-markdown h1:first-child,
+.skill-file-markdown h2:first-child,
+.skill-file-markdown h3:first-child,
+.skill-file-markdown p:first-child {
+  margin-top: 0;
+}
+.skill-file-markdown p {
+  margin: 8px 0;
+}
+.skill-file-markdown code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.skill-file-markdown pre {
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--surface-tertiary);
+  overflow: auto;
+}
+.skill-file-markdown pre code {
+  padding: 0;
+  background: none;
+}
+.skill-file-markdown table {
+  border-collapse: collapse;
+  margin: 10px 0;
+}
+.skill-file-markdown th,
+.skill-file-markdown td {
+  border: 1px solid var(--border-soft);
+  padding: 5px 9px;
+}
+.skill-file-markdown ul,
+.skill-file-markdown ol {
+  padding-left: 22px;
+  margin: 8px 0;
+}

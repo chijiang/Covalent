@@ -28,6 +28,15 @@ interface DesktopSkill {
   source_category: string;
   instructions: string;
 }
+interface DesktopSkillPreviewFile {
+  path: string;
+  language: string;
+  content: string;
+}
+interface DesktopSkillPreview {
+  name: string;
+  files: DesktopSkillPreviewFile[];
+}
 interface DesktopMcpTool {
   server_name: string;
   tool_name: string;
@@ -144,6 +153,7 @@ interface Window {
     clearMcpEnv(name: string): Promise<void>;
     inspectMcpService(name: string): Promise<{ items: DesktopMcpTool[] }>;
     listSkills(): Promise<{ items: DesktopSkill[] }>;
+    skillPreview(name: string): Promise<DesktopSkillPreview>;
     createSkill(name: string, content: string): Promise<void>;
     updateSkill(name: string, content: string): Promise<void>;
     uploadSkill(name: string): Promise<void>;

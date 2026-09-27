@@ -71,6 +71,15 @@ export interface SkillDefinition {
   source_category: string;
   instructions: string;
 }
+export interface SkillPreviewFile {
+  path: string;
+  language: string;
+  content: string;
+}
+export interface SkillPreview {
+  name: string;
+  files: SkillPreviewFile[];
+}
 export interface McpToolReference {
   server_name: string;
   tool_name: string;

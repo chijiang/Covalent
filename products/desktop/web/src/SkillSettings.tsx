@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2, Upload } from "lucide-react";
 import { AgentSelectField } from "./AgentSelectField";
+import { SkillFilesWorkbench } from "./SkillFilesWorkbench";
 
 export function SkillSettings() {
   const [items, setItems] = useState<DesktopSkill[]>([]);
@@ -200,6 +201,7 @@ export function SkillSettings() {
               )}
             </div>
           </section>
+          {selected && <SkillFilesWorkbench name={selected.name} />}
           {selected?.executable && (
             <p className="credential-help">
               Executable skills run as local host processes with your account

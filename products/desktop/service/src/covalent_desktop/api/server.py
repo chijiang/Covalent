@@ -57,6 +57,17 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             payload = {"items": server.workspace.list_mcp_services()}
         elif self.path == "/skills":
             payload = {"items": server.workspace.list_skills()}
+        elif self.path.startswith("/skill-preview/") and self.path.count("/") == 2:
+            try:
+                payload = server.workspace.preview_skill(
+                    self.path.split("/")[2]
+                )
+            except WorkspaceError as error:
+                self._write_json(
+                    HTTPStatus(error.status),
+                    {"code": error.code, "message": error.message},
+                )
+                return
         elif self.path == "/sessions":
             payload = {"items": server.workspace.list_sessions()}
         elif self.path.startswith("/sessions/") and self.path.count("/") == 2:

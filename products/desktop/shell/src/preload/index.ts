@@ -6,6 +6,7 @@ import type {
   McpServerDefinition,
   McpToolReference,
   SkillDefinition,
+  SkillPreview,
   ChatResult,
   Conversation,
   ConversationActivity,
@@ -44,6 +45,8 @@ contextBridge.exposeInMainWorld("covalentDesktop", {
     ipcRenderer.invoke("desktop:inspect-mcp-service", name),
   listSkills: (): Promise<{ items: SkillDefinition[] }> =>
     ipcRenderer.invoke("desktop:list-skills"),
+  skillPreview: (name: string): Promise<SkillPreview> =>
+    ipcRenderer.invoke("desktop:skill-preview", name),
   createSkill: (name: string, content: string): Promise<void> =>
     ipcRenderer.invoke("desktop:create-skill", name, content),
   updateSkill: (name: string, content: string): Promise<void> =>
