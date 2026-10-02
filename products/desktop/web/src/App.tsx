@@ -378,7 +378,11 @@ export function App() {
           className={`app-content ${page === "chat" ? "app-content-chat" : ""}`}
         >
           {page === "chat" ? (
-            <ChatWorkspace status={status} onEnterFelines={() => setFelines(true)} />
+            <ChatWorkspace
+              status={status}
+              felines={felines}
+              onEnterFelines={() => setFelines(true)}
+            />
           ) : page === "agents" ? (
             <AgentWorkspace status={status} />
           ) : page === "resources" ? (

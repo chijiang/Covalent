@@ -4,25 +4,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from uuid import uuid4
 from pathlib import Path
+from uuid import uuid4
 
+from covalent_agent_kit.browser_manager import BrowserManager
 from covalent_agent_kit.mcp.client import McpSdkClient
 from covalent_agent_kit.registry.registry import FrameworkRegistry
 from covalent_agent_kit.skills.loader import SkillLoader
 from covalent_agent_kit.skills.meta_tools import register_skill_meta_tools
 from covalent_agent_kit.skills.process import SkillProcessManager
-from covalent_agent_kit.tools.workspace_tools import register_workspace_tools
-from covalent_agent_kit.tools.pdf_tools import register_pdf_tools
-from covalent_agent_kit.browser_manager import BrowserManager
 from covalent_agent_kit.tools.browser_tools import register_browser_tools
-from covalent_execution_native.backend import FileSystemBackend
+from covalent_agent_kit.tools.pdf_tools import register_pdf_tools
+from covalent_agent_kit.tools.workspace_tools import register_workspace_tools
 from covalent_contracts.messages import (
     UserInputRequest,
     UserQuestion,
     UserQuestionOption,
 )
+from covalent_execution_native.backend import FileSystemBackend
 
+from covalent_desktop.application.system_agents import (
+    calculate_weighted_options,
+    validate_task_state,
+)
 from covalent_desktop.infra.local_store import LocalStore
 
 
@@ -137,6 +141,72 @@ class DesktopRegistryFactory:
                 },
             },
             handler=_ask_user,
+        )
+        registry.register_local_tool(
+            "milo_decision_matrix",
+            {
+                "type": "function",
+                "function": {
+                    "name": "milo_decision_matrix",
+                    "description": (
+                        "Calculate weighted option scores from supplied criteria and "
+                        "scores. Never choose the scores for the user."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "criteria": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "weight": {"type": "number"},
+                                    },
+                                    "required": ["name", "weight"],
+                                },
+                            },
+                            "options": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "scores": {
+                                            "type": "object",
+                                            "additionalProperties": {"type": "number"},
+                                        },
+                                    },
+                                    "required": ["name", "scores"],
+                                },
+                            },
+                        },
+                        "required": ["criteria", "options"],
+                    },
+                },
+            },
+            handler=lambda args, _context: calculate_weighted_options(
+                args.get("criteria", []), args.get("options", [])
+            ),
+        )
+        registry.register_local_tool(
+            "milo_validate_task_state",
+            {
+                "type": "function",
+                "function": {
+                    "name": "milo_validate_task_state",
+                    "description": (
+                        "Check a task-state object for required sections and sources "
+                        "on confirmed facts."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"state": {"type": "object"}},
+                        "required": ["state"],
+                    },
+                },
+            },
+            handler=lambda args, _context: validate_task_state(args.get("state", {})),
         )
         for spec in self.skill_loader.discover_local():
             registry.register_manifest_skill(spec)

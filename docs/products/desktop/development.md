@@ -79,7 +79,7 @@ Desktop 已有独立 macOS/Windows CI job，运行 service/边界测试、TypeSc
 
 ## 隐藏外观彩蛋
 
-Desktop 聊天输入独立口令 `le chat` 并发送后启用 Felines 模式（忽略首尾空格与大小写）。口令仅在 renderer 消费，不创建会话或调用模型。图标猫耳、气泡尾巴和主要按钮爪印适配深浅主题，跨页面保留；外观偏好保存于本机 localStorage，点击顶栏猫咪按钮退出。无需配置 Agent 即可触发。
+Desktop 聊天输入独立口令 `le chat` 并发送后启用 Felines 模式（忽略首尾空格与大小写）。口令仅在 renderer 消费，不创建会话或调用模型。图标猫耳、气泡尾巴和主要按钮爪印适配深浅主题，跨页面保留；外观偏好保存于本机 localStorage，点击顶栏猫咪按钮退出。进入后 Agent 菜单会增加内置 `Milo`，退出后移除并隐藏其历史会话；Milo 不写入 Agent 配置表，运行时绑定当前默认 Provider 和模型。无需配置 Agent 即可触发外观模式；要与 Milo 对话仍需先配置默认 Provider 及模型。
 
 ## Renderer 动效与输出更新
 

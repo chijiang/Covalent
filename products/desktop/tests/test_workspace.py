@@ -10,18 +10,24 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
-
 from covalent_agent_kit.registry.registry import FrameworkRegistry
 from covalent_desktop.api.server import create_server
-from covalent_desktop.application.workspace import DesktopWorkspace, WorkspaceError
-from covalent_desktop.infra.local_store import LocalStore
-from covalent_desktop.infra.provider_catalog import DesktopProviderCatalog
 from covalent_desktop.application.provider_config import DesktopProviderConfig
+from covalent_desktop.application.system_agents import (
+    FELINES_MILO_NAME,
+    MILO_LOCAL_TOOLS,
+    MILO_SKILLS,
+)
 from covalent_desktop.application.titles import (
     fallback_title,
     normalize_generated_title,
 )
 from covalent_desktop.application.trace import reasoning_source_marker
+from covalent_desktop.application.workspace import DesktopWorkspace, WorkspaceError
+from covalent_desktop.infra.agent_registry import DesktopRegistryFactory
+from covalent_desktop.infra.built_in_skills import sync_bundled_skills
+from covalent_desktop.infra.local_store import LocalStore
+from covalent_desktop.infra.provider_catalog import DesktopProviderCatalog
 from covalent_runtime.domain.types import (
     Capability,
     GenerationRequest,
@@ -30,7 +36,6 @@ from covalent_runtime.domain.types import (
     ToolCall,
 )
 from covalent_runtime.ports.model import ModelAdapter, ProviderConfig
-
 
 TITLE_PROMPT_PREFIX = "You are a conversation title generator"
 
@@ -125,6 +130,87 @@ def test_agent_and_conversation_persist_across_store_reopen(tmp_path: Path) -> N
     assert reopened.list_agents() == [agent]
     assert reopened.get_session(first["session_id"])["messages"] == second["messages"]
     assert len(reopened.list_sessions()) == 1
+
+
+def test_felines_milo_is_ephemeral_and_uses_default_provider(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path / "desktop.sqlite3", FakeModel())
+
+    assert all(item["name"] != FELINES_MILO_NAME for item in workspace.list_agents())
+    milo = next(
+        item
+        for item in workspace.list_agents(include_felines=True)
+        if item["name"] == FELINES_MILO_NAME
+    )
+
+    assert milo["provider_name"] == "test-provider"
+    assert milo["model"] == "fake"
+    assert milo["skills"] == MILO_SKILLS
+    assert milo["local_tools"] == MILO_LOCAL_TOOLS
+    assert workspace.store.get_agent(FELINES_MILO_NAME) is None
+    created = workspace.create_chat_session(FELINES_MILO_NAME, "hello")
+    assert (
+        workspace.get_session(created["session_id"])["agent_name"] == FELINES_MILO_NAME
+    )
+
+
+def test_felines_milo_requires_provider_only_when_chat_starts(tmp_path: Path) -> None:
+    workspace = DesktopWorkspace(
+        LocalStore(tmp_path / "desktop.sqlite3"), lambda: FakeRegistry(FakeModel())
+    )
+
+    milo = workspace.list_agents(include_felines=True)[0]
+    assert milo["name"] == FELINES_MILO_NAME
+    with pytest.raises(WorkspaceError) as error:
+        workspace.create_chat_session(FELINES_MILO_NAME, "hello")
+    assert (error.value.code, error.value.status) == ("provider_required", 409)
+
+    with pytest.raises(WorkspaceError) as error:
+        workspace.save_agent(
+            {
+                "name": FELINES_MILO_NAME,
+                "provider_name": "unconfigured",
+                "model": "unconfigured",
+            }
+        )
+    assert (error.value.code, error.value.status) == ("reserved_agent_name", 409)
+
+
+def test_felines_milo_runs_with_bundled_skills_and_tools(tmp_path: Path) -> None:
+    sync_bundled_skills(tmp_path / "skills" / "built_in")
+    store = LocalStore(tmp_path / "desktop.sqlite3")
+    registry_factory = DesktopRegistryFactory(tmp_path, store)
+    model = FakeModel()
+
+    def make_registry() -> FrameworkRegistry:
+        registry = registry_factory()
+        registry.get_model_provider = lambda _config: model
+        return registry
+
+    workspace = DesktopWorkspace(
+        store,
+        make_registry,
+        registry_factory.available_skills,
+        available_local_tools=registry_factory.available_local_tools,
+    )
+    workspace.save_provider(
+        {
+            "name": "test-provider",
+            "base_url": "https://example.com/v1",
+            "default_model": "fake",
+            "is_default": True,
+        }
+    )
+
+    result = asyncio.run(
+        workspace.send_message(
+            FELINES_MILO_NAME,
+            "hello",
+            provider_keys={"test-provider": "test-key"},
+        )
+    )
+
+    assert result["output_text"] == "reply 1"
+    assert len(model.requests) == 1
 
 
 def test_missing_key_does_not_create_session(tmp_path: Path) -> None:
@@ -395,6 +481,20 @@ def test_authenticated_http_agent_roundtrip(tmp_path: Path) -> None:
         )
         with urlopen(request, timeout=5) as response:
             assert json.load(response)["items"][0]["name"] == "helper"
+        request = Request(
+            base + "/agents?include_felines=true",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        with urlopen(request, timeout=5) as response:
+            names = [item["name"] for item in json.load(response)["items"]]
+        assert names == ["helper", FELINES_MILO_NAME]
+        request = Request(
+            base + "/agents?include_felines=false",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+        assert error.value.code == 400
         request = Request(
             base + "/agent-options", headers={"Authorization": "Bearer test-token"}
         )

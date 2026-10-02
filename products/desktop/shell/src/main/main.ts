@@ -126,10 +126,14 @@ function registerIpc(): void {
       throw new Error("Untrusted Desktop IPC sender");
     return supervisor.restart();
   });
-  ipcMain.handle("desktop:list-agents", (event) => {
+  ipcMain.handle("desktop:list-agents", (event, includeFelines: unknown) => {
     if (!isTrustedSender(event))
       throw new Error("Untrusted Desktop IPC sender");
-    return supervisor.request("/agents");
+    if (includeFelines !== undefined && typeof includeFelines !== "boolean")
+      throw new Error("Invalid Felines flag");
+    return supervisor.request(
+      includeFelines ? "/agents?include_felines=true" : "/agents",
+    );
   });
   ipcMain.handle("desktop:agent-options", (event) => {
     if (!isTrustedSender(event))
@@ -509,7 +513,9 @@ function registerIpc(): void {
       const providers = (await supervisor.request("/providers")) as {
         items: ProviderDefinition[];
       };
-      const agents = (await supervisor.request("/agents")) as {
+      const agents = (await supervisor.request(
+        value.include_felines ? "/agents?include_felines=true" : "/agents",
+      )) as {
         items: AgentDefinition[];
       };
       const agentsByName = new Map(
@@ -631,6 +637,7 @@ function isProviderDefinition(
 function isChatRequest(value: unknown): value is {
   agent_name: string;
   message: string;
+  include_felines?: boolean;
   session_id?: string;
   resume_answers?: Record<string, string>;
   edit_user_index?: number;
@@ -642,6 +649,8 @@ function isChatRequest(value: unknown): value is {
     item.agent_name.length <= 64 &&
     typeof item.message === "string" &&
     item.message.length <= 100_000 &&
+    (item.include_felines === undefined ||
+      typeof item.include_felines === "boolean") &&
     (item.resume_answers === undefined ||
       (typeof item.resume_answers === "object" &&
         item.resume_answers !== null &&

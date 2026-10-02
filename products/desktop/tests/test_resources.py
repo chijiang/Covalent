@@ -9,18 +9,22 @@ import zipfile
 from pathlib import Path
 
 import pytest
-
+from covalent_desktop.application.system_agents import (
+    MILO_LOCAL_TOOLS,
+    MILO_SKILLS,
+    calculate_weighted_options,
+    validate_task_state,
+)
 from covalent_desktop.application.workspace import DesktopWorkspace, WorkspaceError
-from covalent_desktop.infra.agent_registry import DesktopRegistryFactory
+from covalent_desktop.infra.agent_registry import DesktopRegistryFactory, _ask_user
 from covalent_desktop.infra.built_in_skills import (
     ENV_SOURCE,
     bundled_built_in_skills_root,
-    sync_bundled_skills,
     sync_built_in_skills,
+    sync_bundled_skills,
 )
 from covalent_desktop.infra.local_store import LocalStore
 from covalent_desktop.infra.skill_manager import DesktopSkillManager
-from covalent_desktop.infra.agent_registry import _ask_user
 from covalent_runtime.domain.types import GenerationResponse, ToolCall
 
 
@@ -124,9 +128,54 @@ def test_managed_skills_and_local_tool_catalog(tmp_path: Path) -> None:
     assert "read_pdf" in workspace.agent_options()["local_tools"]
     assert "browser_navigate" in workspace.agent_options()["local_tools"]
     assert "ask_user" in workspace.agent_options()["local_tools"]
+    assert "milo_decision_matrix" in workspace.agent_options()["local_tools"]
+    assert "milo_validate_task_state" in workspace.agent_options()["local_tools"]
     workspace.set_skill_enabled("guide", False)
     assert "guide" not in workspace.agent_options()["skills"]
     assert workspace.list_skills()[0]["enabled"] is False
+
+
+def test_milo_helpers_use_only_supplied_values() -> None:
+    result = calculate_weighted_options(
+        [{"name": "fit", "weight": 2}, {"name": "cost", "weight": 1}],
+        [
+            {"name": "A", "scores": {"fit": 5, "cost": 2}},
+            {"name": "B", "scores": {"fit": 3, "cost": 5}},
+        ],
+    )
+    assert [item["name"] for item in result["ranking"]] == ["A", "B"]
+    assert result["ranking"][0]["score_out_of_5"] == pytest.approx(4.0)
+
+    state = validate_task_state(
+        {
+            "goal": "Choose",
+            "confirmed_facts": [{"claim": "Known", "source": "user"}],
+            "hypotheses": [],
+            "decisions": [],
+            "open_questions": [],
+            "next_actions": [],
+        }
+    )
+    assert state["valid"] is True
+    assert (
+        validate_task_state({"confirmed_facts": [{"claim": "Unsourced"}]})["valid"]
+        is False
+    )
+
+
+def test_repository_bundle_contains_milo_skills_and_tools(tmp_path: Path) -> None:
+    source = bundled_built_in_skills_root()
+    assert source is not None
+    assert all((source / name / "SKILL.md").is_file() for name in MILO_SKILLS)
+
+    data_dir = tmp_path / "data"
+    synced = sync_bundled_skills(data_dir / "skills" / "built_in")
+    assert set(MILO_SKILLS).issubset(synced)
+    registry_factory = DesktopRegistryFactory(
+        data_dir, LocalStore(data_dir / "desktop.sqlite3")
+    )
+    assert set(MILO_SKILLS).issubset(registry_factory.available_skills())
+    assert set(MILO_LOCAL_TOOLS).issubset(registry_factory.available_local_tools())
 
 
 def test_ask_user_pauses_and_resumes_same_session(tmp_path: Path) -> None:
@@ -269,9 +318,11 @@ def test_built_in_skills_sync_mirrors_overwrites_and_prunes(tmp_path: Path) -> N
     _write_skill(target, "legacy")
     (target / "skill-creator" / "SKILL.md").write_text("edited", encoding="utf-8")
     assert sync_built_in_skills(source, target) == ["skill-creator"]
-    assert (target / "skill-creator" / "SKILL.md").read_text(
-        encoding="utf-8"
-    ).startswith("---")
+    assert (
+        (target / "skill-creator" / "SKILL.md")
+        .read_text(encoding="utf-8")
+        .startswith("---")
+    )
     assert not (target / "legacy").exists()
 
     with pytest.raises(ValueError, match="must differ"):
@@ -343,7 +394,12 @@ def test_preview_skill_lists_files_and_skips_binaries(
     )
     preview = workspace.preview_skill("preview-me")
     paths = {file["path"]: file for file in preview["files"]}
-    assert set(paths) == {"SKILL.md", "references/schema.md", "scripts/run.py", "big.txt"}
+    assert set(paths) == {
+        "SKILL.md",
+        "references/schema.md",
+        "scripts/run.py",
+        "big.txt",
+    }
     assert paths["scripts/run.py"]["language"] == "python"
     assert paths["references/schema.md"]["language"] == "markdown"
     assert "... truncated ..." in paths["big.txt"]["content"]

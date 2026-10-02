@@ -140,7 +140,7 @@ interface Window {
   covalentDesktop: {
     getServiceStatus(): Promise<DesktopServiceStatus>;
     restartService(): Promise<DesktopServiceStatus>;
-    listAgents(): Promise<{ items: DesktopAgent[] }>;
+    listAgents(includeFelines?: boolean): Promise<{ items: DesktopAgent[] }>;
     getAgentOptions(): Promise<DesktopAgentOptions>;
     saveAgent(value: DesktopAgent): Promise<DesktopAgent>;
     listProviders(): Promise<{ items: DesktopProvider[] }>;
@@ -190,12 +190,14 @@ interface Window {
     sendMessage(value: {
       agent_name: string;
       message: string;
+      include_felines?: boolean;
       session_id?: string;
       resume_answers?: Record<string, string>;
       edit_user_index?: number;
     }): Promise<DesktopChatResult>;
     streamMessage(value: {
-      agent_name: string; message: string; session_id?: string;
+      agent_name: string; message: string; include_felines?: boolean;
+      session_id?: string;
       resume_answers?: Record<string, string>; edit_user_index?: number;
     }, listener: (event: { event: string; payload: Record<string, unknown> }) => void): Promise<{ session_id: string }>;
     cancelMessage(): Promise<void>;

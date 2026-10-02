@@ -39,6 +39,11 @@ import {
 import { applyStreamEvent, emptyStream } from "./stream-state";
 
 const TRACE_POLL_INTERVAL_MS = 1500;
+const FELINES_MILO_AGENT = "felines-milo";
+
+function agentDisplayName(name: string): string {
+  return name === FELINES_MILO_AGENT ? "Milo" : name;
+}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -249,9 +254,11 @@ function SessionActionsMenu({
 
 export function ChatWorkspace({
   status,
+  felines,
   onEnterFelines,
 }: {
   status: DesktopServiceStatus;
+  felines: boolean;
   onEnterFelines: () => void;
 }) {
   const [agents, setAgents] = useState<DesktopAgent[]>([]);
@@ -330,7 +337,7 @@ export function ChatWorkspace({
     if (status.phase !== "ready") return;
     let active = true;
     Promise.all([
-      window.covalentDesktop.listAgents(),
+      window.covalentDesktop.listAgents(felines),
       window.covalentDesktop.listSessions(),
     ])
       .then(([agentResult, sessionResult]) => {
@@ -340,14 +347,23 @@ export function ChatWorkspace({
         );
         setAgents(chatAgents);
         setSessions(sessionResult.items);
-        setAgentName((previous) => previous || chatAgents[0]?.name || "");
+        setAgentName((previous) =>
+          chatAgents.some((agent) => agent.name === previous)
+            ? previous
+            : chatAgents[0]?.name || "",
+        );
+        setSession((current) =>
+          current && chatAgents.some((agent) => agent.name === current.agent_name)
+            ? current
+            : null,
+        );
         setLoaded(true);
       })
       .catch((cause) => active && setError(String(cause)));
     return () => {
       active = false;
     };
-  }, [status.phase]);
+  }, [status.phase, felines]);
 
   async function openSession(id: string) {
     if (busy) return;
@@ -415,6 +431,7 @@ export function ChatWorkspace({
       const result = await sendStreaming({
         agent_name: agentName,
         message,
+        include_felines: felines,
         session_id: sessionId,
       });
       const [full, recent] = await Promise.all([
@@ -448,6 +465,7 @@ export function ChatWorkspace({
     try {
       const result = await sendStreaming({
         agent_name: session.agent_name,
+        include_felines: felines,
         session_id: session.id,
         message: "",
         resume_answers: answers,
@@ -577,6 +595,7 @@ export function ChatWorkspace({
       const result = await sendStreaming({
         agent_name: previous.agent_name,
         message: draft,
+        include_felines: felines,
         session_id: previous.id,
         edit_user_index: target.userOrdinal,
       });
@@ -628,13 +647,16 @@ export function ChatWorkspace({
 
   const visibleSessions = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) return sessions;
-    return sessions.filter(
+    const modeSessions = felines
+      ? sessions
+      : sessions.filter((item) => item.agent_name !== FELINES_MILO_AGENT);
+    if (!query) return modeSessions;
+    return modeSessions.filter(
       (item) =>
         item.title.toLowerCase().includes(query) ||
         item.agent_name.toLowerCase().includes(query),
     );
-  }, [sessions, searchQuery]);
+  }, [sessions, searchQuery, felines]);
 
   function startItemRename(item: DesktopSessionSummary) {
     disarmSessionDelete();
@@ -809,7 +831,7 @@ export function ChatWorkspace({
                             {item.title}
                           </span>
                         </strong>
-                        <small>{item.agent_name}</small>
+                        <small>{agentDisplayName(item.agent_name)}</small>
                       </span>
                     </button>
                   )}
@@ -961,7 +983,7 @@ export function ChatWorkspace({
               disabled={!agents.length || busy}
               options={agents.map((agent) => ({
                 value: agent.name,
-                label: agent.name,
+                label: agentDisplayName(agent.name),
               }))}
               placeholder="No agents"
             />
@@ -996,7 +1018,7 @@ export function ChatWorkspace({
                 >
                   <div className="chat-message-stack">
                     <span className="message-role">
-                      {isUser ? "You" : agentName}
+                      {isUser ? "You" : agentDisplayName(agentName)}
                     </span>
                     <div
                       className={`chat-bubble${isEditing ? " is-editing" : ""}`}
@@ -1102,7 +1124,7 @@ export function ChatWorkspace({
           )}
           {busy && liveReasoning ? (
             <div className="chat-message assistant">
-              <span className="message-role">{agentName}</span>
+              <span className="message-role">{agentDisplayName(agentName)}</span>
               <div>
                 <ReasoningBlock reasoning={liveReasoning} active />
               </div>
@@ -1110,7 +1132,7 @@ export function ChatWorkspace({
           ) : null}
           {busy && streamOutput.text ? (
             <div className="chat-message assistant">
-              <span className="message-role">{agentName}</span>
+              <span className="message-role">{agentDisplayName(agentName)}</span>
               <MarkdownContent content={streamOutput.text} enableCharts={false}
                 onDownload={saveDownload} onOpenExternal={openExternal} tone="inbound" />
             </div>

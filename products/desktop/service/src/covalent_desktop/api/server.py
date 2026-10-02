@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
-import asyncio
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
+from urllib.parse import parse_qs, urlsplit
 
 from covalent_desktop.application.status import ServiceStatus, get_service_status
 from covalent_desktop.application.workspace import DesktopWorkspace, WorkspaceError
@@ -45,40 +46,49 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             )
             return
         server = cast(DesktopHTTPServer, self.server)
-        if self.path == "/healthz":
+        request_url = urlsplit(self.path)
+        path = request_url.path
+        if path == "/healthz":
             payload = server.service_status.to_dict()
-        elif self.path == "/agents":
-            payload = {"items": server.workspace.list_agents()}
-        elif self.path == "/agent-options":
+        elif path == "/agents":
+            include_values = parse_qs(request_url.query).get("include_felines", [])
+            if include_values not in ([], ["true"]):
+                self._write_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"code": "invalid_request", "message": "Invalid Felines flag"},
+                )
+                return
+            payload = {"items": server.workspace.list_agents(bool(include_values))}
+        elif path == "/agent-options":
             payload = server.workspace.agent_options()
-        elif self.path == "/providers":
+        elif path == "/providers":
             payload = {"items": server.workspace.list_providers()}
-        elif self.path == "/mcp-services":
+        elif path == "/mcp-services":
             payload = {"items": server.workspace.list_mcp_services()}
-        elif self.path == "/skills":
+        elif path == "/skills":
             payload = {"items": server.workspace.list_skills()}
-        elif self.path.startswith("/skill-preview/") and self.path.count("/") == 2:
+        elif path.startswith("/skill-preview/") and path.count("/") == 2:
             try:
-                payload = server.workspace.preview_skill(self.path.split("/")[2])
+                payload = server.workspace.preview_skill(path.split("/")[2])
             except WorkspaceError as error:
                 self._write_json(
                     HTTPStatus(error.status),
                     {"code": error.code, "message": error.message},
                 )
                 return
-        elif self.path == "/sessions":
+        elif path == "/sessions":
             payload = {"items": server.workspace.list_sessions()}
-        elif self.path.startswith("/sessions/") and self.path.count("/") == 2:
+        elif path.startswith("/sessions/") and path.count("/") == 2:
             try:
-                payload = server.workspace.get_session(self.path.split("/")[2])
+                payload = server.workspace.get_session(path.split("/")[2])
             except WorkspaceError as error:
                 self._write_json(
                     HTTPStatus(error.status),
                     {"code": error.code, "message": error.message},
                 )
                 return
-        elif self.path.startswith("/sessions/") and self.path.count("/") == 4:
-            _, _, session_id, resource, activity_id = self.path.split("/")
+        elif path.startswith("/sessions/") and path.count("/") == 4:
+            _, _, session_id, resource, activity_id = path.split("/")
             if resource != "activity":
                 self._write_json(
                     HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}

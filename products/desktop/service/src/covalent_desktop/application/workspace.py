@@ -31,6 +31,10 @@ from covalent_desktop.application.agent_config import (
 )
 from covalent_desktop.application.mcp_config import DesktopMcpService
 from covalent_desktop.application.provider_config import DesktopProviderConfig
+from covalent_desktop.application.system_agents import (
+    FELINES_MILO_NAME,
+    milo_agent_definition,
+)
 from covalent_desktop.application.titles import (
     TITLE_SYSTEM_PROMPT,
     fallback_title,
@@ -187,11 +191,15 @@ class DesktopWorkspace:
         # coupling asyncio locks to the HTTP server's per-request event loops.
         self._run_lock = threading.Lock()
 
-    def list_agents(self) -> list[dict[str, object]]:
-        return [
+    def list_agents(self, include_felines: bool = False) -> list[dict[str, object]]:
+        agents = [
             self._parse_agent(item).model_dump(mode="json")
             for item in self.store.list_agents()
+            if item.get("name") != FELINES_MILO_NAME
         ]
+        if include_felines:
+            agents.append(self._system_agent_definition(require_provider=False))
+        return agents
 
     def list_providers(self) -> list[dict[str, object]]:
         return self.store.list_providers()
@@ -412,8 +420,43 @@ class DesktopWorkspace:
         except ValidationError as error:
             raise WorkspaceError("invalid_agent", error.errors()[0]["msg"]) from error
 
+    def _default_provider(self) -> DesktopProviderConfig | None:
+        providers = [
+            DesktopProviderConfig.model_validate(raw)
+            for raw in self.store.list_providers()
+        ]
+        if not providers:
+            return None
+        return next((item for item in providers if item.is_default), providers[0])
+
+    def _system_agent_definition(self, *, require_provider: bool) -> dict[str, object]:
+        provider = self._default_provider()
+        model = (
+            provider.default_model or next(iter(provider.models), "")
+            if provider is not None
+            else ""
+        )
+        if require_provider and (provider is None or not model):
+            raise WorkspaceError(
+                "provider_required",
+                "Configure a default Provider with a model before chatting with Milo",
+                409,
+            )
+        return self._parse_agent(milo_agent_definition(provider)).model_dump(
+            mode="json"
+        )
+
+    def _agent_definition(self, name: str) -> dict[str, object] | None:
+        if name == FELINES_MILO_NAME:
+            return self._system_agent_definition(require_provider=True)
+        return self.store.get_agent(name)
+
     def save_agent(self, value: dict[str, object]) -> dict[str, object]:
         config = self._parse_agent(value)
+        if config.name == FELINES_MILO_NAME:
+            raise WorkspaceError(
+                "reserved_agent_name", "This name belongs to a system Agent", 409
+            )
         if self.store.get_provider(config.provider_name) is None:
             raise WorkspaceError(
                 "provider_not_found", "Configure this Provider before saving the Agent"
@@ -484,7 +527,7 @@ class DesktopWorkspace:
         return stripped
 
     def create_chat_session(self, agent_name: str, title: str) -> dict[str, object]:
-        raw_definition = self.store.get_agent(agent_name)
+        raw_definition = self._agent_definition(agent_name)
         if raw_definition is None:
             raise WorkspaceError("agent_not_found", "Agent not found", 404)
         config = self._parse_agent(raw_definition)
@@ -537,7 +580,7 @@ class DesktopWorkspace:
         edit_user_index: int | None = None,
         on_event: Callable[[dict[str, object]], None] | None = None,
     ) -> dict[str, object]:
-        raw_definition = self.store.get_agent(agent_name)
+        raw_definition = self._agent_definition(agent_name)
         if raw_definition is None:
             raise WorkspaceError("agent_not_found", "Agent not found", 404)
         config = self._parse_agent(raw_definition)
@@ -612,6 +655,7 @@ class DesktopWorkspace:
                     for raw in self.store.list_agents()
                     if (candidate := self._parse_agent(raw)).enabled
                 }
+                candidates[config.name] = config
                 reachable: dict[str, DesktopAgentConfig] = {}
                 pending = [config.name]
                 while pending:

@@ -19,8 +19,8 @@ contextBridge.exposeInMainWorld("covalentDesktop", {
     ipcRenderer.invoke("desktop:get-service-status"),
   restartService: (): Promise<ServiceStatus> =>
     ipcRenderer.invoke("desktop:restart-service"),
-  listAgents: (): Promise<{ items: AgentDefinition[] }> =>
-    ipcRenderer.invoke("desktop:list-agents"),
+  listAgents: (includeFelines?: boolean): Promise<{ items: AgentDefinition[] }> =>
+    ipcRenderer.invoke("desktop:list-agents", includeFelines),
   getAgentOptions: (): Promise<AgentOptions> =>
     ipcRenderer.invoke("desktop:agent-options"),
   saveAgent: (value: AgentDefinition): Promise<AgentDefinition> =>
@@ -96,12 +96,14 @@ contextBridge.exposeInMainWorld("covalentDesktop", {
   sendMessage: (value: {
     agent_name: string;
     message: string;
+    include_felines?: boolean;
     session_id?: string;
     resume_answers?: Record<string, string>;
     edit_user_index?: number;
   }): Promise<ChatResult> => ipcRenderer.invoke("desktop:send-message", value),
   streamMessage: async (value: {
-    agent_name: string; message: string; session_id?: string;
+    agent_name: string; message: string; include_felines?: boolean;
+    session_id?: string;
     resume_answers?: Record<string, string>; edit_user_index?: number;
   }, listener: (event: { event: string; payload: Record<string, unknown> }) => void): Promise<{ session_id: string }> => {
     const id = globalThis.crypto.randomUUID();
