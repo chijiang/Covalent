@@ -3,6 +3,7 @@ import {
   Activity,
   Bot,
   Cable,
+  Cat,
   MessageSquare,
   Monitor,
   Moon,
@@ -25,6 +26,16 @@ import {
   watchSystemTheme,
   type Theme,
 } from "./theme";
+
+const FELINES_STORAGE_KEY = "covalent-felines";
+
+function storedFelines(): boolean {
+  try {
+    return localStorage.getItem(FELINES_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
 
 type Page = "chat" | "agents" | "resources" | "runtime";
 const initialStatus: DesktopServiceStatus = {
@@ -150,7 +161,7 @@ function RuntimeWorkspace({
             Window startup, authentication, health checks, and service restart
             are connected. Agent creation, model credentials, local chat,
             execution traces, Markdown rendering, message editing and file
-            downloads are available. Token streaming and templates are in
+            downloads and live token streaming are available. Templates are in
             development.
           </p>
         </div>
@@ -160,6 +171,16 @@ function RuntimeWorkspace({
 }
 
 export function App() {
+  const [felines, setFelines] = useState(storedFelines);
+  useEffect(() => {
+    document.documentElement.classList.toggle("felines", felines);
+    try {
+      localStorage.setItem(FELINES_STORAGE_KEY, String(felines));
+    } catch {
+      // The easter egg still works for this window without storage.
+    }
+    return () => document.documentElement.classList.remove("felines");
+  }, [felines]);
   const [page, setPage] = useState<Page>("chat");
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [resourceTab, setResourceTab] = useState<
@@ -326,6 +347,17 @@ export function App() {
           </span>
           <h1>{meta.title}</h1>
           <p>{meta.subtitle}</p>
+          {felines && (
+            <button
+              className="icon-button felines-toggle"
+              type="button"
+              aria-label="Leave felines mode"
+              title="Felines mode · click to leave"
+              onClick={() => setFelines(false)}
+            >
+              <Cat size={17} aria-hidden="true" />
+            </button>
+          )}
           <button
             className="icon-button theme-toggle"
             type="button"
@@ -346,7 +378,11 @@ export function App() {
           className={`app-content ${page === "chat" ? "app-content-chat" : ""}`}
         >
           {page === "chat" ? (
-            <ChatWorkspace status={status} />
+            <ChatWorkspace
+              status={status}
+              felines={felines}
+              onEnterFelines={() => setFelines(true)}
+            />
           ) : page === "agents" ? (
             <AgentWorkspace status={status} />
           ) : page === "resources" ? (

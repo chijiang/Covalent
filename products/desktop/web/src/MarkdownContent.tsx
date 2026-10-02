@@ -1,5 +1,6 @@
 import {
   isValidElement,
+  memo,
   useMemo,
   useRef,
   useState,
@@ -197,7 +198,7 @@ function CodeBlock({
   );
 }
 
-export function MarkdownContent({
+export const MarkdownContent = memo(function MarkdownContent({
   content,
   tone,
   enableCharts,
@@ -275,4 +276,4 @@ export function MarkdownContent({
       </ReactMarkdown>
     </div>
   );
-}
+});

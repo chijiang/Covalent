@@ -1,3 +1,4 @@
+import { consumeMessageStream } from "./message-stream";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { app } from "electron";
@@ -7,6 +8,7 @@ import {
   DESKTOP_PROTOCOL_VERSION,
   parseReadyMessage,
   type ReadyMessage,
+  type MessageStreamEvent,
   type ServiceStatus,
 } from "../shared/contracts";
 
@@ -65,6 +67,22 @@ export class SidecarSupervisor {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  async streamMessage(
+    body: object,
+    signal: AbortSignal,
+    deliver: (event: MessageStreamEvent) => Promise<void>,
+  ): Promise<{ session_id: string }> {
+    if (this.status.phase !== "ready" || !this.endpoint)
+      throw new Error("Desktop service is not ready");
+    const response = await fetch(`${this.endpoint.baseUrl}/messages/stream`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.endpoint.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal,
+    });
+    if (!response.ok || !response.body) throw new Error(`Desktop stream returned ${response.status}`);
+    return consumeMessageStream(response.body, deliver);
   }
 
   subscribe(listener: StatusListener): () => void {

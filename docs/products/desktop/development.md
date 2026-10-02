@@ -1,6 +1,6 @@
 # Desktop 开发指南
 
-状态：本地开发链路、Provider/Agent/MCP/Skill 配置和本地对话已接入共享 Runtime。流式事件、取消、冻结 sidecar、双平台安装与签名仍待实现。技术选择见 [ADR 0001](../../adr/0001-desktop-stack.md)。
+状态：本地开发链路、Provider/Agent/MCP/Skill 配置和本地对话已接入共享 Runtime。实时正文/思考与断连取消已接通；冻结 sidecar、双平台安装与签名仍待实现。技术选择见 [ADR 0001](../../adr/0001-desktop-stack.md)。
 
 ## 产品与边界
 
@@ -66,7 +66,7 @@ Python API 处理 health、鉴权、Agent/会话的 JSON 映射；application �
 | D5 | 版本化模板、导入预检、环境绑定、导出 | Desktop → Lite/Enterprise 可验证转换；缺能力失败且不改现有配置 |
 | D6 | 签名、安装/升级、发布清单与兼容矩阵 | 完成 packaging/README 中两个平台的发行验收 |
 
-D1a 已加入 Electron/React/Vite 依赖和双平台源码 CI；D1b 才加入 Python/Electron 打包器。基础对话已装配 agent-kit；D2 的 SSE/取消仍待实现。
+D1a 已加入 Electron/React/Vite 依赖和双平台源码 CI；D1b 才加入 Python/Electron 打包器。基础对话已装配 agent-kit；D2 已接入 HTTP NDJSON 增量和断连取消，完整三产品语义一致性仍待验收。
 agent-kit 当前传递依赖 MCP/native execution；不要宣称这些已成为可选安装项。
 普通单测使用假模型/工具；真实模型 smoke 使用环境凭据，不成为离线测试前提。
 Desktop 已有独立 macOS/Windows CI job，运行 service/边界测试、TypeScript 检查和生产构建。打包测试仍必须跑实际目标 OS，不能用源码导入替代。
@@ -76,3 +76,13 @@ Desktop 已有独立 macOS/Windows CI job，运行 service/边界测试、TypeSc
 一个变更同时更新实现、相邻契约、受影响消费者和状态文档。
 共享 Runtime 变更运行各产品已有一致性测试；尚未实现的消费者标为未覆盖。
 本地 Electron smoke、wheel 导入和安装包验收是不同门禁；当前前两项可执行，不声称安装包或 Agent 功能已经交付。
+
+## 隐藏外观彩蛋
+
+Desktop 聊天输入独立口令 `le chat` 并发送后启用 Felines 模式（忽略首尾空格与大小写）。口令仅在 renderer 消费，不创建会话或调用模型。图标猫耳、气泡尾巴和主要按钮爪印适配深浅主题，跨页面保留；外观偏好保存于本机 localStorage，点击顶栏猫咪按钮退出。进入后 Agent 菜单会增加内置 `Milo`，退出后移除并隐藏其历史会话；Milo 不写入 Agent 配置表，运行时绑定当前默认 Provider 和模型。无需配置 Agent 即可触发外观模式；要与 Milo 对话仍需先配置默认 Provider 及模型。
+
+## Renderer 动效与输出更新
+
+页面和资源子页使用 180ms 淡入/轻微位移，列表卡片的选中、悬停状态使用颜色与边框过渡。
+动效仅在系统未开启“减少动态效果”时启用；不通过重建表单或聊天组件触发动效，也不对每次轮询更新的文本重复播放动画。
+正文和思考通过 `/messages/stream` HTTP NDJSON → Electron main → preload → renderer 实时传递，React 按帧合并更新。1500ms 轮询仅刷新执行轨迹，结束后读取持久化会话。发送、编辑重跑和问答恢复共用同一流式路径；运行期间暂不允许切换会话，离开聊天工作区会断开并取消运行。

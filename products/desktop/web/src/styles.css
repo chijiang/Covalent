@@ -186,6 +186,9 @@ button:disabled {
   align-items: center;
   gap: 10px;
   width: 100%;
+  /* nav is a grid container; auto minimum would clamp the button to the
+     nowrap row width and push the trailing felines paw past the sidebar. */
+  min-width: 0;
   padding: 0 10px;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -202,6 +205,7 @@ button:disabled {
 .nav-text {
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
   opacity: 1;
   transition: opacity 150ms ease;
 }
@@ -3017,4 +3021,150 @@ button:disabled {
 .skill-file-markdown ol {
   padding-left: 22px;
   margin: 8px 0;
+}
+
+/* Small vector accents: round silhouettes, rose inner ears, and no hit targets. */
+.felines {
+  --feline-ink: #c98288;
+}
+.dark.felines {
+  --feline-ink: #dfa1a8;
+}
+.felines :is(.welcome-icon, .desktop-avatar, .composer,
+  .chat-bubble, .primary-button, .nav-item.active) {
+  position: relative;
+}
+.felines :is(.welcome-icon, .desktop-avatar)::before,
+.felines :is(.welcome-icon, .desktop-avatar)::after {
+  content: "";
+  position: absolute;
+  top: -9px;
+  width: 14px;
+  height: 16px;
+  background: url("./felines/ear.svg") center / contain no-repeat;
+  pointer-events: none;
+}
+.felines :is(.welcome-icon, .desktop-avatar)::before {
+  left: 1px;
+  transform: rotate(-8deg);
+}
+.felines :is(.welcome-icon, .desktop-avatar)::after {
+  right: 1px;
+  transform: scaleX(-1) rotate(-8deg);
+}
+.felines .desktop-avatar::before,
+.felines .desktop-avatar::after {
+  top: -7px;
+  width: 11px;
+  height: 13px;
+}
+.felines .composer::before {
+  content: "";
+  position: absolute;
+  right: 17px;
+  top: -25px;
+  width: 40px;
+  height: 29px;
+  background: url("./felines/peek.svg") center / contain no-repeat;
+  pointer-events: none;
+}
+/* A soft curled tail sits outside the text and message actions. */
+.felines .chat-bubble::after {
+  content: "";
+  position: absolute;
+  bottom: 5px;
+  left: -12px;
+  width: 13px;
+  height: 20px;
+  background: var(--feline-ink);
+  mask: url("./felines/tail.svg") center / contain no-repeat;
+  opacity: 0.7;
+  pointer-events: none;
+}
+.felines .chat-message.user .chat-bubble::after {
+  left: auto;
+  right: -12px;
+  transform: scaleX(-1);
+}
+.felines :is(.primary-button, .nav-item.active)::after {
+  content: "";
+  display: inline-block;
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  margin-left: 5px;
+  background: currentColor;
+  mask: url("./felines/paw.svg") center / contain no-repeat;
+  transform: rotate(12deg);
+  opacity: 0.75;
+  pointer-events: none;
+}
+.felines .nav-item.active::after {
+  color: var(--feline-ink);
+}
+.felines .sidebar-hidden .nav-item.active::after {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  transform: scale(0.65) rotate(12deg);
+}
+.felines-toggle {
+  margin-left: auto;
+  color: var(--accent-red);
+}
+.felines-toggle + .theme-toggle {
+  margin-left: 0;
+}
+.felines-notice {
+  display: none;
+}
+.felines .felines-notice {
+  display: block;
+  margin: 6px 18px 0;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+/* Animate mounted workspaces, never individual token or polling updates. */
+@keyframes desktop-workspace-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes desktop-selection-enter {
+  from { box-shadow: inset 3px 0 0 transparent; }
+  to { box-shadow: inset 3px 0 0 var(--accent-red-deep); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .app-content > *,
+  .resource-workspace > .management-layout {
+    animation: desktop-workspace-enter 180ms cubic-bezier(0.2, 0.7, 0.3, 1);
+  }
+
+  .inventory-item,
+  .session-item,
+  .resource-tabs button,
+  .resource-mode-picker button {
+    transition:
+      background-color 160ms ease,
+      border-color 160ms ease,
+      color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .inventory-item.selected {
+    animation: desktop-selection-enter 180ms ease both;
+  }
+
+  .form-success,
+  .form-error {
+    animation: desktop-workspace-enter 140ms ease;
+  }
 }

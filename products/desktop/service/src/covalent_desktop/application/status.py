@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from covalent_desktop import __version__
 
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)

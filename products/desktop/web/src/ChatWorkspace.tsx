@@ -36,7 +36,14 @@ import {
   type PublishedFile,
 } from "./transcript";
 
+import { applyStreamEvent, emptyStream } from "./stream-state";
+
 const TRACE_POLL_INTERVAL_MS = 1500;
+const FELINES_MILO_AGENT = "felines-milo";
+
+function agentDisplayName(name: string): string {
+  return name === FELINES_MILO_AGENT ? "Milo" : name;
+}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -245,14 +252,73 @@ function SessionActionsMenu({
   );
 }
 
-export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
+export function ChatWorkspace({
+  status,
+  felines,
+  onEnterFelines,
+}: {
+  status: DesktopServiceStatus;
+  felines: boolean;
+  onEnterFelines: () => void;
+}) {
   const [agents, setAgents] = useState<DesktopAgent[]>([]);
   const [sessions, setSessions] = useState<DesktopSessionSummary[]>([]);
   const [agentName, setAgentName] = useState("");
   const [session, setSession] = useState<DesktopSession | null>(null);
   const [draft, setDraft] = useState("");
+  const [felinesNotice, setFelinesNotice] = useState("");
+  const isFelinesCommand = draft.trim().toLowerCase() === "le chat";
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const [streamOutput, setStreamOutput] = useState(emptyStream);
+  const runningRef = useRef(false);
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const followOutputRef = useRef(true);
+  useLayoutEffect(() => {
+    const list = messageListRef.current;
+    if (list && followOutputRef.current) list.scrollTop = list.scrollHeight;
+  }, [streamOutput, session?.messages, busy]);
+
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (runningRef.current) void window.covalentDesktop.cancelMessage().catch(() => {});
+    };
+  }, []);
+
+  async function sendStreaming(value: Parameters<typeof window.covalentDesktop.streamMessage>[0]) {
+    if (!mountedRef.current) throw new Error("Chat workspace closed");
+    let output = emptyStream();
+    let frame = 0;
+    runningRef.current = true;
+    setStreamOutput(output);
+    try {
+      return await window.covalentDesktop.streamMessage(value, (event) => {
+        if (!mountedRef.current) return;
+        output = applyStreamEvent(output, event);
+        if (!frame) frame = requestAnimationFrame(() => {
+          frame = 0;
+          if (mountedRef.current) setStreamOutput(output);
+        });
+      });
+    } catch (cause) {
+      runningRef.current = false;
+      // Failed edits/runs may already have persisted changes. Never restore a
+      // stale pre-run transcript or automatically retry tool side effects.
+      if (value.session_id && mountedRef.current) {
+        try { setSession(await window.covalentDesktop.getSession(value.session_id)); }
+        catch { /* Keep the last visible state if the service is unavailable. */ }
+      }
+      throw cause;
+    } finally {
+      runningRef.current = false;
+      cancelAnimationFrame(frame);
+      if (mountedRef.current) setStreamOutput(output);
+    }
+  }
+
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [conversationsVisible, setConversationsVisible] = useState(true);
@@ -271,7 +337,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
     if (status.phase !== "ready") return;
     let active = true;
     Promise.all([
-      window.covalentDesktop.listAgents(),
+      window.covalentDesktop.listAgents(felines),
       window.covalentDesktop.listSessions(),
     ])
       .then(([agentResult, sessionResult]) => {
@@ -281,19 +347,30 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
         );
         setAgents(chatAgents);
         setSessions(sessionResult.items);
-        setAgentName((previous) => previous || chatAgents[0]?.name || "");
+        setAgentName((previous) =>
+          chatAgents.some((agent) => agent.name === previous)
+            ? previous
+            : chatAgents[0]?.name || "",
+        );
+        setSession((current) =>
+          current && chatAgents.some((agent) => agent.name === current.agent_name)
+            ? current
+            : null,
+        );
         setLoaded(true);
       })
       .catch((cause) => active && setError(String(cause)));
     return () => {
       active = false;
     };
-  }, [status.phase]);
+  }, [status.phase, felines]);
 
   async function openSession(id: string) {
+    if (busy) return;
     try {
       setError("");
       const value = await window.covalentDesktop.getSession(id);
+      followOutputRef.current = true;
       setSession(value);
       setAnswers({});
       setRenamingTitle(false);
@@ -306,14 +383,27 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
 
   async function send() {
     const message = draft.trim();
+    // A standalone local command: never create a conversation or invoke an agent.
+    if (message.toLowerCase() === "le chat") {
+      onEnterFelines();
+      setDraft("");
+      setFelinesNotice(
+        "Meow. Felines mode is on — use the cat in the top bar to leave.",
+      );
+      return;
+    }
     if (
       !message ||
+      status.phase !== "ready" ||
+      Boolean(session?.input_request) ||
       !agentName ||
       !agents.some((agent) => agent.name === agentName) ||
       busy
     )
       return;
+    followOutputRef.current = true;
     setBusy(true);
+    setStreamOutput(emptyStream());
     setError("");
     setDraft("");
     const previous = session;
@@ -325,6 +415,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
         ? previous.id
         : (await window.covalentDesktop.createConversation(agentName, title))
             .session_id;
+      if (!mountedRef.current) return;
       setSession({
         id: sessionId,
         agent_name: agentName,
@@ -337,9 +428,10 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
         ],
         activity: previous?.activity || [],
       });
-      const result = await window.covalentDesktop.sendMessage({
+      const result = await sendStreaming({
         agent_name: agentName,
         message,
+        include_felines: felines,
         session_id: sessionId,
       });
       const [full, recent] = await Promise.all([
@@ -350,7 +442,6 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
       setSessions(recent.items);
     } catch (cause) {
       setError(String(cause));
-      setSession(previous);
       setDraft(message);
     } finally {
       setBusy(false);
@@ -367,11 +458,14 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
       setError("Answer each question before continuing.");
       return;
     }
+    followOutputRef.current = true;
     setBusy(true);
+    setStreamOutput(emptyStream());
     setError("");
     try {
-      const result = await window.covalentDesktop.sendMessage({
+      const result = await sendStreaming({
         agent_name: session.agent_name,
+        include_felines: felines,
         session_id: session.id,
         message: "",
         resume_answers: answers,
@@ -398,33 +492,29 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
     [session?.id],
   );
 
-  // Trace entries are written by the service as the run streams, so polling is
-  // enough to follow a running turn without a streaming transport.
+  // Poll only persisted trace metadata. Text comes from the live stream; a
+  // late poll must never overwrite the authoritative completion snapshot.
   const polledSessionId = session?.id ?? null;
   useEffect(() => {
     if (!busy || !polledSessionId) return;
     let active = true;
+    let pending = false;
     const timer = window.setInterval(() => {
+      if (pending || !runningRef.current) return;
+      pending = true;
       window.covalentDesktop
         .getSession(polledSessionId)
         .then((polled) => {
-          if (!active) return;
+          if (!active || !runningRef.current) return;
           setSession((current) => {
             if (!current || current.id !== polledSessionId) return current;
-            // The runtime persists the transcript only once the run ends, so a
-            // mid-run poll would otherwise drop the optimistic user message.
-            return {
-              ...polled,
-              messages:
-                polled.messages.length >= current.messages.length
-                  ? polled.messages
-                  : current.messages,
-            };
+            return { ...current, activity: polled.activity, turn_meta: polled.turn_meta };
           });
         })
         .catch(() => {
           /* Transient poll failures recover on the next tick. */
-        });
+        })
+        .finally(() => { pending = false; });
     }, TRACE_POLL_INTERVAL_MS);
     return () => {
       active = false;
@@ -481,7 +571,9 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
     const previous = session;
     const target = displayMessages.find((item) => item.key === editingKey);
     if (!draft || !previous || !target?.userOrdinal || busy) return;
+    followOutputRef.current = true;
     setBusy(true);
+    setStreamOutput(emptyStream());
     setError("");
     setEditingKey(null);
     setSession({
@@ -500,9 +592,10 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
       suggestions: [],
     });
     try {
-      const result = await window.covalentDesktop.sendMessage({
+      const result = await sendStreaming({
         agent_name: previous.agent_name,
         message: draft,
+        include_felines: felines,
         session_id: previous.id,
         edit_user_index: target.userOrdinal,
       });
@@ -514,7 +607,6 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
       setSessions(recent.items);
     } catch (cause) {
       setError(String(cause));
-      setSession(previous);
       setEditingKey(target.key);
       setEditingDraft(draft);
     } finally {
@@ -555,13 +647,16 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
 
   const visibleSessions = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) return sessions;
-    return sessions.filter(
+    const modeSessions = felines
+      ? sessions
+      : sessions.filter((item) => item.agent_name !== FELINES_MILO_AGENT);
+    if (!query) return modeSessions;
+    return modeSessions.filter(
       (item) =>
         item.title.toLowerCase().includes(query) ||
         item.agent_name.toLowerCase().includes(query),
     );
-  }, [sessions, searchQuery]);
+  }, [sessions, searchQuery, felines]);
 
   function startItemRename(item: DesktopSessionSummary) {
     disarmSessionDelete();
@@ -635,9 +730,10 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
     }
   }
 
-  const liveReasoning = busy ? (session?.live_reasoning ?? "") : "";
+  const liveReasoning = busy ? streamOutput.reasoning : "";
 
   function startNewConversation() {
+    if (busy) return;
     setSession(null);
     setAnswers({});
     setError("");
@@ -662,6 +758,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
             type="button"
             aria-label="New conversation"
             title="New conversation"
+            disabled={busy}
             onClick={startNewConversation}
           >
             <Plus size={16} />
@@ -723,6 +820,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
                     <button
                       type="button"
                       className="session-open"
+                      disabled={busy}
                       onClick={() => openSession(item.id)}
                     >
                       <MessageSquare size={15} />
@@ -733,7 +831,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
                             {item.title}
                           </span>
                         </strong>
-                        <small>{item.agent_name}</small>
+                        <small>{agentDisplayName(item.agent_name)}</small>
                       </span>
                     </button>
                   )}
@@ -868,7 +966,8 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
               type="button"
               aria-label="New conversation"
               title="New conversation"
-              onClick={startNewConversation}
+              disabled={busy}
+            onClick={startNewConversation}
             >
               <Plus size={16} />
             </button>
@@ -884,7 +983,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
               disabled={!agents.length || busy}
               options={agents.map((agent) => ({
                 value: agent.name,
-                label: agent.name,
+                label: agentDisplayName(agent.name),
               }))}
               placeholder="No agents"
             />
@@ -904,7 +1003,10 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
             </button>
           </div>
         </div>
-        <div className="message-list">
+        <div className="message-list" ref={messageListRef} onScroll={(event) => {
+          const list = event.currentTarget;
+          followOutputRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 64;
+        }}>
           {displayMessages.length ? (
             displayMessages.map((message) => {
               const isUser = message.role === "user";
@@ -916,7 +1018,7 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
                 >
                   <div className="chat-message-stack">
                     <span className="message-role">
-                      {isUser ? "You" : agentName}
+                      {isUser ? "You" : agentDisplayName(agentName)}
                     </span>
                     <div
                       className={`chat-bubble${isEditing ? " is-editing" : ""}`}
@@ -1022,13 +1124,20 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
           )}
           {busy && liveReasoning ? (
             <div className="chat-message assistant">
-              <span className="message-role">{agentName}</span>
+              <span className="message-role">{agentDisplayName(agentName)}</span>
               <div>
                 <ReasoningBlock reasoning={liveReasoning} active />
               </div>
             </div>
           ) : null}
-          {busy && !liveReasoning ? <ThinkingIndicator /> : null}
+          {busy && streamOutput.text ? (
+            <div className="chat-message assistant">
+              <span className="message-role">{agentDisplayName(agentName)}</span>
+              <MarkdownContent content={streamOutput.text} enableCharts={false}
+                onDownload={saveDownload} onOpenExternal={openExternal} tone="inbound" />
+            </div>
+          ) : null}
+          {busy && !liveReasoning && !streamOutput.text ? <ThinkingIndicator /> : null}
         </div>
         {!!session?.suggestions?.length && (
           <div className="suggested-questions">
@@ -1096,6 +1205,11 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
             {error}
           </p>
         )}
+        {felinesNotice && (
+          <p className="felines-notice" role="status">
+            {felinesNotice}
+          </p>
+        )}
         <div className="composer">
           <textarea
             aria-label="Message"
@@ -1105,29 +1219,33 @@ export function ChatWorkspace({ status }: { status: DesktopServiceStatus }) {
                 : "Create or activate a chat agent first"
             }
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            disabled={busy || Boolean(session?.input_request)}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setFelinesNotice("");
+            }}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing
+              ) {
                 event.preventDefault();
                 void send();
               }
             }}
-            disabled={
-              !agents.some((agent) => agent.name === agentName) ||
-              status.phase !== "ready" ||
-              Boolean(session?.input_request) ||
-              busy
-            }
           />
           <button
             type="button"
             onClick={() => void send()}
             disabled={
               !draft.trim() ||
-              !agents.some((agent) => agent.name === agentName) ||
-              status.phase !== "ready" ||
-              Boolean(session?.input_request) ||
-              busy
+              (!isFelinesCommand && (
+                !agents.some((agent) => agent.name === agentName) ||
+                status.phase !== "ready" ||
+                Boolean(session?.input_request) ||
+                busy
+              ))
             }
             aria-label="Send message"
           >

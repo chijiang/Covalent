@@ -21,8 +21,8 @@ conversation while a turn runs, conversations are auto-titled and renameable, me
 carry timestamps with copy and edit-and-resend
 actions, published files preview and download from the message that produced them
 (agent screenshots render inline and open in a lightbox), and execution
-traces are captured per turn and refreshed in the trace panel. Token streaming,
-template exchange, frozen sidecars and signed installers remain in development.
+traces are captured per turn and refreshed in the trace panel. Live text and reasoning use authenticated HTTP streaming with bounded IPC forwarding.
+Template exchange, frozen sidecars and signed installers remain in development.
 
 [Repository overview](../../README.md) · [Development guide](../../docs/products/desktop/development.md) · [Host contract](../../docs/products/desktop/host-contract.md)
 
