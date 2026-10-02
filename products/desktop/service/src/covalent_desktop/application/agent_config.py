@@ -104,7 +104,7 @@ class DesktopAgentConfig(BaseModel):
             reasoning_prompt=self.reasoning_prompt,
             reasoning_level=self.reasoning_level,
             provider=ProviderConfig(
-                provider="openai_compatible",
+                provider=provider.provider_type,
                 model=self.model,
                 base_url=provider.base_url,
                 api_style=provider.api_style,

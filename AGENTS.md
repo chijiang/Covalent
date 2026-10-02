@@ -29,7 +29,7 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 ## Persistence And Config
 
 - Agents, MCP servers, skill sources, LLM providers, and chat sessions are persisted. Treat the database-backed config store as the source of truth.
-- LLM access uses the `openai_compatible` provider type only. Register providers in Service Console (`/service-console/provider-settings`) or via `GET/PUT /config/providers`; env `DEFAULT_*` values are fallbacks when no provider is configured in the database.
+- LLM access uses the `openai_compatible`, `apih`, or `anthropic_compatible` provider types. Register providers in Service Console (`/service-console/provider-settings`) or via `GET/PUT /config/providers`; env `DEFAULT_*` values are fallbacks when no provider is configured in the database.
 - `.env` JSON values are seed data for first boot when the corresponding tables are empty. Do not build new product behavior that only mutates environment seed payloads.
 - If a persisted shape changes, add an Alembic migration in `products/enterprise/backend/src/covalent_enterprise/migrations/versions/`.
 - Keep backend schemas and frontend field names aligned. Avoid silent shape drift between Pydantic models and `products/enterprise/web/lib/types.ts`.

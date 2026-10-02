@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -263,9 +263,9 @@ class PersistedSkillSourceConfig(BaseModel):
 class PersistedProviderConfig(BaseModel):
     name: str = "default"
     internal_name: str | None = None
-    provider_type: Literal["openai_compatible", "apih"] = "openai_compatible"
+    provider_type: Literal["openai_compatible", "apih", "anthropic_compatible"] = "openai_compatible"
     base_url: str = ""
-    api_style: Literal["chat_completions", "responses"] | None = None
+    api_style: Literal["chat_completions", "responses", "messages"] | None = None
     api_key: str | None = None
     apih: APIHConfig | None = None
     default_model: str = ""
@@ -278,6 +278,14 @@ class PersistedProviderConfig(BaseModel):
     publication_requested_at: datetime | None = None
     publication_reviewed_at: datetime | None = None
     publication_reviewed_by_user_id: str | None = None
+
+    @model_validator(mode="after")
+    def check_style(self) -> "PersistedProviderConfig":
+        if self.provider_type == "anthropic_compatible":
+            self.api_style = "messages"
+        elif self.api_style == "messages":
+            raise ValueError("API style 'messages' is only valid for Anthropic-compatible providers")
+        return self
 
 
 class PersistedMcpServerMetadata(BaseModel):

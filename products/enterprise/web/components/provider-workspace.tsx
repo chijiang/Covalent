@@ -42,6 +42,11 @@ type ProviderFormState = {
 
 type ProviderInventoryFilter = "all" | "default" | "missing_key";
 
+const PROVIDER_TYPE_DEFAULTS: Record<string, { base_url: string; api_style: string }> = {
+  openai_compatible: { base_url: "https://api.openai.com/v1", api_style: "chat_completions" },
+  anthropic_compatible: { base_url: "https://api.anthropic.com", api_style: "messages" },
+};
+
 const PROVIDER_LIST_PANEL_STORAGE_KEY = "agent-framework.service-console.providers-list-width";
 const DEFAULT_PROVIDER_LIST_PANEL_WIDTH = 316;
 const MIN_PROVIDER_LIST_PANEL_WIDTH = 272;
@@ -241,6 +246,21 @@ export function ProviderWorkspace() {
 
   function handleFormChange(field: keyof ProviderFormState, value: string | boolean) {
     setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function switchProviderType(value: string) {
+    setForm((current) => {
+      const defaults = PROVIDER_TYPE_DEFAULTS[value];
+      if (!defaults) {
+        return { ...current, provider_type: value };
+      }
+      const previousDefaults = PROVIDER_TYPE_DEFAULTS[current.provider_type];
+      const base_url =
+        !current.base_url.trim() || current.base_url === previousDefaults?.base_url
+          ? defaults.base_url
+          : current.base_url;
+      return { ...current, provider_type: value, base_url, api_style: defaults.api_style };
+    });
   }
 
   function startCreatingProvider() {
@@ -559,7 +579,7 @@ export function ProviderWorkspace() {
                             <span>Type</span>
                             <Select
                               value={form.provider_type}
-                              onValueChange={(value) => handleFormChange("provider_type", value ?? "")}
+                              onValueChange={(value) => switchProviderType(value ?? "")}
                             >
                               <SelectTrigger className="console-select-trigger w-full">
                                 <SelectValue />
@@ -567,6 +587,7 @@ export function ProviderWorkspace() {
                               <SelectContent align="start" alignItemWithTrigger>
                                 <SelectItem value="openai_compatible">OpenAI Compatible</SelectItem>
                                 <SelectItem value="apih">APIH</SelectItem>
+                                <SelectItem value="anthropic_compatible">Anthropic Compatible</SelectItem>
                               </SelectContent>
                             </Select>
                           </Label>
@@ -594,7 +615,11 @@ export function ProviderWorkspace() {
                             <span>{form.provider_type === "apih" ? "Chat URL / Base URL" : "Base URL"}</span>
                             <Input
                               onChange={(event) => handleFormChange("base_url", event.target.value)}
-                              placeholder="https://api.openai.com/v1"
+                              placeholder={
+                                form.provider_type === "anthropic_compatible"
+                                  ? PROVIDER_TYPE_DEFAULTS.anthropic_compatible.base_url
+                                  : "https://api.openai.com/v1"
+                              }
                               type="url"
                               value={form.base_url}
                             />

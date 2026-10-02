@@ -239,6 +239,81 @@ def test_provider_model_catalog_reads_configured_endpoint() -> None:
         thread.join(timeout=5)
 
 
+def test_anthropic_provider_flows_to_runtime_spec(tmp_path: Path) -> None:
+    model = FakeModel()
+    workspace = make_workspace(tmp_path / "desktop.sqlite3", model)
+    saved = workspace.save_provider(
+        {
+            "name": "claude",
+            "provider_type": "anthropic_compatible",
+            "api_style": "chat_completions",
+            "base_url": "https://api.anthropic.com",
+            "default_model": "claude-test",
+        }
+    )
+    assert saved["api_style"] == "messages"
+    workspace.save_agent(
+        {"name": "helper", "provider_name": "claude", "model": "claude-test"}
+    )
+    registry = FakeRegistry(model)
+    active = DesktopWorkspace(workspace.store, lambda: registry)
+    asyncio.run(
+        active.send_message("helper", "hello", provider_keys={"claude": "sk-ant"})
+    )
+    spec = registry.agents["helper"]
+    assert spec.provider.provider == "anthropic_compatible"
+    assert spec.provider.api_style == "messages"
+    assert spec.provider.base_url == "https://api.anthropic.com"
+    assert spec.provider.api_key == "sk-ant"
+    with pytest.raises(WorkspaceError) as error:
+        workspace.save_provider(
+            {
+                "name": "bad",
+                "provider_type": "openai_compatible",
+                "api_style": "messages",
+                "base_url": "https://api.openai.com/v1",
+            }
+        )
+    assert error.value.code == "invalid_provider"
+
+
+def test_provider_model_catalog_reads_anthropic_endpoint() -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            assert self.path == "/v1/models"
+            assert self.headers["x-api-key"] == "provider-secret"
+            assert self.headers["anthropic-version"] == "2023-06-01"
+            body = json.dumps(
+                {"data": [{"id": "claude-b"}, {"id": "claude-a"}, {"id": "claude-b"}]}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        provider = DesktopProviderConfig(
+            name="claude",
+            provider_type="anthropic_compatible",
+            base_url=f"http://127.0.0.1:{server.server_address[1]}",
+        )
+        assert DesktopProviderCatalog().list_models(provider, "provider-secret") == [
+            "claude-a",
+            "claude-b",
+        ]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_agent_configuration_roundtrip_and_runtime_mapping(tmp_path: Path) -> None:
     model = FakeModel()
     workspace = make_workspace(tmp_path / "desktop.sqlite3", model)

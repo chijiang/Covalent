@@ -13,6 +13,20 @@ const emptyProvider: DesktopProvider = {
   legacy_credential: false,
 };
 
+const PROVIDER_TYPE_DEFAULTS: Record<
+  DesktopProvider["provider_type"],
+  { base_url: string; api_style: DesktopProvider["api_style"] }
+> = {
+  openai_compatible: {
+    base_url: "https://api.openai.com/v1",
+    api_style: "chat_completions",
+  },
+  anthropic_compatible: {
+    base_url: "https://api.anthropic.com",
+    api_style: "messages",
+  },
+};
+
 export function ProviderSettings() {
   const [providers, setProviders] = useState<DesktopProvider[]>([]);
   const [form, setForm] = useState<DesktopProvider>({ ...emptyProvider });
@@ -69,6 +83,19 @@ export function ProviderSettings() {
     value: DesktopProvider[K],
   ) {
     setForm((previous) => ({ ...previous, [field]: value }));
+    setMessage("");
+  }
+
+  function switchProviderType(provider_type: DesktopProvider["provider_type"]) {
+    setForm((previous) => {
+      const defaults = PROVIDER_TYPE_DEFAULTS[provider_type];
+      const previousDefaults = PROVIDER_TYPE_DEFAULTS[previous.provider_type];
+      const base_url =
+        !previous.base_url.trim() || previous.base_url === previousDefaults.base_url
+          ? defaults.base_url
+          : previous.base_url;
+      return { ...previous, provider_type, base_url, api_style: defaults.api_style };
+    });
     setMessage("");
   }
 
@@ -189,30 +216,42 @@ export function ProviderSettings() {
                   placeholder="my-provider"
                 />
               </label>
-              <label>
-                Provider type
-                <input value="OpenAI compatible" disabled />
-              </label>
+              <AgentSelectField
+                label="Provider type"
+                value={form.provider_type}
+                onChange={(value) =>
+                  switchProviderType(value as DesktopProvider["provider_type"])
+                }
+                options={[
+                  { value: "openai_compatible", label: "OpenAI compatible" },
+                  { value: "anthropic_compatible", label: "Anthropic compatible" },
+                ]}
+                placeholder="Select provider type"
+              />
               <label className="full-width">
                 Base URL
                 <input
                   value={form.base_url}
                   onChange={(event) => change("base_url", event.target.value)}
-                  placeholder="https://api.openai.com/v1"
+                  placeholder={
+                    PROVIDER_TYPE_DEFAULTS[form.provider_type].base_url
+                  }
                 />
               </label>
-              <AgentSelectField
-                label="API style"
-                value={form.api_style}
-                onChange={(value) =>
-                  change("api_style", value as DesktopProvider["api_style"])
-                }
-                options={[
-                  { value: "chat_completions", label: "Chat Completions" },
-                  { value: "responses", label: "Responses" },
-                ]}
-                placeholder="Select API style"
-              />
+              {form.provider_type === "openai_compatible" && (
+                <AgentSelectField
+                  label="API style"
+                  value={form.api_style}
+                  onChange={(value) =>
+                    change("api_style", value as DesktopProvider["api_style"])
+                  }
+                  options={[
+                    { value: "chat_completions", label: "Chat Completions" },
+                    { value: "responses", label: "Responses" },
+                  ]}
+                  placeholder="Select API style"
+                />
+              )}
               <div className="provider-model-field">
                 <AgentSelectField
                   label="Default model"

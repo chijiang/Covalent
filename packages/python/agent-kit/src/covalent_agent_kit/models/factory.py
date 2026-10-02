@@ -18,4 +18,8 @@ def build_provider(config: ProviderConfig) -> ModelAdapter:
 
             return ResponsesProvider(config)
         return OpenAICompatibleProvider(config)
+    if config.provider == "anthropic_compatible":
+        from covalent_agent_kit.models.anthropic_compatible import AnthropicCompatibleProvider
+
+        return AnthropicCompatibleProvider(config)
     raise ValueError(f"Unsupported provider: {config.provider}")

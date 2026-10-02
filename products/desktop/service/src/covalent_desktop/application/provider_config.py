@@ -13,9 +13,9 @@ class DesktopProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    provider_type: Literal["openai_compatible"] = "openai_compatible"
+    provider_type: Literal["openai_compatible", "anthropic_compatible"] = "openai_compatible"
     base_url: str = Field(max_length=2048)
-    api_style: Literal["chat_completions", "responses"] = "chat_completions"
+    api_style: Literal["chat_completions", "responses", "messages"] = "chat_completions"
     default_model: str = Field(default="", max_length=255)
     models: list[str] = Field(default_factory=list)
     is_default: bool = False
@@ -35,6 +35,14 @@ class DesktopProviderConfig(BaseModel):
     @classmethod
     def normalize_models(cls, values: list[str]) -> list[str]:
         return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+    @model_validator(mode="after")
+    def check_style(self) -> "DesktopProviderConfig":
+        if self.provider_type == "anthropic_compatible":
+            self.api_style = "messages"
+        elif self.api_style == "messages":
+            raise ValueError("API style 'messages' is only valid for Anthropic-compatible providers")
+        return self
 
     @model_validator(mode="after")
     def check_endpoint(self) -> "DesktopProviderConfig":

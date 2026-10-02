@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import json
-from json import JSONDecodeError
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -10,7 +9,7 @@ from openai import AsyncOpenAI
 
 from covalent_runtime.domain.types import Capability, GenerationRequest, GenerationResponse, Message, TokenUsage, ToolCall
 from covalent_runtime.ports.model import ModelAdapter, ModelProviderError, ProviderConfig
-from covalent_agent_kit.models.utils import derive_openai_base_url, reasoning_level_kwargs
+from covalent_agent_kit.models.utils import derive_openai_base_url, extract_text, parse_tool_arguments, reasoning_level_kwargs
 
 
 
@@ -297,32 +296,7 @@ class OpenAICompatibleProvider(ModelAdapter):
 
     @staticmethod
     def _parse_arguments(raw_arguments: Any, *, provider: str, tool_name: str) -> dict[str, Any]:
-        if isinstance(raw_arguments, dict):
-            return raw_arguments
-        if isinstance(raw_arguments, str) and raw_arguments.strip():
-            try:
-                parsed = json.loads(raw_arguments)
-            except JSONDecodeError as exc:
-                snippet = raw_arguments[max(exc.pos - 80, 0): min(exc.pos + 80, len(raw_arguments))]
-                raise ModelProviderError(
-                    provider,
-                    detail=(
-                        f"Upstream returned invalid JSON for tool '{tool_name}' arguments: {exc}. "
-                        f"Around char {exc.pos}: {snippet!r}"
-                    ),
-                    status_code=502,
-                ) from exc
-            if not isinstance(parsed, dict):
-                raise ModelProviderError(
-                    provider,
-                    detail=(
-                        f"Upstream returned non-object JSON for tool '{tool_name}' arguments. "
-                        f"Expected a JSON object, got {type(parsed).__name__}."
-                    ),
-                    status_code=502,
-                )
-            return parsed
-        return {}
+        return parse_tool_arguments(raw_arguments, provider=provider, tool_name=tool_name)
 
     @staticmethod
     def _raw_tool_call_id(raw_call: dict[str, Any]) -> str | None:
@@ -346,17 +320,7 @@ class OpenAICompatibleProvider(ModelAdapter):
 
     @staticmethod
     def _extract_text(content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(str(item.get("text", "")))
-                else:
-                    parts.append(str(item))
-            return "".join(parts)
-        return "" if content is None else str(content)
+        return extract_text(content)
 
     @staticmethod
     def _normalize_content_parts(content: Any) -> Any:

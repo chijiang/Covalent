@@ -67,9 +67,9 @@ interface DesktopAgent {
 }
 interface DesktopProvider {
   name: string;
-  provider_type: "openai_compatible";
+  provider_type: "openai_compatible" | "anthropic_compatible";
   base_url: string;
-  api_style: "chat_completions" | "responses";
+  api_style: "chat_completions" | "responses" | "messages";
   default_model: string;
   models: string[];
   is_default: boolean;

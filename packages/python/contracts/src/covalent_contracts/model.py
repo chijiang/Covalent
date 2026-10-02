@@ -9,10 +9,11 @@ class ProviderConfig(BaseModel):
     model: str
     api_key: str | None = Field(default=None, exclude=True, repr=False)
     base_url: str | None = None
-    # Wire protocol for openai_compatible providers: None/"chat_completions"
-    # calls POST {base_url}/chat/completions via the Chat Completions API;
-    # "responses" calls POST {base_url}/responses via the Responses API.
-    api_style: Literal["chat_completions", "responses"] | None = None
+    # Wire protocol: None/"chat_completions" calls POST {base_url}/chat/completions
+    # (Chat Completions API); "responses" calls POST {base_url}/responses (Responses
+    # API); "messages" calls POST {base_url}/v1/messages via the Anthropic protocol
+    # (anthropic_compatible providers only).
+    api_style: Literal["chat_completions", "responses", "messages"] | None = None
     timeout_seconds: float = 500.0
     extra: dict[str, str] = Field(default_factory=dict)
     # Runtime-only: credentials are resolved from the providers store, not agents.
