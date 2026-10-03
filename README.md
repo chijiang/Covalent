@@ -174,6 +174,8 @@ Docker daemon and locally built sandbox images.
 
 - [Monorepo development guide](docs/development.md)
 - [Branching, versioning, preview and release policy](docs/versioning-and-release.md)
+- [Changelog](CHANGELOG.md)
+- [Platform 0.2.0 RC.1 release baseline](docs/releases/platform-0.2.0-rc.1.md)
 - [Architecture and product boundaries](docs/monorepo-architecture.md)
 - [Runtime consistency rules](docs/runtime-consistency.md)
 - [Desktop development guide](docs/products/desktop/development.md)

@@ -2,7 +2,10 @@
 
 **Date:** 2026-08-26
 
-**Status:** Draft
+**Status:** Implemented in the current Enterprise and shared Runtime baseline.
+Token-level final-answer deltas, persisted runs and events, replay, reconnect,
+explicit cancellation, and interrupted-run recovery are present. Full release
+gate and critical-path smoke validation remain outstanding.
 
 **Scope:** Make the final answer of every conversation turn stream at token
 granularity, let the user interrupt an in-flight answer without corrupting the

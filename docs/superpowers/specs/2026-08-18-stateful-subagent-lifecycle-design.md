@@ -2,7 +2,11 @@
 
 **Date:** 2026-08-18
 
-**Status:** Draft — awaiting design review
+**Status:** Implemented behind the opt-in
+`AGENT_FRAMEWORK_STATEFUL_DELEGATES_ENABLED` setting. Persisted delegate runs,
+private memory, parent dialogue, resume/list/release tools, lifecycle events,
+expiry, and cleanup are present. The setting remains disabled by default while
+staged compatibility validation is completed.
 
 **Scope:** Replace one-shot delegate execution with resumable logical subagent
 runs that own private memory, can ask their direct parent agent for information,
