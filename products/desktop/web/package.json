@@ -1,0 +1,28 @@
+{
+  "name": "@covalent/desktop-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "React/Vite renderer for Covalent Desktop",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "dev": "vite",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "echarts": "^6.1.0",
+    "lucide-react": "1.17.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-markdown": "^10.1.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "^5.9.3",
+    "vite": "8.3.1"
+  }
+}

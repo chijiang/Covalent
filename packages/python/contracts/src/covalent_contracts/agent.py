@@ -1,0 +1,36 @@
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from covalent_contracts.messages import Capability
+from covalent_contracts.mcp import McpServerConfig, McpToolReference
+from covalent_contracts.model import ProviderConfig
+
+
+class AgentSpec(BaseModel):
+    name: str
+    description: str
+    system_prompt: str
+    reasoning_prompt: str = ""
+    reasoning_level: str = "none"
+    provider: ProviderConfig
+    skills: list[str] = Field(default_factory=list)
+    local_tools: list[str] = Field(default_factory=list)
+    # Host patterns (fnmatch) this agent is allowed to reach from the sandbox.
+    # When non-empty, the session container switches to bridge networking and
+    # these patterns are merged into SKILL_NET_ALLOW so the skill SDK enforces
+    # them alongside the skill's own permissions.network.allow_outbound.
+    allowed_outbound: list[str] = Field(default_factory=list)
+    # Administrator-approved sandbox profile (stable id). None resolves to the
+    # active default profile at binding time.
+    sandbox_profile_id: str | None = None
+    delegate_agents: list[str] = Field(default_factory=list)
+    mcp_servers: list[McpServerConfig] = Field(default_factory=list)
+    mcp_tools: list[McpToolReference] = Field(default_factory=list)
+    capabilities: set[Capability] = Field(default_factory=lambda: {Capability.CHAT, Capability.REACT})
+    max_iterations: int = 6
+    # Per-agent token budget for context compaction. None = 128_000 default.
+    context_window: int | None = Field(default=None, gt=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)

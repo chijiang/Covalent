@@ -1,0 +1,17 @@
+.git
+**/.venv
+**/node_modules
+**/.next
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.DS_Store
+**/.env
+**/.env.*
+**/*.log
+.pnpm-store
+.covalent
+skills/uploaded
+skills/authored
+skills/github_synced
+dist

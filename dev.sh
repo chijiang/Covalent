@@ -1,67 +1,28 @@
 #!/usr/bin/env bash
-# Development server startup script for Agent Framework
-# Loads configuration from .env file and starts both backend and frontend
-
+# Run Covalent Enterprise from any working directory.
 set -euo pipefail
-
+cd "$(dirname "${BASH_SOURCE[0]}")"
 set -a
-[ -f .env ] && source .env
+if [ -f .env ]; then source .env; fi
 set +a
-
-# Backend port (default: 5170)
 BACKEND_PORT=${AGENT_FRAMEWORK_BACKEND_PORT:-5170}
 BACKEND_HOST=${AGENT_FRAMEWORK_BACKEND_HOST:-0.0.0.0}
-
-# Frontend port (default: 3100)
 FRONTEND_PORT=${AGENT_FRAMEWORK_FRONTEND_PORT:-3100}
-
-echo "================================"
-echo "Covalent Development Server"
-echo "================================"
-echo "Backend:  http://$BACKEND_HOST:$BACKEND_PORT"
-echo "Frontend: http://localhost:$FRONTEND_PORT"
-echo "================================"
-echo ""
-
-# Check if command provided
-if [ "$1" == "backend" ]; then
-    echo "Starting backend on port $BACKEND_PORT..."
-    uv run python main.py serve --host "$BACKEND_HOST" --port "$BACKEND_PORT"
-elif [ "$1" == "frontend" ]; then
-    echo "Starting frontend on port $FRONTEND_PORT..."
-    cd frontend
-    PORT=$FRONTEND_PORT pnpm dev
-elif [ "$1" == "both" ] || [ -z "$1" ]; then
-    echo "Starting both backend and frontend..."
-    echo ""
-    
-    # Start backend in background
-    echo "[Backend] Starting on port $BACKEND_PORT..."
-    uv run python main.py serve --host "$BACKEND_HOST" --port "$BACKEND_PORT" &
+run_backend() { exec uv run --package covalent-enterprise covalent-enterprise serve --host "$BACKEND_HOST" --port "$BACKEND_PORT"; }
+run_frontend() { pnpm --filter @covalent/enterprise-web dev --port "$FRONTEND_PORT"; }
+case "${1:-both}" in
+  backend) run_backend ;;
+  frontend) run_frontend ;;
+  both)
+    run_backend &
     BACKEND_PID=$!
-    
+    trap 'kill "$BACKEND_PID" 2>/dev/null || true' EXIT
     sleep 2
-
     if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
-        echo "[Backend] Failed to start. Check the backend logs above."
-        wait "$BACKEND_PID"
-        exit 1
+      wait "$BACKEND_PID"
+      exit 1
     fi
-    
-    # Start frontend
-    echo "[Frontend] Starting on port $FRONTEND_PORT..."
-    cd frontend
-    PORT=$FRONTEND_PORT pnpm dev
-    
-    # If frontend exits, kill backend
-    kill "$BACKEND_PID" 2>/dev/null
-else
-    echo "Usage: ./dev.sh [backend|frontend|both]"
-    echo ""
-    echo "Examples:"
-    echo "  ./dev.sh backend     - Start only backend"
-    echo "  ./dev.sh frontend    - Start only frontend"
-    echo "  ./dev.sh both        - Start both (default)"
-    echo "  ./dev.sh             - Start both (default)"
-    exit 1
-fi
+    run_frontend
+    ;;
+  *) echo "Usage: ./dev.sh [backend|frontend|both]" >&2; exit 1 ;;
+esac

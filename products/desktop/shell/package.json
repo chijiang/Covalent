@@ -1,0 +1,20 @@
+{
+  "name": "@covalent/desktop-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron host for Covalent Desktop",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "pnpm --filter @covalent/desktop-web build && pnpm run build:shell",
+    "build:shell": "tsc -p tsconfig.json",
+    "dev": "node scripts/dev.mjs",
+    "package:mac": "node scripts/package-mac.mjs",
+    "start": "pnpm run build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "electron": "44.4.5",
+    "typescript": "^5.9.3"
+  }
+}

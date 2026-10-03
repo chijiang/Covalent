@@ -1,0 +1,16 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/*
+ * Global CSS entrypoint.
+ *
+ * Keep imports ordered: later files intentionally refine the shared rules.
+ * Page-specific styles live in frontend/styles so this file stays an index.
+ */
+@import "../styles/foundation.css";
+@import "../styles/shared-components.css";
+@import "../styles/chat-workspace.css";
+@import "../styles/management-workspaces.css";
+@import "../styles/responsive.css";
+@import "../styles/refinements.css";

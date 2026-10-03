@@ -9,11 +9,11 @@ normalized `chat_messages` table, and backfill existing data. `memory_messages` 
 ## Background
 
 Today every chat message lives inside the `transcript_messages` JSONB column on the
-`chat_sessions` row (`src/agent_framework/infra/db.py:334`). Each row carries its entire
+`chat_sessions` row (`src/covalent/infra/db.py:334`). Each row carries its entire
 conversation as a JSON array of `ChatTranscriptMessage` objects:
 
 ```python
-# src/agent_framework/infra/memory.py:18
+# src/covalent/infra/memory.py:18
 class ChatTranscriptMessage(BaseModel):
     id: str                                  # _new_chat_item_id → "{prefix}-{epoch_ms}-{uuid8}"
     role: Literal["user", "assistant"]
@@ -63,7 +63,7 @@ CREATE INDEX ix_chat_messages_session_id ON chat_messages(session_id);
 - **`position`** faithfully preserves the old array order. No new `created_at` is invented.
 - `attachments` keeps the existing heterogeneous JSONB shape.
 
-### 2. ORM changes (`src/agent_framework/infra/db.py`)
+### 2. ORM changes (`src/covalent/infra/db.py`)
 
 - Add `ChatMessageRow(Base)` mapping the table above.
 - Remove `transcript_messages_json` from `ChatSessionRow` (dropped in migration #2).
@@ -71,7 +71,7 @@ CREATE INDEX ix_chat_messages_session_id ON chat_messages(session_id);
   relationships exist in `db.py`). Match that style: explicit `SELECT`/`DELETE`/`INSERT`,
   which also avoids async lazy-load pitfalls.
 
-### 3. Store layer (`src/agent_framework/infra/memory.py`) — `PersistentSessionStore` only
+### 3. Store layer (`src/covalent/infra/memory.py`) — `PersistentSessionStore` only
 
 - `InMemorySessionStore`, `ChatSessionRecord`, `ChatTranscriptMessage`, `ChatSessionSummary`
   are **unchanged** → `app.py` and the streaming logic are untouched.

@@ -1,0 +1,10 @@
+packages:
+  - products/*/web
+  - products/desktop/shell
+  - packages/typescript/*
+allowBuilds:
+  electron: true
+  esbuild: true
+  msw: false
+  sharp: false
+  unrs-resolver: false

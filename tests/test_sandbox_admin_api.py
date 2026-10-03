@@ -9,20 +9,19 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 from starlette.testclient import TestClient
 
-from agent_framework.api.app import create_app
-from agent_framework.infra.settings import AppSettings
-from agent_framework.registry.registry import FrameworkRegistry
+from covalent_enterprise.api.app import create_app
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 class _DummySessionStore:
-    async def get_session(self, session_id):
+    async def get_session(self, session_id, *, messages_limit=None, messages_before_position=None):
         return None
 
 
@@ -105,7 +104,8 @@ class _FakeDbSession:
 
 def _admin_cookie(settings: AppSettings) -> str:
     """Build a console session cookie for an admin identity."""
-    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id="admin-1",
@@ -124,7 +124,8 @@ def _admin_cookie(settings: AppSettings) -> str:
 
 def _member_cookie(settings: AppSettings) -> str:
     """Build a console session cookie for a non-admin identity."""
-    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id="member-1",
@@ -187,7 +188,7 @@ class _FakeSessionStore:
             results = [r for r in results if getattr(r, "owner_user_id", None) == owner]
         return results
 
-    async def get_session(self, session_id):
+    async def get_session(self, session_id, *, messages_limit=None, messages_before_position=None):
         return self._sessions.get(session_id)
 
     async def update_title(self, session_id, title, title_source="manual"):
@@ -376,6 +377,67 @@ class _SessionRecord:
                 "workspace_id": self.workspace_id, "title": self.title,
                 "created_at": self.created_at, "updated_at": self.updated_at,
                 "messages": [], "activity": []}
+
+
+class _FakeBindingService:
+    """Stands in for the application SandboxBindingService at the HTTP layer."""
+
+    def __init__(self, *, known: set[str] | None = None) -> None:
+        self._known = known or set()
+        self.stopped: list[str] = []
+        self.reset: list[str] = []
+
+    async def stop_instance(self, sandbox_instance_id: str) -> bool:
+        if sandbox_instance_id not in self._known:
+            return False
+        self.stopped.append(sandbox_instance_id)
+        return True
+
+    async def reset_instance(self, sandbox_instance_id: str) -> bool:
+        if sandbox_instance_id not in self._known:
+            return False
+        self.reset.append(sandbox_instance_id)
+        return True
+
+
+class SandboxInstanceApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.settings = AppSettings(console_auth_mode="local", workspace_root_dir="/tmp")
+        self.binding_service = _FakeBindingService(known={"sbx-1"})
+        self.app, self.client = _build_app(settings=self.settings)
+        self.app.state.sandbox_binding_service = self.binding_service
+
+    def test_stop_instance_admin_ok(self) -> None:
+        resp = self.client.delete(
+            "/sandbox/instances/sbx-1", headers={"Cookie": _admin_cookie(self.settings)}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.binding_service.stopped, ["sbx-1"])
+
+    def test_stop_instance_member_403(self) -> None:
+        resp = self.client.delete(
+            "/sandbox/instances/sbx-1", headers={"Cookie": _member_cookie(self.settings)}
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_stop_unknown_instance_404(self) -> None:
+        resp = self.client.delete(
+            "/sandbox/instances/no-such", headers={"Cookie": _admin_cookie(self.settings)}
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_reset_instance_admin_ok(self) -> None:
+        resp = self.client.post(
+            "/sandbox/instances/sbx-1/reset", headers={"Cookie": _admin_cookie(self.settings)}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.binding_service.reset, ["sbx-1"])
+
+    def test_reset_unknown_instance_404(self) -> None:
+        resp = self.client.post(
+            "/sandbox/instances/no-such/reset", headers={"Cookie": _admin_cookie(self.settings)}
+        )
+        self.assertEqual(resp.status_code, 404)
 
 
 if __name__ == "__main__":

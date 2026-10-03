@@ -13,10 +13,10 @@ from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
-from agent_framework.api.app import create_app
-from agent_framework.infra.settings import AppSettings
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.skills.spec import ManifestSkillSpec, SkillSpec, SkillRuntime
+from covalent_enterprise.api.app import create_app
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_contracts.skill import ManifestSkillSpec, SkillSpec, SkillRuntime
 
 
 # ---------------------------------------------------------------------------
@@ -95,12 +95,13 @@ class _FakeConfigStore:
 
 
 class _DummySessionStore:
-    async def get_session(self, session_id):
+    async def get_session(self, session_id, *, messages_limit=None, messages_before_position=None):
         return None
 
 
 def _admin_cookie(settings):
-    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
     p = ConsolePrincipalContext(
         user_id="admin", email="admin@t", display_name="A", role="admin",
         workspace_id="ws-1", workspace_name="Workspace 1", workspace_slug="ws-1", workspace_role="admin",
@@ -117,6 +118,7 @@ def _build_app(*, registry=None, config_store=None, skill_loader=None, settings=
     app.state.config_store = config_store or _FakeConfigStore()
     app.state.skill_loader = skill_loader or SimpleNamespace()
     app.state.execution_backend = SimpleNamespace(name="filesystem")
+    app.state.skill_loader = SimpleNamespace()
     app.state.session_store = _DummySessionStore()
     return app, TestClient(app)
 
@@ -390,6 +392,48 @@ class HealthzTests(unittest.TestCase):
         resp = client.get("/healthz")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("sandbox", resp.json())
+
+
+class SkillManifestToolNameValidationTests(unittest.TestCase):
+    """Tool names in a skill manifest become OpenAI function.name verbatim
+    (ToolDeclaration.to_openai_tool_schema). Agents that expose a skill whose
+    tools have spaces, dots, or non-ASCII characters get a 400 from
+    OpenAI-compatible providers. The loader must reject such manifests."""
+
+    @staticmethod
+    def _validate(tool_names: list[str]) -> None:
+        from covalent_agent_kit.skills.loader import SkillLoader
+
+        loader = SkillLoader(AppSettings())
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = pathlib.Path(tmp) / "skill.py"
+            entry.write_text("def tool(): pass\n", encoding="utf-8")
+            spec = ManifestSkillSpec(
+                name="demo-skill",
+                description="demo",
+                runtime=SkillRuntime(type="python", entry_point="skill.py"),
+                tools=[{"name": name, "description": "t"} for name in tool_names],
+                source_dir=tmp,
+            )
+            loader._validate_manifest(spec, pathlib.Path(tmp))
+
+    def test_spaced_tool_name_is_rejected(self) -> None:
+        from covalent_agent_kit.skills.exceptions import SkillLoadError
+
+        with self.assertRaises(SkillLoadError):
+            self._validate(["Random Speech Maker"])
+
+    def test_dotted_tool_name_is_rejected(self) -> None:
+        from covalent_agent_kit.skills.exceptions import SkillLoadError
+
+        with self.assertRaises(SkillLoadError):
+            self._validate(["my.skill.do"])
+
+    def test_clean_tool_names_pass(self) -> None:
+        self._validate(["read_file", "write_file", "query_db_v2"])
+
+    def test_empty_allowed_tools_pass(self) -> None:
+        self._validate([])
 
 
 if __name__ == "__main__":

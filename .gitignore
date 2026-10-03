@@ -5,7 +5,6 @@
 
 # Dependencies
 node_modules
-frontend/node_modules
 .venv
 
 # Build outputs
@@ -31,20 +30,19 @@ __pycache__
 *.pyo
 *.pyd
 
-# python env
-uv.lock
+# Workspace lockfiles are versioned.
 
 # tmp
 tmp
 
-# build
+# Framework build output
 .next
+**/next-env.d.ts
 
 # Local generated artifacts
 .pnpm-store/
-frontend/.pnpm-store/
 *.tsbuildinfo
-.agent_framework/
+.covalent/
 
 # Local .git backups (e.g. from history rewrites)
 .git-backup-*
@@ -52,7 +50,12 @@ frontend/.pnpm-store/
 # local skills
 skills/uploaded
 
-# agent workspace
-.agent_framework/session-workspaces/
-.agent_framework/downloads/
+.playwright-cli
+bun.lockb
+bun.lock
 
+docker-compose.yml
+.playwright-mcp
+.ruff_cache
+.pytest_cache
+.pylint_cache

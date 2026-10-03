@@ -1,0 +1,578 @@
+import { useEffect, useState } from "react";
+import { Plus } from "lucide-react";
+import {
+  AgentMultiSelectField as MultiChecks,
+  AgentSelectField,
+} from "./AgentSelectField";
+
+const enterpriseSystemPrompt =
+  "You are a general-purpose ReAct assistant. Understand the user's goal, use available tools or delegates only when they improve accuracy or reduce uncertainty, and provide clear, grounded final answers.";
+const enterpriseReasoningPrompt =
+  "Use a ReAct loop when it helps: understand the task, decide whether the current context is sufficient, use the most relevant tool or delegate only when it reduces uncertainty, incorporate observations, repeat only as needed, and stop once you can answer confidently. Keep the final response clear, direct, and grounded in the evidence you observed.";
+
+const emptyAgent: DesktopAgent = {
+  name: "",
+  description: "",
+  system_prompt: enterpriseSystemPrompt,
+  reasoning_prompt: enterpriseReasoningPrompt,
+  reasoning_level: "none",
+  explicit_thinking: true,
+  enabled: true,
+  provider_name: "",
+  model: "",
+  timeout_seconds: 500,
+  max_iterations: 6,
+  context_window: null,
+  skills: [],
+  local_tools: [],
+  allowed_outbound: [],
+  sandbox_profile_id: null,
+  delegate_agents: [],
+  mcp_servers: [],
+  mcp_tools: [],
+  capabilities: ["chat", "react", "streaming", "tool_calling"],
+};
+
+const reasoningLevels = ["none", "low", "medium", "high", "max"] as const;
+
+export function AgentWorkspace({ status }: { status: DesktopServiceStatus }) {
+  const [agents, setAgents] = useState<DesktopAgent[]>([]);
+  const [providers, setProviders] = useState<DesktopProvider[]>([]);
+  const [mcpServices, setMcpServices] = useState<DesktopMcpServer[]>([]);
+  const [options, setOptions] = useState<DesktopAgentOptions>({
+    skills: [],
+    local_tools: [],
+    capabilities: [],
+  });
+  const [form, setForm] = useState<DesktopAgent>({ ...emptyAgent });
+  const [mcpToolText, setMcpToolText] = useState("");
+  const [inspectedTools, setInspectedTools] = useState<DesktopMcpTool[]>([]);
+  const [isNew, setIsNew] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+
+  function selectAgent(agent: DesktopAgent) {
+    setForm(agent);
+    setInspectedTools([]);
+    setMcpToolText(
+      agent.mcp_tools
+        .map((tool) => `${tool.server_name}:${tool.tool_name}`)
+        .join("\n"),
+    );
+    setIsNew(false);
+    setError("");
+    setSaved("");
+  }
+
+  useEffect(() => {
+    if (status.phase !== "ready") return;
+    let active = true;
+    Promise.all([
+      window.covalentDesktop.listAgents(),
+      window.covalentDesktop.getAgentOptions(),
+      window.covalentDesktop.listProviders(),
+      window.covalentDesktop.listMcpServices(),
+    ])
+      .then(([agentResult, optionResult, providerResult, mcpResult]) => {
+        if (!active) return;
+        setAgents(agentResult.items);
+        setOptions(optionResult);
+        setProviders(providerResult.items);
+        setMcpServices(mcpResult.items);
+        if (agentResult.items.length) selectAgent(agentResult.items[0]);
+        else {
+          const provider =
+            providerResult.items.find((item) => item.is_default) ??
+            providerResult.items[0];
+          if (provider)
+            setForm({
+              ...emptyAgent,
+              provider_name: provider.name,
+              model: provider.default_model || provider.models[0] || "",
+            });
+        }
+      })
+      .catch((cause) => active && setError(String(cause)));
+    return () => {
+      active = false;
+    };
+  }, [status.phase]);
+
+  function change<K extends keyof DesktopAgent>(
+    key: K,
+    value: DesktopAgent[K],
+  ) {
+    setForm((previous) => ({ ...previous, [key]: value }));
+    setSaved("");
+  }
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    setSaved("");
+    try {
+      const mcpTools = mcpToolText
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const separator = line.indexOf(":");
+          if (separator < 1 || separator === line.length - 1)
+            throw new Error(
+              "MCP tool filters must use server_name:tool_name, one per line",
+            );
+          return {
+            server_name: line.slice(0, separator).trim(),
+            tool_name: line.slice(separator + 1).trim(),
+          };
+        });
+      const result = await window.covalentDesktop.saveAgent({
+        ...form,
+        mcp_tools: mcpTools,
+      });
+      const { items } = await window.covalentDesktop.listAgents();
+      setAgents(items);
+      selectAgent(result);
+      setSaved("Agent saved locally");
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function inspectSelectedMcp() {
+    setError("");
+    try {
+      const responses = await Promise.all(
+        form.mcp_servers.map((name) =>
+          window.covalentDesktop.inspectMcpService(name),
+        ),
+      );
+      setInspectedTools(responses.flatMap((response) => response.items));
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
+  const delegateOptions = agents
+    .filter((agent) => agent.enabled && agent.name !== form.name)
+    .map((agent) => agent.name);
+  const selectedProvider = providers.find(
+    (provider) => provider.name === form.provider_name,
+  );
+
+  return (
+    <div className="management-layout resource-management-layout agent-layout">
+      <section className="surface inventory-panel">
+        <div className="surface-heading">
+          Agents{" "}
+          <button
+            className="icon-button"
+            type="button"
+            title="Create agent"
+            aria-label="Create agent"
+            onClick={() => {
+              const provider =
+                providers.find((item) => item.is_default) ?? providers[0];
+              setForm({
+                ...emptyAgent,
+                provider_name: provider?.name ?? "",
+                model: provider?.default_model || provider?.models[0] || "",
+              });
+              setMcpToolText("");
+              setInspectedTools([]);
+              setIsNew(true);
+              setError("");
+              setSaved("");
+            }}
+          >
+            <Plus size={15} />
+          </button>
+        </div>
+        <div className="inventory-list">
+          {agents.map((agent) => (
+            <button
+              className={`inventory-item ${!isNew && form.name === agent.name ? "selected" : ""}`}
+              type="button"
+              key={agent.name}
+              onClick={() => selectAgent(agent)}
+            >
+              <strong>{agent.name}</strong>
+              <small>
+                {agent.enabled ? "Active" : "Inactive"} ·{" "}
+                {agent.description || agent.model}
+              </small>
+            </button>
+          ))}
+          {!agents.length && (
+            <div className="inventory-empty">No agents yet.</div>
+          )}
+        </div>
+      </section>
+      <section className="surface detail-panel">
+        <div className="surface-heading">
+          {isNew ? "Create agent" : form.name}
+        </div>
+        <div className="agent-form resource-form">
+          <section className="config-section">
+            <h3>Basics</h3>
+            <div className="form-grid">
+              <label>
+                Name
+                <input
+                  value={form.name}
+                  onChange={(event) => change("name", event.target.value)}
+                  disabled={!isNew}
+                  placeholder="my-agent"
+                />
+              </label>
+              <AgentSelectField
+                label="Runtime"
+                value={form.enabled ? "active" : "inactive"}
+                onChange={(value) => change("enabled", value === "active")}
+                options={[
+                  { value: "active", label: "Active" },
+                  { value: "inactive", label: "Inactive" },
+                ]}
+                placeholder="Select status"
+              />
+              <label className="full-width">
+                Description
+                <textarea
+                  className="resource-short-textarea"
+                  rows={2}
+                  value={form.description}
+                  onChange={(event) =>
+                    change("description", event.target.value)
+                  }
+                  placeholder="What this agent does"
+                />
+              </label>
+              <AgentSelectField
+                label="Provider"
+                value={form.provider_name}
+                onChange={(value) => {
+                  const provider = providers.find(
+                    (item) => item.name === value,
+                  );
+                  setForm((previous) => ({
+                    ...previous,
+                    provider_name: provider?.name ?? "",
+                    model: provider?.default_model || provider?.models[0] || "",
+                  }));
+                  setSaved("");
+                }}
+                options={providers.map((provider) => ({
+                  value: provider.name,
+                  label: `${provider.name}${provider.is_default ? " (default)" : ""}`,
+                }))}
+                placeholder="Select a provider..."
+                helper={
+                  !providers.length
+                    ? "Add a provider in Resources first."
+                    : undefined
+                }
+              />
+              <div className="agent-select-field">
+                {selectedProvider?.models.length ? (
+                  <>
+                    <AgentSelectField
+                      label="Model"
+                      value={
+                        selectedProvider.models.includes(form.model)
+                          ? form.model
+                          : "__custom__"
+                      }
+                      onChange={(value) =>
+                        change("model", value === "__custom__" ? "" : value)
+                      }
+                      options={[
+                        ...selectedProvider.models.map((model) => ({
+                          value: model,
+                          label: model,
+                        })),
+                        { value: "__custom__", label: "Custom model..." },
+                      ]}
+                      placeholder="Select a model..."
+                    />
+                    {!selectedProvider.models.includes(form.model) && (
+                      <input
+                        aria-label="Custom model name"
+                        value={form.model}
+                        onChange={(event) =>
+                          change("model", event.target.value)
+                        }
+                        placeholder="Enter model name"
+                      />
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <span className="config-label">Model</span>
+                    <input
+                      aria-label="Model"
+                      value={form.model}
+                      onChange={(event) => change("model", event.target.value)}
+                      placeholder={
+                        selectedProvider
+                          ? "Enter model name"
+                          : "Select a provider first"
+                      }
+                      disabled={!selectedProvider}
+                    />
+                  </>
+                )}
+              </div>
+              <AgentSelectField
+                label="Reasoning level"
+                value={form.reasoning_level}
+                onChange={(value) =>
+                  change(
+                    "reasoning_level",
+                    value as DesktopAgent["reasoning_level"],
+                  )
+                }
+                options={reasoningLevels.map((level) => ({
+                  value: level,
+                  label: level,
+                }))}
+                placeholder="Select reasoning level"
+              />
+              <AgentSelectField
+                label="Explicit thinking"
+                value={form.explicit_thinking ? "on" : "off"}
+                onChange={(value) =>
+                  change("explicit_thinking", value === "on")
+                }
+                options={[
+                  { value: "on", label: "On" },
+                  { value: "off", label: "Off" },
+                ]}
+                placeholder="Select setting"
+              />
+            </div>
+          </section>
+
+          <section className="config-section">
+            <h3>Limits</h3>
+            <div className="form-grid">
+              <label>
+                Max iterations
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={form.max_iterations}
+                  onChange={(event) =>
+                    change("max_iterations", Number(event.target.value))
+                  }
+                />
+              </label>
+              <label>
+                Call timeout (seconds)
+                <input
+                  type="number"
+                  min={1}
+                  max={3600}
+                  value={form.timeout_seconds}
+                  onChange={(event) =>
+                    change("timeout_seconds", Number(event.target.value))
+                  }
+                />
+              </label>
+              <label>
+                Context window (tokens)
+                <input
+                  type="number"
+                  min={1024}
+                  max={2000000}
+                  placeholder="Default: 128000"
+                  value={form.context_window ?? ""}
+                  onChange={(event) =>
+                    change(
+                      "context_window",
+                      event.target.value ? Number(event.target.value) : null,
+                    )
+                  }
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="config-section">
+            <h3>Prompts</h3>
+            <div className="form-grid">
+              <label className="full-width">
+                System prompt
+                <textarea
+                  rows={7}
+                  value={form.system_prompt}
+                  placeholder={enterpriseSystemPrompt}
+                  onChange={(event) =>
+                    change("system_prompt", event.target.value)
+                  }
+                />
+              </label>
+              <label className="full-width">
+                Reasoning prompt
+                <textarea
+                  rows={4}
+                  value={form.reasoning_prompt}
+                  onChange={(event) =>
+                    change("reasoning_prompt", event.target.value)
+                  }
+                  placeholder={enterpriseReasoningPrompt}
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="config-section">
+            <h3>Routing</h3>
+            <div className="routing-grid">
+              <MultiChecks
+                label="Skills"
+                options={options.skills}
+                value={form.skills}
+                onChange={(value) => change("skills", value)}
+                empty="No instruction skills installed locally."
+              />
+              <MultiChecks
+                label="Local tools"
+                options={options.local_tools}
+                value={form.local_tools}
+                onChange={(value) => change("local_tools", value)}
+                empty="No local tools available."
+              />
+              <MultiChecks
+                label="Sub-agents"
+                options={delegateOptions}
+                value={form.delegate_agents}
+                onChange={(value) => change("delegate_agents", value)}
+                empty="Create another active agent to enable delegation."
+              />
+              <MultiChecks
+                label="Capabilities"
+                options={options.capabilities}
+                value={form.capabilities}
+                onChange={(value) => change("capabilities", value)}
+                empty="No capabilities available."
+              />
+            </div>
+            <div className="form-grid routing-extra">
+              <label className="full-width">
+                Allowed outbound hosts
+                <input
+                  value={form.allowed_outbound.join(", ")}
+                  onChange={(event) =>
+                    change(
+                      "allowed_outbound",
+                      event.target.value
+                        .split(",")
+                        .map((value) => value.trim())
+                        .filter(Boolean),
+                    )
+                  }
+                  placeholder="api.example.com, *.openai.com"
+                />
+                <small>
+                  Native execution does not enforce network restrictions.
+                </small>
+              </label>
+              <label className="full-width">
+                Sandbox profile
+                <input value="Default (native execution)" disabled />
+                <small>Custom profiles are unavailable on Desktop.</small>
+              </label>
+            </div>
+            <div className="mcp-editor">
+              <MultiChecks
+                label="MCP services"
+                options={mcpServices
+                  .filter((service) => service.enabled)
+                  .map((service) => service.name)}
+                value={form.mcp_servers}
+                onChange={(value) => {
+                  change("mcp_servers", value);
+                  setInspectedTools((current) =>
+                    current.filter((tool) => value.includes(tool.server_name)),
+                  );
+                  setMcpToolText((current) =>
+                    current
+                      .split(/\r?\n/)
+                      .map((line) => line.trim())
+                      .filter((line) =>
+                        value.some((name) => line.startsWith(`${name}:`)),
+                      )
+                      .join("\n"),
+                  );
+                }}
+                empty="Add MCP services in Resources first."
+              />
+              {!!form.mcp_servers.length && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void inspectSelectedMcp()}
+                >
+                  Inspect selected tools
+                </button>
+              )}
+              <MultiChecks
+                label="MCP tools"
+                options={inspectedTools.map(
+                  (tool) => `${tool.server_name}:${tool.tool_name}`,
+                )}
+                value={mcpToolText
+                  .split(/\r?\n/)
+                  .map((line) => line.trim())
+                  .filter(Boolean)}
+                onChange={(value) => setMcpToolText(value.join("\n"))}
+                placeholder={
+                  form.mcp_servers.length
+                    ? "Leave empty to allow all tools"
+                    : "Select MCP services first"
+                }
+                disabled={!form.mcp_servers.length}
+                empty={
+                  form.mcp_servers.length
+                    ? "Inspect services to load tools."
+                    : ""
+                }
+              />
+            </div>
+          </section>
+
+          {error && (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          )}
+          {saved && (
+            <p className="form-success" role="status">
+              {saved}
+            </p>
+          )}
+          <div className="form-actions">
+            <button
+              className="primary-button"
+              type="button"
+              disabled={
+                status.phase !== "ready" ||
+                saving ||
+                !form.name.trim() ||
+                !form.provider_name ||
+                !form.model.trim()
+              }
+              onClick={() => void save()}
+            >
+              {saving ? "Saving…" : "Save agent"}
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}

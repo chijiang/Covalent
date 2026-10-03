@@ -10,7 +10,7 @@
 `activity` is the per-session event log: one `ChatActivityItem` per tool result, trace event, error, input-resolution, etc.
 
 ```python
-# src/agent_framework/infra/memory.py:25
+# src/covalent/infra/memory.py:25
 class ChatActivityItem(BaseModel):
     id: str                    # _new_chat_item_id -> "{prefix}-{epoch_ms}-{uuid8}"
     title: str                 # event name (SSE_EVENT_*)
@@ -55,13 +55,13 @@ CREATE INDEX ix_chat_activity_session_id ON chat_activity(session_id);
 - **`payload` is nullable JSONB** — the model field is `payload: Any = None`, and historical JSONB may contain JSON null.
 - **`position`** preserves the array order (no per-item timestamp; YAGNI).
 
-### 2. ORM changes (`src/agent_framework/infra/db.py`)
+### 2. ORM changes (`src/covalent/infra/db.py`)
 
 - Add `ChatActivityRow(Base)` mapping the table. Fields: `id`, `session_id` (FK `chat_sessions.id` `ON DELETE CASCADE`), `title` (`String(64)`), `payload` (`JSONB`, nullable), `position` (`Integer`). `__table_args__` carries `UniqueConstraint("session_id", "position", name="uq_chat_activity_session_id_position")`.
 - Remove `activity_json` from `ChatSessionRow` (dropped in migration #2).
 - No SQLAlchemy relationship — explicit queries, matching codebase style.
 
-### 3. Store layer (`src/agent_framework/infra/memory.py`) — `PersistentSessionStore` only
+### 3. Store layer (`src/covalent/infra/memory.py`) — `PersistentSessionStore` only
 
 - `InMemorySessionStore`, `ChatActivityItem`, `ChatSessionRecord`, `ChatSessionSummary` are **unchanged** → `app.py` and the streaming logic are untouched.
 - Add `_load_activity(session, session_id)` -> `SELECT … WHERE session_id=? ORDER BY position` -> `list[ChatActivityItem]`.

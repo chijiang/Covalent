@@ -1,0 +1,638 @@
+from __future__ import annotations
+
+import re
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+from covalent_runtime.domain.types import Capability, PromptContent
+from covalent_contracts.mcp import McpServerConfig
+
+
+USERNAME_PATTERN = re.compile(r"^[a-z0-9_-]{3,32}$")
+
+
+def normalize_username(value: str) -> str:
+    normalized = value.strip().lower()
+    if not USERNAME_PATTERN.match(normalized):
+        raise ValueError("username must be 3-32 chars of a-z, 0-9, '_' or '-'")
+    return normalized
+
+
+class AgentRunRequest(BaseModel):
+    input: PromptContent
+    session_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("input")
+    @classmethod
+    def validate_input(cls, value: PromptContent) -> PromptContent:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                raise ValueError("input must not be empty")
+            if len(value) > 1_000_000:
+                raise ValueError("string input must be at most 1M characters; use structured content for large attachments")
+            return value
+        if not value:
+            raise ValueError("input content list must not be empty")
+        if any(not isinstance(item, dict) for item in value):
+            raise ValueError("input content items must be objects")
+        return value
+
+
+class AgentRunResponse(BaseModel):
+    agent: str
+    output_text: str
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = None
+
+
+class PublicAgentInvokeMemory(BaseModel):
+    mode: Literal["none", "session"] = "none"
+    session_id: str | None = None
+
+
+class PublicAgentInvokeTrace(BaseModel):
+    level: Literal["none", "steps", "debug"] = "steps"
+
+
+class PublicAgentInvokeRequest(BaseModel):
+    agent: str = Field(min_length=1, max_length=255)
+    input: PromptContent
+    stream: bool = False
+    memory: PublicAgentInvokeMemory = Field(default_factory=PublicAgentInvokeMemory)
+    trace: PublicAgentInvokeTrace = Field(default_factory=PublicAgentInvokeTrace)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("input")
+    @classmethod
+    def validate_input(cls, value: PromptContent) -> PromptContent:
+        return AgentRunRequest(input=value).input
+
+
+class PublicAgentInvokeResponse(BaseModel):
+    id: str
+    agent: str
+    memory_mode: Literal["none", "session"]
+    session_id: str | None = None
+    output_text: str
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    usage: dict[str, int] = Field(default_factory=dict)
+    suggestions: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+
+class PublicAgentSummary(BaseModel):
+    name: str
+    display_name: str | None = None
+    description: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PublicAgentListResponse(BaseModel):
+    agents: list[PublicAgentSummary] = Field(default_factory=list)
+
+
+class ConsoleLoginRequest(BaseModel):
+    identifier: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=1024)
+
+    @field_validator("identifier")
+    @classmethod
+    def normalize_identifier(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class ConsoleRegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=1024)
+    display_name: str = Field(default="", max_length=255)
+    workspace_name: str = Field(default="Default workspace", max_length=255)
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        return normalize_username(value)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if "@" not in normalized:
+            raise ValueError("email must be a valid email address")
+        return normalized
+
+
+class ConsoleUserPreferences(BaseModel):
+    language: str = Field(default="system", min_length=1, max_length=32)
+    timezone: str = Field(default="auto", min_length=1, max_length=128)
+    default_agent: str | None = Field(default=None, max_length=255)
+
+
+class ConsoleAccountUpdateRequest(BaseModel):
+    username: str | None = Field(default=None, min_length=3, max_length=32)
+    email: str | None = Field(default=None, min_length=3, max_length=320)
+    display_name: str | None = Field(default=None, max_length=255)
+    avatar_url: str | None = Field(default=None, max_length=2048)
+    preferences: ConsoleUserPreferences | None = None
+
+    @field_validator("username")
+    @classmethod
+    def normalize_optional_username(cls, value: str | None) -> str | None:
+        return None if value is None else normalize_username(value)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_optional_email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if "@" not in normalized:
+            raise ValueError("email must be a valid email address")
+        return normalized
+
+    @field_validator("avatar_url")
+    @classmethod
+    def normalize_avatar_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
+class ConsolePasswordUpdateRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=8, max_length=1024)
+
+
+class ApiTokenCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    scopes: list[str] = Field(default_factory=lambda: ["agent:invoke"])
+    policy: dict[str, Any] = Field(default_factory=dict)
+    expires_at: datetime | None = None
+
+
+class ApiTokenUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    scopes: list[str] | None = None
+    policy: dict[str, Any] | None = None
+    expires_at: datetime | None = None
+
+
+class ApiTokenSummaryResponse(BaseModel):
+    id: str
+    name: str
+    user_id: str
+    user_email: str
+    workspace_id: str
+    workspace_name: str
+    token_prefix: str
+    scopes: list[str]
+    policy: dict[str, Any] = Field(default_factory=dict)
+    expires_at: datetime | None = None
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApiTokenCreateResponse(ApiTokenSummaryResponse):
+    token: str
+
+
+class ApiTokenUsageDailyResponse(BaseModel):
+    date: str
+    requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    total_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    average_latency_ms: int | None = None
+
+
+class ApiTokenUsageByTokenResponse(BaseModel):
+    token_id: str
+    token_name: str
+    token_prefix: str
+    requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    total_tokens: int = 0
+    average_latency_ms: int | None = None
+    last_used_at: datetime | None = None
+
+
+class ApiTokenUsageResponse(BaseModel):
+    days: int
+    starts_at: datetime
+    ends_at: datetime
+    active_tokens: int = 0
+    total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    total_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    average_latency_ms: int | None = None
+    daily: list[ApiTokenUsageDailyResponse] = Field(default_factory=list)
+    by_token: list[ApiTokenUsageByTokenResponse] = Field(default_factory=list)
+
+
+class ConsoleUserResponse(BaseModel):
+    user_id: str
+    username: str | None = None
+    email: str
+    display_name: str
+    avatar_url: str | None = None
+    preferences: ConsoleUserPreferences = Field(default_factory=ConsoleUserPreferences)
+    role: str
+    workspace_id: str
+    workspace_name: str
+    workspace_role: str
+
+
+class ConsoleUserSummaryResponse(BaseModel):
+    user_id: str
+    username: str | None = None
+    email: str
+    display_name: str
+    role: str
+    status: str
+    workspace_id: str | None = None
+    workspace_name: str | None = None
+    workspace_role: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConsoleUserUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=255)
+    role: Literal["admin", "member"] | None = None
+    status: Literal["active", "disabled"] | None = None
+    workspace_role: Literal["admin", "member"] | None = None
+
+
+class AgentRunLogResponse(BaseModel):
+    id: str
+    user_id: str | None = None
+    token_id: str | None = None
+    workspace_id: str | None = None
+    agent_name: str
+    memory_mode: str
+    session_id: str | None = None
+    status: str
+    latency_ms: int | None = None
+    provider: str | None = None
+    model: str | None = None
+    usage: dict[str, Any] = Field(default_factory=dict)
+    error: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class AuditLogResponse(BaseModel):
+    id: str
+    actor_user_id: str | None = None
+    actor_token_id: str | None = None
+    workspace_id: str | None = None
+    action: str
+    target_type: str
+    target_id: str | None = None
+    outcome: str
+    request_id: str | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class QueryStatDay(BaseModel):
+    date: str
+    query_count: int = 0
+    denied_count: int = 0
+    failed_count: int = 0
+
+
+class UserQueryStat(BaseModel):
+    user_id: str
+    email: str | None = None
+    display_name: str | None = None
+    total_query_count: int = 0
+    total_denied_count: int = 0
+    total_failed_count: int = 0
+    last_query_at: datetime | None = None
+    daily: list[QueryStatDay] = Field(default_factory=list)
+
+
+class QueryStatsResponse(BaseModel):
+    days: int
+    starts_at: datetime
+    ends_at: datetime
+    users: list[UserQueryStat] = Field(default_factory=list)
+
+
+class PublicationReviewRequest(BaseModel):
+    status: Literal["approved", "rejected"]
+
+
+class PublicationRequestResponse(BaseModel):
+    kind: Literal["agents", "mcp", "skill_sources", "providers"]
+    name: str
+    visibility: str
+    publication_status: str
+
+
+class ProviderSummaryResponse(BaseModel):
+    model: str
+    timeout_seconds: float
+
+
+class AgentSummaryResponse(BaseModel):
+    name: str
+    description: str
+    system_prompt: str
+    reasoning_prompt: str
+    reasoning_level: str
+    enabled: bool = True
+    skills: list[str]
+    local_tools: list[str]
+    allowed_outbound: list[str] = Field(default_factory=list)
+    sandbox_profile_id: str | None = None
+    delegate_agents: list[str]
+    capabilities: set[Capability]
+    max_iterations: int
+    context_window: int | None = None
+    provider: ProviderSummaryResponse
+
+
+class LocalToolSummaryResponse(BaseModel):
+    name: str
+    description: str | None = None
+    enabled_by_default: bool = False
+
+
+class ChatSessionMessageResponse(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str
+    reasoning_content: str = ""
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    # Stable transcript ordinal; the cursor for older-message pagination.
+    position: int | None = None
+
+
+class AttachmentUploadItemResponse(BaseModel):
+    name: str
+    size: int
+    content_type: str
+    last_modified: int = 0
+    workspace_path: str
+    uploaded_at: datetime
+    delivery_mode: Literal["parse", "workspace"] = "parse"
+    kind: Literal["text", "image", "pdf", "binary"] = "binary"
+    summary: str = ""
+    model_prompt_text: str = ""
+    model_content: list[dict[str, Any]] = Field(default_factory=list)
+    page_count: int | None = None
+
+
+class AttachmentUploadResponse(BaseModel):
+    session_id: str
+    files: list[AttachmentUploadItemResponse] = Field(default_factory=list)
+
+
+class ChatSessionActivityResponse(BaseModel):
+    id: str
+    title: str
+    # Summary payload: raw_request / raw_response are stripped from list
+    # responses and served individually via the activity detail endpoint.
+    payload: Any = None
+    has_raw_request: bool = False
+    has_raw_response: bool = False
+
+
+class ChatActivityDetailResponse(BaseModel):
+    id: str
+    title: str
+    payload: Any = None
+
+
+class ChatSessionSummaryResponse(BaseModel):
+    id: str
+    title: str
+    title_source: Literal["auto", "manual"] = "auto"
+    agent_name: str | None = None
+    preview_text: str = ""
+    message_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChatSessionResponse(ChatSessionSummaryResponse):
+    messages: list[ChatSessionMessageResponse] = Field(default_factory=list)
+    # Total transcript size and whether messages is a truncated page
+    # (non-default when the request used messages_limit / messages_before).
+    messages_total: int = 0
+    messages_has_more: bool = False
+    activity: list[ChatSessionActivityResponse] = Field(default_factory=list)
+
+
+class ChatSessionUpdateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+
+
+class ChatTranscriptMessageInput(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str
+    reasoning_content: str = ""
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class TranscriptReplaceRequest(BaseModel):
+    # Exactly one of the two must be supplied:
+    #   truncate_before_message_id -> keep messages strictly before this id (edit-and-resend)
+    #   messages                   -> explicit full replace (undo)
+    truncate_before_message_id: str | None = None
+    messages: list[ChatTranscriptMessageInput] | None = None
+
+
+# --- Skill management schemas ---
+
+
+class SkillSummaryResponse(BaseModel):
+    name: str
+    version: str
+    description: str
+    source_type: Literal["local", "git"]
+    category: Literal["built_in", "uploaded", "authored", "github_synced", "unknown"] = "unknown"
+    source_dir: str | None = None
+    runtime_type: Literal["python", "nodejs"] | None
+    tools: list[str]
+    references: list[str]
+    enabled: bool
+    publication_resource_name: str | None = None
+    owner_user_id: str | None = None
+    workspace_id: str | None = None
+    visibility: Literal["private", "public"] = "public"
+    publication_status: Literal["draft", "pending", "approved", "rejected"] = "approved"
+    publication_requested_at: str | None = None
+    publication_reviewed_at: str | None = None
+    publication_reviewed_by_user_id: str | None = None
+
+
+class SkillInstallRequest(BaseModel):
+    source: str
+    source_type: Literal["directory", "git"] | None = None
+    ref: str | None = None
+    name: str | None = None
+    subdir: str | None = None
+    category: Literal["built_in", "uploaded", "authored", "github_synced"] = "uploaded"
+
+
+class SkillInstallResponse(BaseModel):
+    name: str
+    version: str
+    description: str
+    status: Literal["installed", "already_exists"]
+
+
+class SkillPreviewFileResponse(BaseModel):
+    path: str
+    language: str
+    content: str
+
+
+class SkillPreviewResponse(BaseModel):
+    name: str
+    source_dir: str | None = None
+    files: list[SkillPreviewFileResponse] = Field(default_factory=list)
+
+
+class McpToolSummaryResponse(BaseModel):
+    name: str
+    description: str | None = None
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+
+
+class McpInspectRequest(BaseModel):
+    server: McpServerConfig
+
+
+class McpInspectResponse(BaseModel):
+    server: McpServerConfig
+    tools: list[McpToolSummaryResponse] = Field(default_factory=list)
+
+
+class McpToolCallRequest(BaseModel):
+    server: McpServerConfig
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class McpToolCallResponse(BaseModel):
+    name: str
+    content: Any
+    is_error: bool = False
+
+
+class ConfigDocumentResponse(BaseModel):
+    kind: Literal["agents", "mcp", "skill_sources", "providers"]
+    label: str
+    filePath: str = "database"
+    exists: bool = True
+    raw: str = "[]\n"
+    exampleRaw: str = "[]\n"
+    data: list[dict[str, Any]] = Field(default_factory=list)
+    lastModified: str | None = None
+
+
+class ConfigDocumentUpdateRequest(BaseModel):
+    raw: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+ManagementKind = Literal["agents", "mcp", "skills"]
+ManagementExportFormat = Literal["yaml", "json"]
+
+
+class ManagementExportResponse(BaseModel):
+    kind: ManagementKind
+    format: ManagementExportFormat
+    file_name: str
+    content_type: str
+    content: str
+    item_count: int = 0
+
+
+class ManagementImportResponse(BaseModel):
+    kind: ManagementKind
+    imported_items: int = 0
+    applied_items: int = 0
+    summary: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SkillManagementSourceResponse(BaseModel):
+    type: Literal["built_in", "managed", "git", "inline", "unknown"]
+    category: Literal["built_in", "uploaded", "authored", "github_synced", "unknown"] | None = None
+    url: str | None = None
+    ref: str | None = None
+    subdir: str | None = None
+    name: str | None = None
+
+
+class SkillManagementItemResponse(BaseModel):
+    name: str
+    enabled: bool = True
+    category: Literal["built_in", "uploaded", "authored", "github_synced", "unknown"] = "unknown"
+    source_type: Literal["local", "git"] = "local"
+    version: str = ""
+    description: str = ""
+    source: SkillManagementSourceResponse
+
+
+SandboxRuntimeCapability = Literal["python", "nodejs", "shell"]
+SandboxPullPolicy = Literal["never", "if_not_present", "always"]
+
+
+class SandboxProfileCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    image: str
+    pull_policy: SandboxPullPolicy = "if_not_present"
+    keepalive_command: list[str]
+    runtime_capabilities: list[SandboxRuntimeCapability]
+    contract_version: int = 1
+    memory_limit: str
+    pids_limit: int
+    cpus: float
+    tmpfs_size: str
+
+
+class SandboxProfileUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    image: str | None = None
+    pull_policy: SandboxPullPolicy | None = None
+    keepalive_command: list[str] | None = None
+    runtime_capabilities: list[SandboxRuntimeCapability] | None = None
+    contract_version: int | None = None
+    memory_limit: str | None = None
+    pids_limit: int | None = None
+    cpus: float | None = None
+    tmpfs_size: str | None = None
+    is_default: bool | None = None
+    enabled: bool | None = None
+
+
+class SandboxProfileValidationResponse(BaseModel):
+    status: Literal["pending", "valid", "invalid", "legacy_unverified"]
+    message: str | None = None
+    image_id: str | None = None
+    digest: str | None = None

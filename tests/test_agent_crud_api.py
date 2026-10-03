@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
-from agent_framework.api.app import create_app
-from agent_framework.infra.settings import AppSettings
-from agent_framework.registry.registry import FrameworkRegistry
+from covalent_enterprise.api.app import create_app
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_agent_kit.registry.registry import FrameworkRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +52,19 @@ _DEFAULT_PROVIDER = {
 _AGENT_PAYLOAD: list[dict] = [{
     "name": "default",
     "description": "Default agent",
+    "system_prompt": "You are a helpful assistant.",
+    "provider": _DEFAULT_PROVIDER,
+    "local_tools": ["get_current_time"],
+    "allowed_outbound": [],
+    "capabilities": ["chat", "react", "tool_calling", "streaming"],
+    "max_iterations": 10,
+}, {
+    # An agent whose display name differs from its internal name. The console
+    # needs internal_name to reconcile chat sessions (which store the internal
+    # name) against the public agent list.
+    "name": "Story Teller",
+    "internal_name": "story-teller",
+    "description": "Display-named agent",
     "system_prompt": "You are a helpful assistant.",
     "provider": _DEFAULT_PROVIDER,
     "local_tools": ["get_current_time"],
@@ -124,17 +137,16 @@ def _build_app(*, config_store=None, settings=None):
     app.state.runtime = SimpleNamespace()
     app.state.config_store = config_store or _FakeConfigStore({"agents": _AGENT_PAYLOAD, "providers": [_DEFAULT_PROVIDER]})
     app.state.execution_backend = SimpleNamespace(name="filesystem")
+    app.state.skill_loader = SimpleNamespace()
     app.state.session_store = SimpleNamespace()
 
     # Seed the initial agent so /agents/{name} works.
-    from agent_framework.api.app import _resolve_default_provider, _build_agent_specs
     return app, TestClient(app)
 
 
 async def _seed_registry(app) -> None:
     """Run build_agent_specs after creating the app (must be async)."""
-    from agent_framework.api.app import _resolve_default_provider, _build_agent_specs
-    from agent_framework.mcp.spec import McpServerConfig
+    from covalent_enterprise.application.services.management_service import _resolve_default_provider, _build_agent_specs
     settings = app.state.settings
     config_store = app.state.config_store
     provider = await _resolve_default_provider(settings, config_store, [])
@@ -144,7 +156,8 @@ async def _seed_registry(app) -> None:
 
 
 def _admin_cookie(settings):
-    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
     p = ConsolePrincipalContext(user_id="admin", email="admin@t", display_name="A", role="admin",
                                 workspace_id="w", workspace_name="W", workspace_slug="w", workspace_role="admin")
     return f"{settings.console_session_cookie_name}={_make_console_session_token(settings, p)}"
@@ -158,8 +171,8 @@ class AgentCrudTests(unittest.IsolatedAsyncioTestCase):
             settings=self.settings,
         )
         # Direct-register so GET /agents/{name} works.
-        from agent_framework.core.agent import AgentSpec
-        from agent_framework.model.base import ProviderConfig
+        from covalent_contracts.agent import AgentSpec
+        from covalent_runtime.ports.model import ProviderConfig
         self.app.state.registry.register_agent(AgentSpec(
             name="default", description="Default agent",
             system_prompt="You are a helpful assistant.",
@@ -177,6 +190,18 @@ class AgentCrudTests(unittest.IsolatedAsyncioTestCase):
         names = [a["name"] for a in resp.json()]
         self.assertIn("default", names)
 
+    async def test_list_agents_exposes_internal_name(self) -> None:
+        """The console reconciles a chat session's stored internal agent name
+        against the public agent list via internal_name; without it a
+        display-named agent (name != internal_name) silently falls back to the
+        user's default agent."""
+        resp = self.client.get("/agents", headers={"Cookie": _admin_cookie(self.settings)})
+        self.assertEqual(resp.status_code, 200)
+        by_name = {a["name"]: a for a in resp.json()}
+        self.assertIn("Story Teller", by_name)
+        self.assertEqual(by_name["Story Teller"]["internal_name"], "story-teller")
+        self.assertEqual(by_name["default"]["internal_name"], "default")
+
     # ------------------------------------------------------------------
     # GET /agents/{name} — includes allowed_outbound
     # ------------------------------------------------------------------
@@ -189,6 +214,23 @@ class AgentCrudTests(unittest.IsolatedAsyncioTestCase):
     # ------------------------------------------------------------------
     # PUT /config/agents — create, update, delete (round-trip)
     # ------------------------------------------------------------------
+    async def test_agent_crud_chart_capability_survives(self) -> None:
+        """The chart capability persists through PUT /config/agents and shows
+        up in GET /agents/{name} — same round-trip as the built-in ones."""
+        payload = list(_AGENT_PAYLOAD)
+        payload[0]["capabilities"] = ["chat", "react", "chart"]
+
+        resp = self.client.put(
+            "/config/agents",
+            json={"raw": json.dumps(payload, ensure_ascii=False)},
+            headers={"Cookie": _admin_cookie(self.settings)},
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        resp = self.client.get("/agents/default", headers={"Cookie": _admin_cookie(self.settings)})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("chart", resp.json()["capabilities"])
+
     async def test_agent_crud_allowed_outbound_survives(self) -> None:
         payload = list(_AGENT_PAYLOAD)
         payload[0]["allowed_outbound"] = ["api.example.com"]
@@ -229,6 +271,47 @@ class AgentCrudTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status_code, 200)
         resp = self.client.get("/agents/default", headers={"Cookie": _admin_cookie(self.settings)})
         self.assertEqual(resp.status_code, 404)
+
+
+class AgentNameValidationTests(unittest.TestCase):
+    """Agent names become delegate tool names (agent__<name>) verbatim and must
+    stay inside the OpenAI function.name charset. Config saves carrying names
+    with spaces, dots, or non-ASCII characters must be rejected."""
+
+    @staticmethod
+    def _validated(name: str, internal_name: str | None = None) -> list[dict]:
+        from covalent_enterprise.application.services.management_service import _validate_config_payload
+
+        payload = [dict(_AGENT_PAYLOAD[0], name=name, internal_name=internal_name)]
+        return _validate_config_payload("agents", payload, AppSettings())
+
+    def test_spaced_agent_name_is_rejected(self) -> None:
+        from covalent_enterprise.application.errors import InvalidInputError
+
+        with self.assertRaises(InvalidInputError):
+            self._validated("Random Speech Maker")
+
+    def test_dotted_and_non_ascii_agent_names_are_rejected(self) -> None:
+        from covalent_enterprise.application.errors import InvalidInputError
+
+        for name in ("my.agent", "研究助手", "agent!"):
+            with self.assertRaises(InvalidInputError, msg=name):
+                self._validated(name)
+
+    def test_spaced_display_name_passes_with_valid_internal_name(self) -> None:
+        validated = self._validated("Story Teller", internal_name="story-teller")
+        self.assertEqual(validated[0]["name"], "Story Teller")
+        self.assertEqual(validated[0]["internal_name"], "story-teller")
+
+    def test_spaced_display_name_with_spaced_internal_name_is_rejected(self) -> None:
+        from covalent_enterprise.application.errors import InvalidInputError
+
+        with self.assertRaises(InvalidInputError):
+            self._validated("Story Teller", internal_name="story teller")
+
+    def test_clean_agent_names_pass(self) -> None:
+        validated = self._validated("random-speech-maker")
+        self.assertEqual(validated[0]["name"], "random-speech-maker")
 
 
 if __name__ == "__main__":

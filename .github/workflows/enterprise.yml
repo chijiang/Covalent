@@ -1,0 +1,93 @@
+name: Enterprise and shared packages
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: covalent_test
+          POSTGRES_PASSWORD: covalent_test
+          POSTGRES_DB: covalent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U covalent_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://covalent_test:covalent_test@127.0.0.1:5432/covalent_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: '3.12'
+      - run: uv sync --frozen
+      - run: uv run ruff check --select F packages/python products/enterprise/backend/src products/lite/service/src products/desktop/service/src main.py tooling
+      - run: uv run python -m pytest tests/
+      - run: uv build --all-packages --wheel
+      - run: uv run python tooling/verify_wheels.py
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm build:enterprise
+
+  containers:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: covalent_test
+          POSTGRES_PASSWORD: covalent_test
+          POSTGRES_DB: covalent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U covalent_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: '3.12'
+      - run: uv sync --frozen
+      - run: docker build -t covalent-sandbox:dev -f sandbox/Dockerfile.python .
+      - run: uv run python -m pytest tests/test_docker_backend.py -q
+      - run: docker build -t covalent-enterprise:test -f products/enterprise/deploy/backend.Dockerfile .
+      - name: Migrate and start Enterprise container
+        run: |
+          docker run --rm --network host \
+            -e AGENT_FRAMEWORK_DATABASE_URL=postgresql+asyncpg://covalent_test:covalent_test@127.0.0.1:5432/covalent_test \
+            covalent-enterprise:test covalent-enterprise migrate
+          docker run -d --name enterprise-smoke --network host \
+            -e AGENT_FRAMEWORK_DATABASE_URL=postgresql+asyncpg://covalent_test:covalent_test@127.0.0.1:5432/covalent_test \
+            -e AGENT_FRAMEWORK_CONSOLE_AUTH_MODE=dev \
+            covalent-enterprise:test
+          curl --fail --retry 20 --retry-all-errors --retry-delay 2 http://127.0.0.1:5170/healthz
+      - run: docker build -t covalent-enterprise-web:test -f products/enterprise/deploy/web.Dockerfile .
+      - name: Start production web container
+        run: |
+          docker run -d --name enterprise-web-smoke --network host covalent-enterprise-web:test
+          curl --fail --retry 20 --retry-all-errors --retry-delay 2 http://127.0.0.1:3100/login
+          curl --fail http://127.0.0.1:3100/api/backend/healthz
+      - name: Container logs
+        if: always()
+        run: |
+          docker logs enterprise-smoke || true
+          docker logs enterprise-web-smoke || true

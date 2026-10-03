@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.types import (
+from covalent_contracts.agent import AgentSpec
+from covalent_runtime.domain.types import (
     Capability,
     GenerationRequest,
     GenerationResponse,
@@ -20,10 +20,10 @@ from agent_framework.core.types import (
     TokenUsage,
     ToolCall,
 )
-from agent_framework.infra.memory import InMemorySessionStore
-from agent_framework.model.base import ModelAdapter, ProviderConfig
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.runtime.react import ReactAgentRuntime
+from covalent_enterprise.infra.memory import InMemorySessionStore
+from covalent_runtime.ports.model import ModelAdapter, ProviderConfig
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_runtime.engine.react import ReactAgentRuntime
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +63,39 @@ class ScriptedModelAdapter(ModelAdapter):
     @property
     def call_count(self) -> int:
         return len(self.received_requests)
+
+
+def _latest_delegate_run_id(messages: list[Message]) -> str | None:
+    """The newest delegate run id visible in the conversation's tool-result
+    envelopes, so scripted lifecycle calls can target runs whose ids are only
+    generated at runtime."""
+    for message in reversed(messages):
+        if message.role != "tool":
+            continue
+        try:
+            payload = json.loads(str(message.content))
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("delegate_run_id"), str):
+            return payload["delegate_run_id"]
+    return None
+
+
+class _EnvelopeRunIdAdapter(ScriptedModelAdapter):
+    """Fills an empty ``delegate_run_id`` argument on scripted delegate_send /
+    delegate_release calls with the newest run id found in the conversation."""
+
+    async def generate(self, request: GenerationRequest) -> GenerationResponse:
+        response = await super().generate(request)
+        run_id = _latest_delegate_run_id(request.messages)
+        if run_id is None:
+            return response
+        for tool_call in response.tool_calls:
+            if tool_call.name not in ("delegate_send", "delegate_release"):
+                continue
+            if not str(tool_call.arguments.get("delegate_run_id") or "").strip():
+                tool_call.arguments = {**tool_call.arguments, "delegate_run_id": run_id}
+        return response
 
 
 # ---------------------------------------------------------------------------

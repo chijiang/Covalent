@@ -1,0 +1,15 @@
+[project]
+name = "covalent-execution-native"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "covalent-runtime==0.1.0"
+]
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/covalent_execution_native"]

@@ -11,31 +11,36 @@ import jwt
 
 from datetime import UTC, datetime
 
-from agent_framework.api.app import (
+from covalent_enterprise.api._shared import (
     ConsolePrincipalContext,
     _agent_run_log_response,
     _audit_request_metadata,
-    _build_api_token_usage_response,
-    _build_agent_specs,
-    create_app,
+)
+from covalent_enterprise.api._auth_helpers import (
+    _resolve_console_identity,
+)
+from covalent_enterprise.application.services.audit_service import list_audit_logs
+from covalent_enterprise.application.errors import ForbiddenError, NotFoundError, QuotaExceededError
+from covalent_enterprise.application.services import token_service
+from covalent_enterprise.application.services.token_service import _normalize_token_policy, _normalize_token_scopes
+from covalent_enterprise.application.services.invoke_service import (
     _enforce_api_token_policy_limits,
-    _ensure_console_principal_can_access_session,
-    _ensure_skill_state_mutation_allowed,
-    _list_audit_logs,
-    _list_api_token_runs,
-    _normalize_token_policy,
-    _normalize_token_scopes,
-    _pick_agent_row_for_principal,
-    _pick_resource_row_for_principal,
-    _parse_mcp_servers,
     _public_stream_events,
     _record_public_agent_run,
-    _revoke_api_token,
-    _resolve_console_identity,
-    _update_api_token,
+)
+from covalent_enterprise.application.services.management_service import (
+    _build_agent_specs,
+    _ensure_console_principal_can_access_session,
+    _parse_mcp_servers,
+    _pick_agent_row_for_principal,
+    _pick_resource_row_for_principal,
     _validate_config_payload,
 )
-from agent_framework.api.auth import (
+from covalent_enterprise.application.services.skill_service import _ensure_skill_state_mutation_allowed
+from covalent_enterprise.api.app import (
+    create_app,
+)
+from covalent_enterprise.api.auth import (
     ApiPrincipal,
     generate_api_token,
     hash_api_token,
@@ -44,10 +49,10 @@ from agent_framework.api.auth import (
     require_scope,
     require_trace_level_allowed,
 )
-from agent_framework.core.agent import AgentSpec
-from agent_framework.core.types import GenerationResponse, TokenUsage
-from agent_framework.infra.db import AgentRow, AgentRunLogRow, ApiTokenRow, AuditLogRow, McpServerRow, UserRow, WorkspaceRow
-from agent_framework.infra.config_store import (
+from covalent_contracts.agent import AgentSpec
+from covalent_runtime.domain.types import GenerationResponse, TokenUsage
+from covalent_enterprise.infra.db import AgentRow, AgentRunLogRow, ApiTokenRow, AuditLogRow, McpServerRow, UserRow, WorkspaceRow
+from covalent_enterprise.infra.config_store import (
     ConfigPrincipal,
     PersistedAgentConfig,
     _display_resource_name,
@@ -55,16 +60,15 @@ from agent_framework.infra.config_store import (
     _resource_name_map,
     _scoped_resource_name,
 )
-from agent_framework.infra.memory import ChatSessionRecord
-from agent_framework.infra.settings import AppSettings
-from agent_framework.infra.config_store import _is_editable_by_principal
-from agent_framework.model.base import ProviderConfig
-from agent_framework.registry.registry import FrameworkRegistry
-from agent_framework.api.schemas import (
+from covalent_enterprise.infra.memory import ChatSessionRecord
+from covalent_enterprise.infra.settings import AppSettings
+from covalent_enterprise.infra.config_store import _is_editable_by_principal
+from covalent_runtime.ports.model import ProviderConfig
+from covalent_agent_kit.registry.registry import FrameworkRegistry
+from covalent_enterprise.application.schemas import (
     ConsoleAccountUpdateRequest,
     ConsoleLoginRequest,
     ConsoleRegisterRequest,
-    ApiTokenUpdateRequest,
     normalize_username,
 )
 
@@ -127,7 +131,7 @@ class ApiTokenPolicyTests(unittest.TestCase):
             ),
         ]
 
-        summary = _build_api_token_usage_response([active_token, revoked_token], runs, days=7, now=now)
+        summary = token_service.build_api_token_usage([active_token, revoked_token], runs, days=7, now=now)
 
         self.assertEqual(summary.active_tokens, 1)
         self.assertEqual(summary.total_requests, 2)
@@ -165,13 +169,13 @@ class ApiTokenPolicyTests(unittest.TestCase):
         )
 
         async def update_token():
-            return await _update_api_token(
+            return await token_service.update_api_token(
                 SimpleNamespace(session_factory=state.session_factory),
                 "token_1",
-                ApiTokenUpdateRequest(
+                token_service.UpdateApiTokenCommand(
                     name="  Production token  ",
                     policy={"allowed_agents": ["support", "support"], "max_requests_per_day": "50"},
-                    expires_at=None,
+                    fields_to_update=frozenset({"name", "policy"}),
                 ),
                 principal,
             )
@@ -208,7 +212,7 @@ class ApiTokenPolicyTests(unittest.TestCase):
         )
 
         async def revoke_token():
-            return await _revoke_api_token(
+            return await token_service.revoke_api_token(
                 SimpleNamespace(session_factory=state.session_factory),
                 "token_1",
                 principal,
@@ -603,10 +607,8 @@ class MultiUserPermissionTests(unittest.TestCase):
             updated_at=datetime(2026, 7, 5, tzinfo=UTC),
         )
 
-        with self.assertRaises(HTTPException) as context:
+        with self.assertRaises(NotFoundError):
             _ensure_console_principal_can_access_session(principal, record)
-
-        self.assertEqual(context.exception.status_code, 404)
 
     def test_admin_session_guard_accepts_any_session(self) -> None:
         principal = ConsolePrincipalContext(
@@ -776,14 +778,13 @@ class MultiUserPermissionTests(unittest.TestCase):
         app = SimpleNamespace(
             state=SimpleNamespace(
                 registry=SimpleNamespace(manifest_skills={}),
+                config_store=SimpleNamespace(),
                 settings=None,
             )
         )
 
-        with self.assertRaises(HTTPException) as context:
-            anyio.run(_ensure_skill_state_mutation_allowed, app, "inline_skill", principal)
-
-        self.assertEqual(context.exception.status_code, 403)
+        with self.assertRaises(ForbiddenError):
+            anyio.run(_ensure_skill_state_mutation_allowed, app.state.registry, app.state.config_store, app.state.settings, "inline_skill", principal)
 
     def test_build_agent_specs_uses_internal_names_for_runtime_resources(self) -> None:
         mcp_payload = [
@@ -853,7 +854,8 @@ def _build_guard_app(settings):
 
 
 def _session_cookie(settings: AppSettings, *, user_id: str = "user_1", email: str = "u1@example.com") -> str:
-    from agent_framework.api.app import _make_console_session_token, ConsolePrincipalContext
+    from covalent_enterprise.api._auth_helpers import _make_console_session_token
+    from covalent_enterprise.api._shared import ConsolePrincipalContext
 
     principal = ConsolePrincipalContext(
         user_id=user_id,
@@ -968,6 +970,8 @@ class _PublicApiFakeSession:
             return _ScalarResult(self._matching_audit_logs(params))
         if "agents" in statement_text:
             display_name = self._param(params, "display_name")
+            if display_name is None:
+                return _ScalarResult(list(self.state.agents.values()))
             return _ScalarResult([row for row in self.state.agents.values() if row.display_name == display_name])
         return _ScalarResult()
 
@@ -1027,7 +1031,7 @@ class _PublicApiFakeDbState:
     def session_factory(self):
         return _PublicApiFakeSession(self)
 
-    def add_token(self, *, raw_token: str, token_prefix: str, token_id: str, user_id: str, workspace_id: str, policy: dict[str, object]) -> None:
+    def add_token(self, *, raw_token: str, token_prefix: str, token_id: str, user_id: str, workspace_id: str, policy: dict[str, object], scopes: list[str] | None = None) -> None:
         row = ApiTokenRow(
             id=token_id,
             user_id=user_id,
@@ -1035,7 +1039,7 @@ class _PublicApiFakeDbState:
             name=token_id,
             token_prefix=token_prefix,
             token_hash=hash_api_token(raw_token, "pepper"),
-            scopes=["agent:invoke"],
+            scopes=scopes if scopes is not None else ["agent:invoke"],
             policy_json=policy,
             created_at=datetime.now(UTC),
         )
@@ -1053,6 +1057,19 @@ class _FakeRuntime:
             output_text=f"{agent.name}: {input_value}",
             usage=TokenUsage(prompt_tokens=3, completion_tokens=4, total_tokens=7),
         )
+
+
+class _InputPausingRuntime:
+    """A runtime whose run pauses on user input: the stream ends with
+    input_required and no final, so ``run`` raises the generic
+    "completed without a final response" error the route must map."""
+
+    def __init__(self) -> None:
+        self.run_calls = 0
+
+    async def run(self, agent, input_value, context):
+        self.run_calls += 1
+        raise RuntimeError("Runtime completed without a final response")
 
 
 class PublicAgentInvokeEndToEndTests(unittest.TestCase):
@@ -1155,6 +1172,63 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
         self.assertEqual({row.metadata_json["status_code"] for row in denied_audits}, {401, 403, 429})
         self.assertTrue(any(row.action == "agent.invoke" and row.outcome == "completed" for row in state.audit_logs))
 
+    def test_non_stream_invoke_maps_input_pause_to_typed_conflict(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.users["user_1"] = UserRow(id="user_1", email="u1@example.com", display_name="User 1", role="member", status="active")
+        token, prefix = generate_api_token()
+        state.add_token(
+            raw_token=token,
+            token_prefix=prefix,
+            token_id="token_1",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            policy={},
+        )
+        state.agents["pausing-agent"] = AgentRow(
+            name="pausing-agent",
+            display_name=None,
+            owner_user_id="user_1",
+            workspace_id="workspace_1",
+            visibility="private",
+            publication_status="draft",
+            description="Pausing agent",
+            system_prompt="You pause.",
+            provider_name="openai_compatible",
+            provider_model="gpt-test",
+        )
+        registry = FrameworkRegistry()
+        registry.register_agent(
+            AgentSpec(
+                name="pausing-agent",
+                description="Pausing agent",
+                system_prompt="You pause.",
+                provider=ProviderConfig(provider="openai_compatible", model="gpt-test"),
+            )
+        )
+        runtime = _InputPausingRuntime()
+        app = create_app()
+        app.state.settings = AppSettings(api_token_hash_pepper="pepper")
+        app.state.db_manager = SimpleNamespace(session_factory=state.session_factory)
+        app.state.registry = registry
+        app.state.runtime = runtime
+        client = TestClient(app)
+
+        response = client.post(
+            "/v1/agent/invoke",
+            headers={"authorization": f"Bearer {token}"},
+            json={"agent": "pausing-agent", "input": "deploy it", "memory": {"mode": "none"}, "trace": {"level": "steps"}},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json()["detail"],
+            "This agent requested user input; user input is only supported on the streaming endpoint",
+        )
+        self.assertEqual(runtime.run_calls, 1)
+        self.assertEqual(len(state.run_logs), 1)
+        self.assertEqual(state.run_logs[0].status, "failed")
+        self.assertEqual(state.run_logs[0].error_json["code"], "input_required")
+
     def test_token_policy_enforces_daily_request_and_token_quotas(self) -> None:
         state = _PublicApiFakeDbState()
         principal = ApiPrincipal(
@@ -1203,7 +1277,7 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
                 agent_name="private-agent",
             )
 
-        with self.assertRaises(HTTPException) as context:
+        with self.assertRaises(QuotaExceededError) as context:
             anyio.run(enforce_limits)
 
         self.assertEqual(context.exception.status_code, 429)
@@ -1260,17 +1334,17 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
         )
 
         async def list_member_logs():
-            return await _list_audit_logs(SimpleNamespace(session_factory=state.session_factory), member)
+            return await list_audit_logs(SimpleNamespace(session_factory=state.session_factory), member)
 
         async def list_denied_admin_logs():
-            return await _list_audit_logs(
+            return await list_audit_logs(
                 SimpleNamespace(session_factory=state.session_factory),
                 admin,
                 outcome="denied",
                 target_type="agent",
             )
 
-        with self.assertRaises(HTTPException) as context:
+        with self.assertRaises(ForbiddenError) as context:
             anyio.run(list_member_logs)
         admin_logs = anyio.run(list_denied_admin_logs)
 
@@ -1300,18 +1374,133 @@ class PublicAgentInvokeEndToEndTests(unittest.TestCase):
         )
 
         async def revoke_other_user_token():
-            return await _revoke_api_token(SimpleNamespace(session_factory=state.session_factory), "token_1", admin)
+            return await token_service.revoke_api_token(SimpleNamespace(session_factory=state.session_factory), "token_1", admin)
 
         async def list_other_user_token_runs():
-            return await _list_api_token_runs(SimpleNamespace(session_factory=state.session_factory), "token_1", admin)
+            return await token_service.list_api_token_runs(SimpleNamespace(session_factory=state.session_factory), "token_1", admin)
 
-        with self.assertRaises(HTTPException) as revoke_context:
+        with self.assertRaises(NotFoundError) as revoke_context:
             anyio.run(revoke_other_user_token)
-        with self.assertRaises(HTTPException) as runs_context:
+        with self.assertRaises(NotFoundError) as runs_context:
             anyio.run(list_other_user_token_runs)
 
         self.assertEqual(revoke_context.exception.status_code, 404)
         self.assertEqual(runs_context.exception.status_code, 404)
+
+
+class PublicAgentListEndToEndTests(unittest.TestCase):
+    def _build_client(self, state: _PublicApiFakeDbState, registry: FrameworkRegistry) -> TestClient:
+        app = create_app()
+        app.state.settings = AppSettings(api_token_hash_pepper="pepper")
+        app.state.db_manager = SimpleNamespace(session_factory=state.session_factory)
+        app.state.registry = registry
+        app.state.runtime = _FakeRuntime()
+        return TestClient(app)
+
+    @staticmethod
+    def _agent_row(*, name: str, owner_user_id: str | None, visibility: str, publication_status: str, display_name: str | None = None) -> AgentRow:
+        return AgentRow(
+            name=name,
+            display_name=display_name,
+            owner_user_id=owner_user_id,
+            workspace_id=None,
+            visibility=visibility,
+            publication_status=publication_status,
+            description=f"Description of {name}",
+            system_prompt=f"You are {name}.",
+            provider_name="openai_compatible",
+            provider_model="gpt-test",
+        )
+
+    @staticmethod
+    def _registry_with(*names: str) -> FrameworkRegistry:
+        registry = FrameworkRegistry()
+        for name in names:
+            registry.register_agent(
+                AgentSpec(
+                    name=name,
+                    description=f"Description of {name}",
+                    system_prompt=f"You are {name}.",
+                    provider=ProviderConfig(provider="openai_compatible", model="gpt-test"),
+                )
+            )
+        return registry
+
+    def test_list_agents_returns_only_invocable_agents(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.users["user_1"] = UserRow(id="user_1", email="u1@example.com", display_name="User 1", role="member", status="active")
+        state.users["user_2"] = UserRow(id="user_2", email="u2@example.com", display_name="User 2", role="member", status="active")
+        token, prefix = generate_api_token()
+        state.add_token(raw_token=token, token_prefix=prefix, token_id="token_1", user_id="user_1", workspace_id="workspace_1", policy={})
+
+        state.agents["own-private"] = self._agent_row(name="own-private", owner_user_id="user_1", visibility="private", publication_status="draft")
+        state.agents["shared-agent"] = self._agent_row(
+            name="shared-agent", owner_user_id="user_2", visibility="public", publication_status="approved", display_name="Shared Agent"
+        )
+        state.agents["other-private"] = self._agent_row(name="other-private", owner_user_id="user_2", visibility="private", publication_status="draft")
+        state.agents["disabled-agent"] = self._agent_row(name="disabled-agent", owner_user_id="user_1", visibility="private", publication_status="draft")
+        registry = self._registry_with("own-private", "shared-agent", "other-private")
+
+        client = self._build_client(state, registry)
+        response = client.get("/v1/agents", headers={"authorization": f"Bearer {token}"})
+
+        self.assertEqual(response.status_code, 200)
+        agents = response.json()["agents"]
+        self.assertEqual([agent["name"] for agent in agents], ["own-private", "shared-agent"])
+        shared = next(agent for agent in agents if agent["name"] == "shared-agent")
+        self.assertEqual(shared["display_name"], "Shared Agent")
+        self.assertEqual(shared["description"], "Description of shared-agent")
+        self.assertEqual(shared["metadata"], {"provider": "openai_compatible", "model": "gpt-test"})
+
+    def test_list_agents_policy_filters_allowed_agents_by_name_and_display_name(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.users["user_1"] = UserRow(id="user_1", email="u1@example.com", display_name="User 1", role="member", status="active")
+        token, prefix = generate_api_token()
+        state.add_token(
+            raw_token=token,
+            token_prefix=prefix,
+            token_id="token_1",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            policy={"allowed_agents": ["own-private", "Shared Agent"]},
+        )
+
+        state.agents["own-private"] = self._agent_row(name="own-private", owner_user_id="user_1", visibility="private", publication_status="draft")
+        state.agents["shared-agent"] = self._agent_row(
+            name="shared-agent", owner_user_id=None, visibility="public", publication_status="approved", display_name="Shared Agent"
+        )
+        state.agents["blocked-agent"] = self._agent_row(name="blocked-agent", owner_user_id="user_1", visibility="private", publication_status="draft")
+        registry = self._registry_with("own-private", "shared-agent", "blocked-agent")
+
+        client = self._build_client(state, registry)
+        response = client.get("/v1/agents", headers={"authorization": f"Bearer {token}"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([agent["name"] for agent in response.json()["agents"]], ["own-private", "shared-agent"])
+
+    def test_list_agents_requires_token_and_scope(self) -> None:
+        state = _PublicApiFakeDbState()
+        state.users["user_1"] = UserRow(id="user_1", email="u1@example.com", display_name="User 1", role="member", status="active")
+        token, prefix = generate_api_token()
+        scoped_token, scoped_prefix = generate_api_token()
+        state.add_token(raw_token=token, token_prefix=prefix, token_id="token_1", user_id="user_1", workspace_id="workspace_1", policy={})
+        state.add_token(
+            raw_token=scoped_token,
+            token_prefix=scoped_prefix,
+            token_id="token_2",
+            user_id="user_1",
+            workspace_id="workspace_1",
+            policy={},
+            scopes=[],
+        )
+
+        client = self._build_client(state, FrameworkRegistry())
+
+        unauthenticated = client.get("/v1/agents")
+        self.assertEqual(unauthenticated.status_code, 401)
+
+        forbidden = client.get("/v1/agents", headers={"authorization": f"Bearer {scoped_token}"})
+        self.assertEqual(forbidden.status_code, 403)
 
 
 if __name__ == "__main__":
