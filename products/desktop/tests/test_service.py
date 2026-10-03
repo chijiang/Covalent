@@ -49,8 +49,8 @@ def test_sidecar_handshake_auth_and_shutdown(tmp_path: Path) -> None:
         target=_readline, args=(process.stdout, lines), daemon=True
     ).start()
     try:
-        # Cold CI runners can take longer to import the runtime and sync built-in skills.
-        handshake_line = lines.get(timeout=20)
+        # Cold CI runners can take >20s to import the runtime and sync built-in skills.
+        handshake_line = lines.get(timeout=60)
         handshake = json.loads(handshake_line)
         assert handshake["type"] == "ready"
         assert handshake["host"] == "127.0.0.1"
