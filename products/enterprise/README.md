@@ -5,7 +5,10 @@ PostgreSQL persistence, a Next.js control plane, managed skills and MCP servers,
 native or Docker execution, and a token-authenticated invoke API.
 
 **Status:** runnable full product. Database migrations are explicit and are never
-applied automatically during web-server startup.
+applied automatically during web-server startup. Durable chat runs, token-level
+answer streaming, replay after reconnect, explicit cancellation, managed Docker
+sandbox profiles, and persisted delegate lifecycles are implemented. Stateful
+delegates remain disabled by default pending staged release validation.
 
 [Back to repository overview](../../README.md) · [Development guide](../../docs/development.md)
 
