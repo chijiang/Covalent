@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 from covalent_enterprise.cli.app import app
@@ -21,11 +22,12 @@ class RootAppTests(unittest.TestCase):
     def test_serve_help_keeps_argparse_compatible_options(self) -> None:
         result = runner.invoke(app, ["serve", "--help"])
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("--host", result.output)
-        self.assertIn("--port", result.output)
-        self.assertIn("0.0.0.0", result.output)
-        self.assertIn("5170", result.output)
-        self.assertIn("AGENT_FRAMEWORK_BACKEND_PORT", result.output)
+        help_text = strip_ansi(result.output)
+        self.assertIn("--host", help_text)
+        self.assertIn("--port", help_text)
+        self.assertIn("0.0.0.0", help_text)
+        self.assertIn("5170", help_text)
+        self.assertIn("AGENT_FRAMEWORK_BACKEND_PORT", help_text)
 
     def test_migrate_help_mentions_migrations(self) -> None:
         result = runner.invoke(app, ["migrate", "--help"])
@@ -37,16 +39,18 @@ class ConfigCommandTests(unittest.TestCase):
     def test_export_help_warns_about_plaintext_keys(self) -> None:
         result = runner.invoke(app, ["config", "export", "--help"])
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("--output", result.output)
-        self.assertIn("-o", result.output)
-        self.assertIn("--no-skills", result.output)
-        self.assertIn("plaintext", result.output.lower())
+        help_text = strip_ansi(result.output)
+        self.assertIn("--output", help_text)
+        self.assertIn("-o", help_text)
+        self.assertIn("--no-skills", help_text)
+        self.assertIn("plaintext", help_text.lower())
 
     def test_import_help_lists_options(self) -> None:
         result = runner.invoke(app, ["config", "import", "--help"])
         self.assertEqual(result.exit_code, 0)
+        help_text = strip_ansi(result.output)
         for option in ("--on-conflict", "--dry-run", "--strict", "--no-skills"):
-            self.assertIn(option, result.output)
+            self.assertIn(option, help_text)
 
     def test_import_rejects_missing_bundle_file(self) -> None:
         result = runner.invoke(app, ["config", "import", "/nonexistent/bundle.zip"])
@@ -75,7 +79,7 @@ class UsersProvidersHelpTests(unittest.TestCase):
     def test_providers_set_key_offers_stdin(self) -> None:
         result = runner.invoke(app, ["providers", "set-key", "--help"])
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("--stdin", result.output)
+        self.assertIn("--stdin", strip_ansi(result.output))
 
 
 if __name__ == "__main__":

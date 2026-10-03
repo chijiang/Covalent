@@ -3,9 +3,8 @@ FROM node:22-slim AS builder
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY products/enterprise/web ./products/enterprise/web
-COPY products/desktop/web/package.json ./products/desktop/web/package.json
-COPY products/desktop/shell/package.json ./products/desktop/shell/package.json
+# Match the full monorepo layout used by the standalone build and its file tracer.
+COPY . .
 RUN pnpm install --frozen-lockfile --ignore-scripts
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build:enterprise

@@ -30,10 +30,11 @@ def test_status_contract() -> None:
     }
 
 
-def test_sidecar_handshake_auth_and_shutdown() -> None:
+def test_sidecar_handshake_auth_and_shutdown(tmp_path: Path) -> None:
     token = secrets.token_urlsafe(32)
     env = os.environ.copy()
     env["COVALENT_DESKTOP_SERVICE_TOKEN"] = token
+    env["COVALENT_DESKTOP_DATA_DIR"] = str(tmp_path)
     process = subprocess.Popen(
         [sys.executable, "-m", "covalent_desktop", "serve", "--port", "0"],
         cwd=Path(__file__).resolve().parents[3],
@@ -48,7 +49,8 @@ def test_sidecar_handshake_auth_and_shutdown() -> None:
         target=_readline, args=(process.stdout, lines), daemon=True
     ).start()
     try:
-        handshake_line = lines.get(timeout=10)
+        # Cold CI runners can take longer to import the runtime and sync built-in skills.
+        handshake_line = lines.get(timeout=20)
         handshake = json.loads(handshake_line)
         assert handshake["type"] == "ready"
         assert handshake["host"] == "127.0.0.1"
@@ -73,4 +75,5 @@ def test_sidecar_handshake_auth_and_shutdown() -> None:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
-    assert process.returncode == 0
+    # Windows Popen.terminate() uses TerminateProcess, which exits with code 1.
+    assert process.returncode == (1 if os.name == "nt" else 0)
