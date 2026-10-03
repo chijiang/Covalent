@@ -15,6 +15,7 @@
 | `packages/python/execution-*` | 已有实现 | native / Docker 执行适配器 |
 
 完整目标见 [架构设计](monorepo-architecture.md)，已完成的搬迁与验证见 [迁移记录](monorepo-migration.md)。
+分支命名、版本号、Preview、RC、Stable Release 和 Hotfix 必须遵循[分支、版本与发布规范](versioning-and-release.md)。
 目标目录不代表功能已经交付。共享包优先服务真实消费者，不预建所有规划包。
 
 ## 从哪里开始
@@ -57,8 +58,10 @@ Lite 产品测试实施后单独运行 `uv run --package covalent-lite python -m
 
 ## 日常维护规则
 
-1. 先确定代码所有者：产品策略、共享执行、具体适配器或协议。
-2. 新依赖写入实际使用它的包 manifest，再在根更新并提交 `uv.lock` / `pnpm-lock.yaml`。
-3. 公共协议变更同时更新生产者、消费者、示例和契约测试；禁止从 Enterprise 导入 DTO 作为跨产品复用。
-4. 改文档时标明“已实现 / 设计约定 / 后续计划”，避免把设计命令当成可运行入口。
-5. 独立产品发行前从 wheel 干净安装；workspace 中可导入不等于依赖声明完整。
+1. 从最新 `main` 创建短期分支，通过 PR 合并；不建立新的长期 `dev` 或 `pre-release` 分支。
+2. 先确定代码所有者：产品策略、共享执行、具体适配器或协议。
+3. 新依赖写入实际使用它的包 manifest，再在根更新并提交 `uv.lock` / `pnpm-lock.yaml`。
+4. 公共协议变更同时更新生产者、消费者、示例和契约测试；禁止从 Enterprise 导入 DTO 作为跨产品复用。
+5. 改文档时标明“已实现 / 设计约定 / 后续计划”，避免把设计命令当成可运行入口。
+6. 独立产品发行前从 wheel 干净安装；workspace 中可导入不等于依赖声明完整。
+7. Preview 与 Release 引用不可变 Commit SHA、Tag 或 digest，不用 `latest` 作为可追溯版本。

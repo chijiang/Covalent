@@ -63,6 +63,8 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 
 ## Validation And Workflow
 
+- Branch naming, merge policy, version bumps, Preview channels, Release Tags and Hotfixes must follow `docs/versioning-and-release.md`. Do not create new long-lived `dev` or `pre-release` branches.
+
 - Frontend setup: `pnpm install --frozen-lockfile`
 - Frontend dev: `pnpm dev:enterprise`
 - Frontend validation: `pnpm typecheck`
