@@ -1,110 +1,112 @@
-# 分支、版本与发布规范
+# Branching, Versioning, and Release Policy
 
-状态：项目开发规范。除文中明确标注为“过渡期”的内容外，新开发和发布必须遵循本文。
+Status: project development standard. All new development and releases must follow this policy except where a transition rule is explicitly stated.
 
-本规范适用于 Covalent monorepo 中的共享 Python 包、Enterprise、Desktop、Lite 和后续 Monitor 产品。架构与产品边界以[架构设计](monorepo-architecture.md)为准；本文只规定代码如何进入主干、如何生成 Preview，以及如何形成可追溯的 Release。
+This policy applies to the shared Python packages and the Enterprise, Desktop, Lite, and future Monitor products in the Covalent monorepo. See the [architecture document](monorepo-architecture.md) for product and package boundaries. This document defines how code enters the mainline, how Preview artifacts are produced, and how a traceable Release is created.
 
-## 1. 基本原则
+## 1. Principles
 
-1. `main` 是唯一永久开发分支，并且始终保持可发布；不再维护长期 `dev`、`develop` 或 `pre-release` 分支。
-2. 所有变更从最新 `main` 创建短期分支，通过 Pull Request 合并；禁止直接向 `main` 推送。
-3. 一个提交对应一组不可变制品。Preview、RC 和 Stable 应晋升同一提交产生的制品，不在发布阶段重新构建不同内容。
-4. 共享 Python 包初期使用同一版本列车；Enterprise、Desktop、Lite 和 Monitor 使用独立产品版本、Tag、Changelog 与发布流程。
-5. 产品版本、公共协议版本和数据库迁移版本彼此独立。升级产品版本不得替代协议兼容检查或数据库迁移。
-6. Release Tag 只指向通过全部发布门禁的提交；Tag 一经发布不得移动、覆盖或复用。
+1. `main` is the only permanent development branch and must remain releasable. Do not create long-lived `dev`, `develop`, or `pre-release` branches.
+2. Create every change from the latest `main` and merge it through a Pull Request. Direct pushes to `main` are prohibited.
+3. One commit identifies one immutable set of artifacts. Promote the same artifacts through Preview, RC, and Stable instead of rebuilding different content during release.
+4. Shared Python packages initially use one release train. Enterprise, Desktop, Lite, and Monitor use independent product versions, Tags, Changelogs, and release workflows.
+5. Product versions, public protocol versions, and database migration versions are independent. A product version bump does not replace compatibility checks or database migrations.
+6. A Release Tag may point only to a commit that passed every release gate. Never move, overwrite, or reuse a published Tag.
 
-## 2. 分支模型
+## 2. Branch Model
 
-### 2.1 永久分支
+### 2.1 Permanent Branch
 
-| 分支 | 用途 | 规则 |
+| Branch | Purpose | Rules |
 | --- | --- | --- |
-| `main` | 唯一主干和下一版本集成线 | 受保护；只接受 PR；不得 force push；始终可部署到 staging |
+| `main` | The only mainline and integration branch for the next release | Protected; Pull Requests only; no force pushes; continuously deployable to staging |
 
-`main` 不等于生产环境。生产版本由带签名的 Release Tag 和对应不可变制品标识。
+`main` does not represent production. A production version is identified by a signed Release Tag and its immutable artifacts.
 
-### 2.2 短期分支
+### 2.2 Short-Lived Branches
 
-| 类型 | 命名格式 | 基线 | 合并目标 |
+| Type | Naming pattern | Base | Merge target |
 | --- | --- | --- | --- |
-| 功能 | `feat/<issue>-<slug>` | 最新 `main` | `main` |
-| 修复 | `fix/<issue>-<slug>` | 最新 `main` | `main` |
-| 文档 | `docs/<issue>-<slug>` | 最新 `main` | `main` |
-| 工程维护 | `chore/<issue>-<slug>` | 最新 `main` | `main` |
-| 发布稳定 | `release/<scope>/<version>` | 准备发布的 `main` 提交 | `main` |
-| 生产热修复 | `hotfix/<scope>/<version>` | 对应产品最近的 Stable Tag | `main` |
+| Feature | `feat/<issue>-<slug>` | Latest `main` | `main` |
+| Fix | `fix/<issue>-<slug>` | Latest `main` | `main` |
+| Documentation | `docs/<issue>-<slug>` | Latest `main` | `main` |
+| Maintenance | `chore/<issue>-<slug>` | Latest `main` | `main` |
+| Release stabilization | `release/<scope>/<version>` | The `main` commit selected for release | `main` |
+| Production hotfix | `hotfix/<scope>/<version>` | The affected product's latest Stable Tag | `main` |
 
-`<issue>` 优先使用 Linear 编号，例如 `feat/COV-123-session-search`。没有 Issue 的微小文档或维护变更可以省略编号，但必须保留可读的 `<slug>`。
+Use a Linear identifier for `<issue>` when one exists, for example `feat/COV-123-session-search`. A small documentation or maintenance change without an Issue may omit the identifier but must retain a descriptive `<slug>`.
 
-开发分支应在 PR 合并后自动删除。`release/*` 仅用于需要跨多天稳定、签名或候选验证的发布，不作为下一批功能的集成分支。无需稳定窗口的产品可以直接从绿色 `main` 提交打 Tag。
+Delete development branches automatically after their PR is merged. Use `release/*` only when signing, stabilization, or release-candidate verification spans multiple days. It is not an integration branch for the next batch of features. A product that does not need a stabilization window may be tagged directly from a green `main` commit.
 
-### 2.3 合并策略
+### 2.3 Merge Policy
 
-- 常规 PR 使用 **Squash merge**，使每个 PR 在 `main` 上形成一个可回滚提交。
-- PR 标题使用 Conventional Commits 风格：`feat: ...`、`fix: ...`、`docs: ...`、`chore: ...`、`refactor: ...`。
-- 禁止将未同步最新 `main`、存在未解决讨论或必需检查失败的 PR 合并。
-- 历史仓库收口、大规模外部代码导入等需要保留拓扑的特殊操作，可以经维护者确认后使用 merge commit；不得将该例外用于日常功能开发。
-- 不使用 rebase 或 force push 改写已经发布 Tag 可达的历史。
+- Use **Squash merge** for normal Pull Requests so each PR becomes one revertible commit on `main`.
+- Use Conventional Commits style for PR titles: `feat: ...`, `fix: ...`, `docs: ...`, `chore: ...`, or `refactor: ...`.
+- Do not merge a PR that is behind the required `main` baseline, has unresolved conversations, or has failed required checks.
+- A repository-history consolidation or a large external import may use a merge commit with maintainer approval when preserving topology is necessary. This exception does not apply to normal feature work.
+- Do not rebase or force-push history reachable from a published Tag.
 
-### 2.4 `main` 保护规则
+### 2.4 `main` Protection
 
-GitHub 必须为 `main` 开启以下保护：
+Configure GitHub protection for `main` as follows:
 
-1. 必须通过 Pull Request 合并，并解决全部 review conversation。
-2. 至少一名维护者批准；公共协议变更还需一个受影响产品的维护者批准。
-3. 必需检查包括 Enterprise backend、Enterprise web、容器验证和 Desktop macOS/Windows；按路径缩小检查前，影响分析必须能够覆盖反向依赖。
-4. 禁止 force push 和分支删除；管理员仅可在生产事故处置中临时绕过，并留下审计记录。
-5. 合并后自动删除源分支。
+1. Require a Pull Request and require all review conversations to be resolved.
+2. Require at least one maintainer approval. A public-protocol change also requires approval from a maintainer of an affected product.
+3. Require Enterprise backend, Enterprise web, container, and Desktop macOS/Windows checks. Path-based check reduction is allowed only after dependency-impact analysis covers reverse dependencies.
+4. Prohibit force pushes and branch deletion. Administrators may bypass protection only to resolve a production incident and must leave an audit record.
+5. Delete the source branch automatically after merge.
 
-## 3. 版本模型
+For a repository with only one maintainer, enforce the PR and status-check requirements immediately and enable mandatory external approval as soon as another maintainer is available.
 
-### 3.1 版本对象
+## 3. Version Model
 
-| 对象 | 版本策略 | Tag 示例 |
+### 3.1 Versioned Objects
+
+| Object | Version strategy | Tag example |
 | --- | --- | --- |
-| 共享 Python 包 | 当前使用统一版本列车 | `packages/v0.2.0` |
-| Enterprise | 独立 SemVer | `enterprise/v0.2.0` |
-| Desktop | 独立 SemVer | `desktop/v0.1.0` |
-| Lite | 独立 SemVer | `lite/v0.1.0` |
-| Monitor | 独立 SemVer | `monitor/v0.1.0` |
-| Agent/事件/控制协议 | 独立 `schema_version` | 不以产品 Tag 代替 |
+| Shared Python packages | One release train during the initial phase | `packages/v0.2.0` |
+| Enterprise | Independent SemVer | `enterprise/v0.2.0` |
+| Desktop | Independent SemVer | `desktop/v0.1.0` |
+| Lite | Independent SemVer | `lite/v0.1.0` |
+| Monitor | Independent SemVer | `monitor/v0.1.0` |
+| Agent, event, and control protocols | Independent `schema_version` | Never replaced by a product Tag |
 
-当前共享 Python 包使用精确的内部版本约束，因此一次共享包变更必须同步更新所有受影响包的 `pyproject.toml`、产品依赖和根 `uv.lock`。在依赖范围与自动兼容测试成熟前，不允许单独发布其中一个共享包。
+The shared Python packages currently use exact internal version constraints. A shared-package change must therefore update every affected `pyproject.toml`, all consuming product dependencies, and the root `uv.lock` together. Do not release only one shared package until dependency ranges and automated compatibility tests are mature.
 
-前端 workspace 包当前为私有包。其版本只在成为独立发布制品后纳入公开版本管理；产品构建仍必须固定 `pnpm-lock.yaml`。
+Frontend workspace packages are currently private. They enter public version management only when they become independently published artifacts. Product builds must still pin `pnpm-lock.yaml`.
 
-### 3.2 SemVer 规则
+### 3.2 SemVer Rules
 
-在 `0.x` 阶段采用以下约定：
+During the `0.x` phase:
 
-- `0.MINOR.0`：新增能力、破坏性产品变更或需要显式迁移的变更。
-- `0.MINOR.PATCH`：向后兼容的缺陷、安全和文档修复。
-- `1.0.0` 以后严格遵循 SemVer：破坏性变更升 Major，兼容功能升 Minor，兼容修复升 Patch。
+- `0.MINOR.0` introduces a capability, a breaking product change, or a change that requires an explicit migration.
+- `0.MINOR.PATCH` delivers backward-compatible fixes, security changes, or documentation corrections.
+- Starting with `1.0.0`, follow SemVer strictly: breaking changes increment Major, compatible features increment Minor, and compatible fixes increment Patch.
 
-公共协议已经有稳定消费者后，破坏性 schema 变更必须提升协议 Major；新增可选字段通常保持兼容。数据库 revision 继续由 Alembic 或对应产品迁移系统管理，不使用产品版本号作为 revision。
+After a public protocol has stable consumers, a breaking schema change must increment the protocol Major version. Adding optional fields is normally backward-compatible. Database revisions remain owned by Alembic or the corresponding product migration system; a product version is not a database revision.
 
-### 3.3 预发布版本
+### 3.3 Prerelease Versions
 
-发布通道依次为：
+Release channels progress in this order:
 
 ```text
-alpha → beta → rc → stable
+alpha -> beta -> rc -> stable
 ```
 
-- `alpha`：功能和结构可能继续变化，仅供开发验证。
-- `beta`：主要功能完整，允许修复和小范围兼容调整。
-- `rc`：发布候选，只接受阻塞发布的修复。
-- `stable`：完成发布门禁并面向目标用户。
+- `alpha`: structure and functionality may continue to change; intended for development validation.
+- `beta`: primary functionality is complete; fixes and limited compatibility adjustments are allowed.
+- `rc`: release candidate; accept only release-blocking fixes.
+- `stable`: all release gates passed and the release is ready for its target audience.
 
-Git Tag 使用 `enterprise/v0.2.0-rc.1` 形式。Python 包使用 PEP 440 版本，例如 `0.2.0rc1`；NPM/产品版本使用 `0.2.0-rc.1`。同一制品在不同系统中的格式可以不同，但 Release Manifest 必须明确它们属于同一发布。
+Use a Git Tag such as `enterprise/v0.2.0-rc.1`. Use PEP 440 for Python packages, such as `0.2.0rc1`, and `0.2.0-rc.1` for NPM and product versions. Formats may differ between ecosystems, but the Release Manifest must map them to the same release.
 
-## 4. Preview 规范
+## 4. Preview Policy
 
 ### 4.1 Pull Request Preview
 
-每个 PR 至少完成受影响范围的构建和测试。修改 contracts、runtime、根锁文件或影响图无法判断时，运行完整产品矩阵。
+Every PR must build and test its affected dependency closure. Changes to contracts, runtime, root lockfiles, or inputs that cannot be classified by the dependency graph require the full product matrix.
 
-制品必须包含 PR 编号与完整或短 Commit SHA，例如：
+Artifact identifiers must include the PR number and a full or short Commit SHA, for example:
 
 ```text
 Python:   0.2.0.dev123+g1a2b3c4
@@ -112,79 +114,79 @@ Docker:   ghcr.io/<owner>/<image>:pr-123-1a2b3c4
 Desktop:  Covalent-Desktop-pr123-1a2b3c4-<os>-<arch>
 ```
 
-PR Preview 规则：
+PR Preview requirements:
 
-1. Enterprise 为需要端到端验证的 PR 创建隔离环境、数据库与凭据，地址使用 `pr-<number>` 标识。
-2. 数据库至少验证从空库迁移；涉及迁移时还需验证从最近 Stable 版本升级。
-3. Desktop 生成未签名或 ad-hoc 签名的 macOS/Windows 测试制品并运行安装、启动、sidecar 握手和清理 smoke test。
-4. Lite 构建 wheel 并在干净环境运行导入、CLI 和启动 smoke test；在产品实现完成前至少保留包隔离验证。
-5. Preview 不使用生产密钥或生产数据；PR 关闭后自动销毁环境，普通制品保留 7 至 14 天。
-6. CI 在 PR 中回写 Preview 地址、制品、测试结果与已知限制。
+1. Create an isolated environment, database, and credentials for Enterprise PRs that need end-to-end validation. Include `pr-<number>` in the environment address.
+2. Test database migration from an empty database. When a migration changes, also test an upgrade from the latest Stable release.
+3. Produce unsigned or ad-hoc-signed macOS and Windows Desktop artifacts and run installation, startup, sidecar handshake, and cleanup smoke tests.
+4. Build the Lite wheel and run import, CLI, and startup smoke tests in a clean environment. Preserve at least package-isolation validation until the Lite product implementation is complete.
+5. Never use production secrets or production data. Destroy an environment when its PR closes and retain ordinary Preview artifacts for 7 to 14 days.
+6. Post the Preview URL, artifacts, test results, and known limitations back to the PR.
 
-来自 fork 的不可信 PR 不注入 Secret，也不自动部署到有内部网络权限的环境。
+Do not expose Secrets to untrusted PRs from forks or deploy them into an environment with access to internal networks.
 
-### 4.2 主干 Preview
+### 4.2 Mainline Preview
 
-每个绿色 `main` 提交生成 `main-<sha>` 制品并持续部署到 staging。可以提供方便人工验证的 `edge` 浮动别名，但所有问题记录和发布晋升必须引用不可变 SHA 或 digest。
+Every green `main` commit produces `main-<sha>` artifacts and is continuously deployable to staging. An `edge` floating alias may be provided for manual testing, but incidents and release promotions must reference an immutable SHA or digest.
 
-夜间验证补充耗时较长的完整容器矩阵、真实数据库升级、Desktop 双平台打包、安装升级和异常进程清理。夜间失败必须进入待办，但不得把已知失败的 `main` 制品晋升为 RC。
+Nightly validation supplements the PR gates with expensive container matrices, real database upgrades, two-platform Desktop packaging, installation upgrades, and abnormal-process cleanup. A failed nightly run must become tracked work, and an artifact with a known failure must not be promoted to RC.
 
-## 5. Release 流程
+## 5. Release Process
 
-### 5.1 准备发布
+### 5.1 Prepare a Release
 
-1. 确定发布产品、目标版本和候选 Commit SHA。
-2. 更新相应版本源、Changelog 与 Release Manifest；共享包变更按统一版本列车更新所有精确依赖。
-3. 若需要稳定窗口，从候选提交创建 `release/<scope>/<version>`；冻结新功能，只接受发布阻塞修复。
-4. 运行完整发布门禁，生成 `rc.N` Tag 和不可变候选制品。
-5. 在目标环境验证数据库升级、配置兼容、容器健康和 Desktop 安装/升级/卸载。
+1. Select the product, target version, and candidate Commit SHA.
+2. Update the version source, Changelog, and Release Manifest. For a shared-package change, update the entire package release train and all exact dependencies.
+3. If a stabilization window is needed, create `release/<scope>/<version>` from the candidate commit. Freeze features and accept only release-blocking fixes.
+4. Run every release gate and produce an `rc.N` Tag with immutable candidate artifacts.
+5. Validate database upgrades, configuration compatibility, container health, and Desktop installation, upgrade, and removal in target environments.
 
-### 5.2 正式发布
+### 5.2 Publish a Stable Release
 
-1. 从已验证 RC 对应的同一 Commit 和制品 digest 创建 Stable Tag；禁止重新编译内容不同的“同版本”制品。
-2. 校验 Tag 中的 scope/version 与产品 manifest 完全一致。
-3. 生成 SBOM、checksum、Release Notes，并发布对应 wheel、镜像或安装包。
-4. Docker 可以在不可变 digest 上增加 `v0.2.0`、`v0.2` 和 `latest` 别名；`latest` 不能作为部署清单中的唯一版本依据。
-5. 完成最小生产 smoke test，记录发布结果；将 release 分支中的必要修复合回 `main` 后删除该分支。
+1. Create the Stable Tag from the same Commit and artifact digest as the verified RC. Do not rebuild different content under the same version.
+2. Verify that the scope and version in the Tag exactly match the product manifest.
+3. Generate an SBOM, checksums, and Release Notes, then publish the corresponding wheels, images, or installers.
+4. Docker may add `v0.2.0`, `v0.2`, and `latest` aliases to an immutable digest. Deployment manifests must not rely on `latest` as their only version identifier.
+5. Run a minimal production smoke test and record the result. Merge required release-branch fixes back into `main`, then delete the release branch.
 
 ### 5.3 Release Manifest
 
-每个产品发布必须记录：
+Every product release records:
 
-- 产品名、产品版本、Release Tag 和 Git Commit SHA；
-- 所有共享包的名称与精确版本；
-- 支持的公共协议/schema 版本范围；
-- 数据库 migration head 或本地存储 schema 版本；
-- 构建制品、目标 OS/架构、镜像 digest 和文件 checksum；
-- 构建工作流运行编号、签名/公证状态和发布日期。
+- product name, product version, Release Tag, and Git Commit SHA;
+- exact name and version of every shared package;
+- supported public protocol and schema version ranges;
+- database migration head or local-storage schema version;
+- artifacts, target OS and architecture, image digests, and file checksums;
+- build workflow run identifier, signing and notarization state, and publication date.
 
-Manifest 必须随 Release 制品保存，并能从 Release 页面直接取得。不得包含访问密钥或其他凭据。
+Store the Manifest with the Release artifacts and make it directly downloadable from the Release page. It must not contain credentials or other secrets.
 
-## 6. Hotfix 流程
+## 6. Hotfix Process
 
-1. 从受影响产品最近的 Stable Tag 创建 `hotfix/<scope>/<version>`，不能从当前未发布的 `main` 创建。
-2. 只提交解决生产问题所需的最小改动和回归测试。
-3. 运行该产品完整发布门禁以及受影响共享包的反向依赖测试。
-4. 发布 Patch 版本后，通过 PR 将修复合回 `main`；如仍有活动 release 分支，也同步合入。
-5. 删除 hotfix 分支，但保留不可变 Tag、Manifest 和制品。
+1. Create `hotfix/<scope>/<version>` from the affected product's latest Stable Tag, not from unreleased `main`.
+2. Commit only the minimal production fix and its regression tests.
+3. Run the product's complete release gates and reverse-dependency tests for any affected shared package.
+4. Publish a Patch version, then merge the fix back to `main` through a PR. Apply it to any active release branch as well.
+5. Delete the hotfix branch, but retain the immutable Tag, Manifest, and artifacts.
 
-## 7. Changelog 与发布说明
+## 7. Changelog and Release Notes
 
-- 产品分别维护 Changelog；共享包维护一个 release-train Changelog。
-- Changelog 只记录用户或集成方可感知的功能、修复、破坏性变更、安全事项和迁移要求，不复制全部 Git commit。
-- PR 必须标注影响的产品/包，并在存在破坏性变更时说明迁移方式。
-- Release Notes 包含 Highlights、Breaking Changes、Migration、Known Issues、Checksums 和从上一 Stable Tag 起的完整变更链接。
+- Maintain a separate Changelog for each product and one release-train Changelog for the shared packages.
+- Record user-visible or integration-visible features, fixes, breaking changes, security notes, and migration requirements. Do not copy the full Git commit list.
+- Every PR must identify the affected products and packages. A breaking change must include migration instructions.
+- Release Notes contain Highlights, Breaking Changes, Migration, Known Issues, Checksums, and a complete comparison link from the previous Stable Tag.
 
-## 8. 当前仓库的过渡规则
+## 8. Repository Transition
 
-首次按本规范收口时，从现有完整集成提交建立 `release/platform/0.2.0`，通过一个保留历史的 recovery PR 合入 `main`。该 PR 是日常 squash merge 规则的明确例外。
+For the initial adoption of this policy, create `release/platform/0.2.0` from the existing integrated history and merge it into `main` through a recovery PR that preserves history. This PR is the documented exception to the normal squash-merge rule.
 
-旧的 `dev`、`felines`、`multi-line-prod`、`multi-user-support`、`sandbox-backend`、`wasm-sandbox` 在确认提交均可从新 release 分支到达后删除。仍有独有提交的旧分支先重命名为 `archive/<name>-<purpose>`；只有在内容被迁移或明确废弃后才删除。
+Delete the old `dev`, `felines`, `multi-line-prod`, `multi-user-support`, `sandbox-backend`, and `wasm-sandbox` branches after verifying that their commits are reachable from the new release branch. Rename an old branch with unique commits to `archive/<name>-<purpose>` and delete it only after its content is migrated or explicitly retired.
 
-过渡完成的判定条件：
+The transition is complete when:
 
-1. recovery PR 的必需 CI 全绿并合入 `main`；
-2. `main` 保护规则生效；
-3. 至少一个产品的 scoped RC Tag 能完整执行构建与发布工作流；
-4. 后续开发均从 `main` 创建符合命名规范的短期分支。
+1. all required checks on the recovery PR pass and it is merged into `main`;
+2. `main` protection is active;
+3. at least one product can run the complete build and release workflow from a scoped RC Tag; and
+4. all subsequent development begins from `main` on a compliant short-lived branch.
 

@@ -1,67 +1,68 @@
-# Monorepo 开发导航
+# Monorepo Development Guide
 
-## 当前落地状态
+## Current Implementation Status
 
-| 区域 | 状态 | 入口与职责 |
+| Area | Status | Entry point and responsibility |
 | --- | --- | --- |
-| `products/enterprise/backend` | 已有实现 | 企业 API、用例、数据库、CLI 和迁移 |
-| `products/enterprise/web` | 已有实现 | Next.js 控制台 |
-| `products/lite/service` | 包骨架 | 独立 Lite 命名空间；CLI/API 待实现 |
-| `products/desktop` | D1a 可运行 | Electron/React/Python service 本地闭环；Agent 与安装包待实现 |
-| Monitor | 规划 | 暂不建立空应用或引入数据库依赖 |
-| `packages/python/contracts` | 已有实现 | 可序列化消息和 Agent/Provider/MCP/Skill 配置 |
-| `packages/python/runtime` | 已有实现 | 执行领域、端口、引擎和运行服务 |
-| `packages/python/agent-kit` | 已有实现 | 模型、MCP、Skill、工具和 registry 实现 |
-| `packages/python/execution-*` | 已有实现 | native / Docker 执行适配器 |
+| `products/enterprise/backend` | Implemented | Enterprise API, use cases, database, CLI, and migrations |
+| `products/enterprise/web` | Implemented | Next.js control plane |
+| `products/lite/service` | Package scaffold | Independent Lite namespace; CLI and API remain to be implemented |
+| `products/desktop` | D1a runnable | Local Electron/React/Python service loop; agent functionality and installers remain in progress |
+| Monitor | Planned | Do not create an empty application or introduce database dependencies yet |
+| `packages/python/contracts` | Implemented | Serializable messages and Agent, Provider, MCP, and Skill configuration |
+| `packages/python/runtime` | Implemented | Execution domain, ports, engine, and run services |
+| `packages/python/agent-kit` | Implemented | Model, MCP, Skill, tool, and registry implementations |
+| `packages/python/execution-*` | Implemented | Native and Docker execution adapters |
 
-完整目标见 [架构设计](monorepo-architecture.md)，已完成的搬迁与验证见 [迁移记录](monorepo-migration.md)。
-分支命名、版本号、Preview、RC、Stable Release 和 Hotfix 必须遵循[分支、版本与发布规范](versioning-and-release.md)。
-目标目录不代表功能已经交付。共享包优先服务真实消费者，不预建所有规划包。
+See the [architecture document](monorepo-architecture.md) for the target design and the [migration record](monorepo-migration.md) for completed moves and validation. Branch naming, versions, Preview, RC, Stable Release, and Hotfix work must follow the [branching, versioning, and release policy](versioning-and-release.md).
 
-## 从哪里开始
+A target directory does not imply that its functionality has been delivered. Shared packages should serve real consumers and should not be created speculatively.
 
-- Enterprise：阅读 [产品说明](../products/enterprise/README.md)，沿现有 API → application → runtime/infra 修改。
-- Lite：阅读 [开发指南](products/lite/development.md) 和 [首版接口约定](products/lite/contracts.md)。
-- Desktop：阅读 [开发指南](products/desktop/development.md)、[宿主契约](products/desktop/host-contract.md) 和 [产品说明](../products/desktop/README.md)。
-- 跨产品行为：遵循 [内核一致性规范](runtime-consistency.md)，区分已覆盖与待实现的契约。
-- 共享执行行为：修改 runtime 的引擎/端口；具体模型与工具实现归 agent-kit。
-- 公共数据结构：修改 contracts；企业管理 DTO 保留在 Enterprise。
-- Monitor：独立观测消费者，未来通过版本化协议接入；不得直接读运行产品的业务库。
+## Where to Start
 
-产品禁止互相导入，共享包禁止导入产品；根 `tests/architecture/test_monorepo.py` 检查 Python 边界。
-CLI/API 用例不重复实现，基础设施在产品装配入口注入。
+- Enterprise: read the [product guide](../products/enterprise/README.md) and follow the existing API -> application -> runtime/infra dependency direction.
+- Lite: read the [development guide](products/lite/development.md) and [initial contract](products/lite/contracts.md).
+- Desktop: read the [development guide](products/desktop/development.md), [host contract](products/desktop/host-contract.md), and [product guide](../products/desktop/README.md).
+- Cross-product behavior: follow the [runtime consistency policy](runtime-consistency.md) and distinguish implemented contracts from planned ones.
+- Shared execution behavior: modify runtime engines and ports. Concrete model and tool implementations belong to agent-kit.
+- Public data structures: modify contracts. Enterprise management DTOs remain in Enterprise.
+- Monitor: treat it as an independent observability consumer connected through versioned protocols. It must not read a runtime product's business database directly.
 
-## 开发与验证
+Products must not import one another, and shared packages must not import products. The root `tests/architecture/test_monorepo.py` suite enforces Python boundaries. CLI and API surfaces share use cases instead of duplicating them, and infrastructure is injected at each product composition root.
 
-在仓库根执行，Python 3.12+；Node/pnpm 版本遵循根 `package.json`。
+## Development and Validation
+
+Run commands from the repository root. Python 3.12 or later is required; Node and pnpm versions follow the root `package.json`.
 
 ```sh
 uv sync --locked
 uv run python main.py serve --port 5170
-# 需要数据库迁移时显式执行：uv run python main.py migrate
+# Apply database migrations explicitly when required.
+uv run python main.py migrate
 pnpm install --frozen-lockfile
 pnpm dev:enterprise
-# Desktop 本地开发：pnpm dev:desktop
+# Desktop local development:
+pnpm dev:desktop
 ```
 
-后端改动先跑受影响测试，再跑依赖边界与 lint：
+Run focused backend tests first, followed by dependency-boundary checks and lint:
 
 ```sh
 uv run python -m pytest tests/architecture/test_monorepo.py
 uv run ruff check --select F packages/python products/enterprise/backend/src products/lite/service/src products/desktop/service/src main.py tooling
 ```
 
-前端改动运行 `pnpm typecheck` 和 `pnpm lint`。Desktop 改动运行 `pnpm typecheck:desktop`、service 测试和 `pnpm smoke:desktop`。
-涉及数据库、发行物或共享执行行为时，增加对应迁移、独立 wheel 安装或消费者测试。
-Lite 产品测试实施后单独运行 `uv run --package covalent-lite python -m pytest products/lite/tests/`。
-当前该测试目录尚未创建，不把未实现的测试命令列为已通过验证。
+For frontend changes, run `pnpm typecheck` and `pnpm lint`. For Desktop changes, run `pnpm typecheck:desktop`, the service tests, and `pnpm smoke:desktop`. Database, release-artifact, and shared execution changes require the corresponding migration, clean wheel installation, or consumer tests.
 
-## 日常维护规则
+After Lite product tests exist, run them independently with `uv run --package covalent-lite python -m pytest products/lite/tests/`. That test directory does not exist yet, so this command must not be reported as passing validation.
 
-1. 从最新 `main` 创建短期分支，通过 PR 合并；不建立新的长期 `dev` 或 `pre-release` 分支。
-2. 先确定代码所有者：产品策略、共享执行、具体适配器或协议。
-3. 新依赖写入实际使用它的包 manifest，再在根更新并提交 `uv.lock` / `pnpm-lock.yaml`。
-4. 公共协议变更同时更新生产者、消费者、示例和契约测试；禁止从 Enterprise 导入 DTO 作为跨产品复用。
-5. 改文档时标明“已实现 / 设计约定 / 后续计划”，避免把设计命令当成可运行入口。
-6. 独立产品发行前从 wheel 干净安装；workspace 中可导入不等于依赖声明完整。
-7. Preview 与 Release 引用不可变 Commit SHA、Tag 或 digest，不用 `latest` 作为可追溯版本。
+## Daily Maintenance Rules
+
+1. Create a short-lived branch from the latest `main` and merge it through a PR. Do not create new long-lived `dev` or `pre-release` branches.
+2. Identify the owning layer first: product policy, shared execution, concrete adapter, or protocol.
+3. Add a dependency to the manifest of the package that uses it, then update and commit the root `uv.lock` or `pnpm-lock.yaml`.
+4. A public protocol change must update producers, consumers, examples, and contract tests together. Do not reuse an Enterprise DTO across products by importing it from Enterprise.
+5. Write all project documentation in English. Preserve non-English text only when it is required test data, external source text, or a localized product resource.
+6. Mark documentation as implemented behavior, an accepted design, or future work. Do not present planned commands as working entry points.
+7. Validate an independently released product from clean wheel installations. Import success inside the workspace does not prove that dependencies are declared correctly.
+8. Identify Preview and Release artifacts with immutable Commit SHAs, Tags, or digests. Do not use `latest` as a traceable version.

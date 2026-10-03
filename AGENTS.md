@@ -55,6 +55,7 @@ This repository is a FastAPI backend plus a Next.js control plane for managing a
 
 ## Implementation Habits
 
+- Write project documentation in English. Non-English text is allowed only when it is required test data, quoted external content, or an explicitly localized product resource.
 - Keep route files thin. Put substantial behavior in reusable components or `application/services/` use cases.
 - Keep backend route handlers thin: routes do auth, input→command conversion, and response/exception mapping; business logic belongs in `application/services/`. Application services must stay framework-independent (no `Request`/`HTTPException`/`FastAPI`/`app.state`) — surface failures via `application/errors.py` types, which the API layer maps to HTTP.
 - Prefer existing helpers and conventions over re-implementing normalization logic in multiple places.
