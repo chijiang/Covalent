@@ -36,9 +36,10 @@ import {
   type PublishedFile,
 } from "./transcript";
 
-import { applyStreamEvent, emptyStream } from "./stream-state";
+import { applyStreamEvent, emptyStream, liveReasoningView } from "./stream-state";
 
 const TRACE_POLL_INTERVAL_MS = 1500;
+const LIVE_COMMIT_INTERVAL_MS = 150;
 const FELINES_MILO_AGENT = "felines-milo";
 
 function agentDisplayName(name: string): string {
@@ -292,16 +293,27 @@ export function ChatWorkspace({
     if (!mountedRef.current) throw new Error("Chat workspace closed");
     let output = emptyStream();
     let frame = 0;
+    let lastCommitAt = 0;
     runningRef.current = true;
     setStreamOutput(output);
+    // Live commits are time-throttled: per-token rAF commits re-parse and
+    // re-layout an ever-growing reasoning view, which eventually blocks the
+    // main thread long enough to stall the IPC ack and kill the run (COV-40).
+    const scheduleCommit = () => {
+      if (frame) return;
+      const due = Math.max(lastCommitAt + LIVE_COMMIT_INTERVAL_MS - Date.now(), 0);
+      frame = window.setTimeout(() => {
+        frame = 0;
+        if (!mountedRef.current) return;
+        lastCommitAt = Date.now();
+        setStreamOutput(output);
+      }, due);
+    };
     try {
       return await window.covalentDesktop.streamMessage(value, (event) => {
         if (!mountedRef.current) return;
         output = applyStreamEvent(output, event);
-        if (!frame) frame = requestAnimationFrame(() => {
-          frame = 0;
-          if (mountedRef.current) setStreamOutput(output);
-        });
+        scheduleCommit();
       });
     } catch (cause) {
       runningRef.current = false;
@@ -314,7 +326,7 @@ export function ChatWorkspace({
       throw cause;
     } finally {
       runningRef.current = false;
-      cancelAnimationFrame(frame);
+      if (frame) window.clearTimeout(frame);
       if (mountedRef.current) setStreamOutput(output);
     }
   }
@@ -730,7 +742,7 @@ export function ChatWorkspace({
     }
   }
 
-  const liveReasoning = busy ? streamOutput.reasoning : "";
+  const liveReasoning = busy ? liveReasoningView(streamOutput.reasoning) : "";
 
   function startNewConversation() {
     if (busy) return;

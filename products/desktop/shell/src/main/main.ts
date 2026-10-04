@@ -553,8 +553,13 @@ function registerIpc(): void {
       const body = { ...value, provider_keys: providerKeys, mcp_env: mcpEnv };
       if (!streamId) return await supervisor.request("/messages", "POST", body);
       let sequence = 0;
+      // A stalled renderer must not kill the run: stop forwarding live events
+      // and keep consuming so the transcript still persists. Real renderer
+      // loss (close/crash/navigation) has its own abort hooks above.
+      let live = true;
       return await supervisor.streamMessage(body, controller.signal, async (chunk) => {
         controller.signal.throwIfAborted();
+        if (!live) return;
         const seq = ++sequence;
         // One outstanding IPC frame: acknowledgement gives bounded backpressure.
         await new Promise<void>((resolve, reject) => {
@@ -568,7 +573,14 @@ function registerIpc(): void {
             if (reply.sender !== event.sender || id !== streamId || number !== seq) return;
             cleanup(); resolve();
           };
-          const timer = setTimeout(() => { cleanup(); controller.abort(); reject(new Error("Stream consumer timed out")); }, 5000);
+          const timer = setTimeout(() => {
+            cleanup();
+            live = false;
+            console.warn(
+              "[desktop] renderer stopped acknowledging stream events; continuing the run without live output",
+            );
+            resolve();
+          }, 5000);
           ipcMain.on("desktop:stream-ack", ack);
           controller.signal.addEventListener("abort", cancelled, { once: true });
           event.sender.send("desktop:message-event", streamId, seq, chunk);
