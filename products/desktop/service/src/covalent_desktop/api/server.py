@@ -321,8 +321,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
                         "payload": {"session_id": result["session_id"]},
                     }
                 )
-            except (OSError, ConnectionError):
-                pass
+            except (OSError, ConnectionError) as error:
+                # The consumer went away (window closed, navigation, or the
+                # Electron side stopped acknowledging). Cancel quietly but leave
+                # a trace: this path produces no error frame on the wire.
+                LOGGER.warning(
+                    "Desktop stream consumer disconnected (%s); cancelling the run",
+                    error.__class__.__name__,
+                )
             except Exception:
                 LOGGER.exception("Desktop stream failed")
                 try:

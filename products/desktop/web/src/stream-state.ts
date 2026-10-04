@@ -9,6 +9,30 @@ export interface StreamState {
 export const emptyStream = (): StreamState => ({
   text: "", reasoning: "", iteration: null, source: "", hasDeltas: false,
 });
+
+const REASONING_SOURCE_MARK = "\x1e";
+const REASONING_SOURCE_PREFIX = "#agent:";
+const LIVE_REASONING_VIEW_CHARS = 20_000;
+const MAX_MARKER_CHARS = 128;
+
+/** Display window for live reasoning: parsing and layout cost must stay
+ * bounded while a long thinking stream appends per token, so render only the
+ * tail. The persisted transcript keeps the full text. */
+export function liveReasoningView(reasoning: string): string {
+  if (reasoning.length <= LIVE_REASONING_VIEW_CHARS) return reasoning;
+  let view = reasoning.slice(-LIVE_REASONING_VIEW_CHARS);
+  if (view.startsWith(REASONING_SOURCE_MARK + REASONING_SOURCE_PREFIX)) {
+    return view;
+  }
+  const markerEnd = view.indexOf(REASONING_SOURCE_MARK);
+  if (markerEnd !== -1 && markerEnd <= MAX_MARKER_CHARS) {
+    // The window edge cut a marker in half; drop the fragment up to its
+    // closing delimiter so the segment parser never sees it.
+    return view.slice(markerEnd + 1);
+  }
+  const stray = view.match(/^#agent:[^\n]*/);
+  return stray ? view.slice(stray[0].length) : view;
+}
 export function applyStreamEvent(state: StreamState, event: {
   event: string; payload: Record<string, unknown>;
 }): StreamState {
