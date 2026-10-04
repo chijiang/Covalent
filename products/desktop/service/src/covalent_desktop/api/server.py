@@ -6,16 +6,40 @@ import asyncio
 import hmac
 import json
 import logging
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import cast
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from covalent_desktop.application.status import ServiceStatus, get_service_status
 from covalent_desktop.application.workspace import DesktopWorkspace, WorkspaceError
 
 LOGGER = logging.getLogger(__name__)
 MAX_AUTH_HEADER_BYTES = 4096
+_DOWNLOAD_SCOPE_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,80}")
+_DOWNLOAD_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,255}")
+_DOWNLOAD_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".htm": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8",
+    ".xml": "application/xml",
+    ".pdf": "application/pdf",
+}
 
 
 class DesktopHTTPServer(ThreadingHTTPServer):
@@ -27,11 +51,13 @@ class DesktopHTTPServer(ThreadingHTTPServer):
         token: str,
         status: ServiceStatus,
         workspace: DesktopWorkspace,
+        downloads_root: Path | None = None,
     ) -> None:
         super().__init__(address, DesktopRequestHandler)
         self.token = token
         self.service_status = status
         self.workspace = workspace
+        self.downloads_root = downloads_root
 
 
 class DesktopRequestHandler(BaseHTTPRequestHandler):
@@ -39,6 +65,12 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
     sys_version = ""
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        request_url = urlsplit(self.path)
+        if request_url.path.startswith("/downloads/"):
+            # Served before the credential check: the agent's browser navigates
+            # without an Authorization header (see _serve_download for guards).
+            self._serve_download(request_url.path)
+            return
         if not self._is_authorized():
             self._write_json(
                 HTTPStatus.UNAUTHORIZED,
@@ -46,7 +78,6 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
             )
             return
         server = cast(DesktopHTTPServer, self.server)
-        request_url = urlsplit(self.path)
         path = request_url.path
         if path == "/healthz":
             payload = server.service_status.to_dict()
@@ -439,6 +470,78 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
         server = cast(DesktopHTTPServer, self.server)
         return hmac.compare_digest(header[len(prefix) :], server.token)
 
+    def _serve_download(self, path: str) -> None:
+        # Auth-exempt because browser navigation cannot send credentials. The
+        # compensating guards: create_server enforces a loopback-only bind, the
+        # Host header is pinned (DNS rebinding), scope/name must match strict
+        # patterns, and realpath containment keeps requests inside the session
+        # download directory — the same validation Electron applies when it
+        # resolves these files for the renderer.
+        server = cast(DesktopHTTPServer, self.server)
+        if server.downloads_root is None:
+            self._write_json(
+                HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
+            )
+            return
+        host = self.headers.get("Host", "").split(":")[0].lower()
+        if host not in {"127.0.0.1", "localhost", "[::1]"}:
+            self._write_json(
+                HTTPStatus.FORBIDDEN, {"code": "forbidden", "message": "Invalid host"}
+            )
+            return
+        parts = path.split("/")
+        if len(parts) != 4:
+            self._write_json(
+                HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
+            )
+            return
+        _, _, scope, name = (unquote(part) for part in parts)
+        if not _DOWNLOAD_SCOPE_PATTERN.fullmatch(scope):
+            self._write_json(
+                HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
+            )
+            return
+        if not _DOWNLOAD_NAME_PATTERN.fullmatch(name) or name in {".", ".."}:
+            self._write_json(
+                HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
+            )
+            return
+        directory = (server.downloads_root / scope).resolve(strict=False)
+        try:
+            target = (directory / name).resolve(strict=True)
+        except OSError:
+            self._write_json(
+                HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
+            )
+            return
+        if target != directory and directory not in target.parents:
+            self._write_json(
+                HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
+            )
+            return
+        if not target.is_file():
+            self._write_json(
+                HTTPStatus.NOT_FOUND, {"code": "not_found", "message": "Not found"}
+            )
+            return
+        content_type = _DOWNLOAD_CONTENT_TYPES.get(
+            target.suffix.lower(), "application/octet-stream"
+        )
+        try:
+            size = target.stat().st_size
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            with target.open("rb") as handle:
+                while chunk := handle.read(65536):
+                    self.wfile.write(chunk)
+        except OSError:
+            # Headers may already be on the wire; nothing further to do.
+            LOGGER.debug("Download transfer aborted: %s", target, exc_info=True)
+
     def _write_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
@@ -451,8 +554,14 @@ class DesktopRequestHandler(BaseHTTPRequestHandler):
 
 
 def create_server(
-    host: str, port: int, token: str, workspace: DesktopWorkspace
+    host: str,
+    port: int,
+    token: str,
+    workspace: DesktopWorkspace,
+    downloads_root: Path | None = None,
 ) -> DesktopHTTPServer:
     if host != "127.0.0.1":
         raise ValueError("Desktop service must bind to 127.0.0.1")
-    return DesktopHTTPServer((host, port), token, get_service_status(), workspace)
+    return DesktopHTTPServer(
+        (host, port), token, get_service_status(), workspace, downloads_root
+    )
