@@ -1037,7 +1037,13 @@ def _build_download_payload(
 ) -> dict[str, Any]:
     size_bytes = target_path.stat().st_size
     workspace_path = _relative_path(base_root, target_path)
-    normalized_base_path = "/" + download_base_path.strip("/")
+    # Relative bases are app routes ("/api/backend/downloads"); absolute
+    # http(s) bases (e.g. the Desktop loopback service) are kept verbatim so
+    # the agent's browser can open the published file directly.
+    if download_base_path.startswith(("http://", "https://")):
+        normalized_base_path = download_base_path.rstrip("/")
+    else:
+        normalized_base_path = "/" + download_base_path.strip("/")
     quoted_session = quote(_safe_storage_component(scope_id, "session"), safe="")
     quoted_name = quote(target_path.name, safe="")
     return {

@@ -58,6 +58,12 @@ class DesktopRegistryFactory:
         self.settings = DesktopSkillSettings(data_dir / "skills")
         self.skill_loader = SkillLoader(self.settings)
         self.store = store
+        # Set by bootstrap once the service port is bound; published files are
+        # then advertised as absolute loopback URLs the agent's browser can open.
+        self.service_base_url: str | None = None
+
+    def downloads_root(self) -> Path:
+        return self.settings.workspace_root() / ".covalent" / "downloads"
 
     def available_skills(self) -> list[str]:
         states = self.store.skill_states()
@@ -86,7 +92,11 @@ class DesktopRegistryFactory:
         registry.set_mcp_client(McpSdkClient())
         backend = FileSystemBackend(self.settings)
         registry.skill_process_manager = SkillProcessManager(backend=backend)
-        register_workspace_tools(registry, self.settings)
+        register_workspace_tools(
+            registry,
+            self.settings,
+            download_base_path=self.service_base_url or "/api/backend/downloads",
+        )
         register_pdf_tools(registry, self.settings)
         registry.browser_manager = BrowserManager(self.settings)
         register_browser_tools(registry, self.settings, registry.browser_manager)

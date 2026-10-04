@@ -64,6 +64,10 @@ def run_service(
             DesktopSkillManager(registry_factory.skill_loader, data_dir / "skills"),
             DesktopMcpInspector(),
         ),
+        downloads_root=registry_factory.downloads_root(),
+    )
+    registry_factory.service_base_url = (
+        f"http://{host}:{server.server_address[1]}/downloads"
     )
     status = server.service_status
     ready = {
