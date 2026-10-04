@@ -12,13 +12,13 @@ moving branch name.
 
 | Item | Candidate value |
 | --- | --- |
-| Stabilization branch | `release/platform/0.2.0` |
-| Recovery PR | [#2](https://github.com/chijiang/Covalent/pull/2) |
+| Stabilization branch | `release/platform/0.2.0` (deleted after merge) |
+| Recovery PR | [#2](https://github.com/chijiang/Covalent/pull/2), merged 2026-10-03 as `ef42a5c`; see the [recovery inventory](platform-0.2.0-recovery-inventory.md) |
 | Shared package version | Planned `0.2.0rc1`; manifests remain `0.1.0` until the RC version bump |
 | Enterprise version | Planned `0.2.0-rc.1` |
 | Desktop version | Planned `0.1.0-beta.1` |
 | Lite version | No runnable release in this candidate |
-| Candidate Commit SHA | Pending required checks |
+| Candidate Commit SHA | `ef42a5c` — recovery merge on `main`, all required checks green; RC tagging still blocked on the smoke checks below |
 
 ## Implemented Baseline
 
